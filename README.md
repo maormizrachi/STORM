@@ -50,7 +50,10 @@ For standalone usage, run:
 
 This clones into `deps/`:
 - **[mpi_utils](https://github.com/maormizrachi/mpi_utils)** — MPI serialization and exchange
-- **[MadCart](https://github.com/maormizrachi/MadCart)** — Cartesian mesh (for examples)
+- **[spatial_ds](https://github.com/maormizrachi/spatial_ds)** — Spatial data structures (OctTree, KDTree)
+- **[MeshDecomposer3D](https://github.com/maormizrachi/MeshDecomposer3D)** — Domain decomposition, Hilbert ordering
+- **[MadVoro](https://github.com/maormizrachi/MadVoro)** — 3D Voronoi tessellation
+- **[MadCart](https://github.com/maormizrachi/MadCart)** — 3D Cartesian mesh
 
 ## Building Standalone
 

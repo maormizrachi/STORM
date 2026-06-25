@@ -22,11 +22,15 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 if(DEFINED RDMONT_DEPS_DIR)
   get_filename_component(_deps "${RDMONT_DEPS_DIR}" ABSOLUTE)
   include_directories("${_deps}/mpi_utils")
+  include_directories("${_deps}/spatial_ds")
+  include_directories("${_deps}/MeshDecomposer3D")
+  include_directories("${_deps}/MadVoro")
   include_directories("${_deps}/MadCart")
 endif()
 
 # ---------- Required dependencies ----------
 find_package(Boost 1.74.0 REQUIRED)
+find_package(OpenMP QUIET)
 
 # ---------- Optional dependencies ----------
 if(RDMONT_WITH_MPI)
@@ -59,6 +63,9 @@ target_include_directories(rdmont INTERFACE
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(rdmont INTERFACE Boost::boost)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(rdmont INTERFACE OpenMP::OpenMP_CXX)
+endif()
 
 if(RDMONT_WITH_MPI)
   target_compile_definitions(rdmont PUBLIC RDMONT_WITH_MPI RICH_MPI)
