@@ -19,7 +19,10 @@ option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # ---------- External dependencies directory ----------
-if(DEFINED STORM_DEPS_DIR)
+if(NOT DEFINED STORM_DEPS_DIR)
+  set(STORM_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps")
+endif()
+if(IS_DIRECTORY "${STORM_DEPS_DIR}")
   get_filename_component(_deps "${STORM_DEPS_DIR}" ABSOLUTE)
   include_directories("${_deps}/mpi_utils")
   include_directories("${_deps}/spatial_ds")
