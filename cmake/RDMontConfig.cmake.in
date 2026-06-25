@@ -1,0 +1,3 @@
+@PACKAGE_INIT@
+include("${CMAKE_CURRENT_LIST_DIR}/RDMontTargets.cmake")
+check_required_components(RDMont)

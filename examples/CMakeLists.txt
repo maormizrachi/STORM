@@ -1,0 +1,5 @@
+add_executable(serial_cartesian serial_cartesian/main.cpp)
+target_link_libraries(serial_cartesian PRIVATE rdmont)
+if(DEFINED RDMONT_DEPS_DIR)
+  target_include_directories(serial_cartesian PRIVATE "${_deps}/MadCart")
+endif()

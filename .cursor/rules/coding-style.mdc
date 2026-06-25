@@ -1,0 +1,77 @@
+---
+description: C++ coding style for RICH and all submodules
+alwaysApply: true
+---
+
+# C++ Coding Style
+
+## Braces
+
+- **Always use braces** for `if`, `for`, `while`, `else`, etc. No single-line bodies without `{`.
+- **Opening brace on a new line** (Allman style):
+
+```cpp
+// GOOD
+if(x > 0)
+{
+    doSomething();
+}
+
+// BAD
+if(x > 0) {
+    doSomething();
+}
+
+// BAD
+if(x > 0)
+    doSomething();
+```
+
+## Reference & Pointer Symbols
+
+`&`, `*`, and `&&` are adjacent to the **variable name**, not the type:
+
+```cpp
+// GOOD
+int &x = y;
+const Vector3D &point = getPoint();
+int *ptr = &val;
+T &&rval = std::move(obj);
+void foo(const std::vector<int> &data);
+
+// BAD
+int& x = y;
+int * ptr = &val;
+```
+
+## `auto`
+
+Do **not** use `auto` unless it is genuinely needed (e.g. complex iterator types, lambda captures). Spell out the type explicitly.
+
+## Line Length & Breaking
+
+- Lines can be long. Do **not** add line breaks for nothing.
+- Only break a line if it is **really** too long, and break at a reasonable location (after a comma, after an operator).
+- No blank lines for no reason.
+
+## Naming
+
+- **Variables**: `camelCase` (`cellIndex`, `faceNeighbors`, `lowerLeft`).
+- **Free functions**: start with a capital letter (`GetNeighbors`, `CalcFaceVelocity`).
+- **Methods**: try to start with a capital letter as well (`BuildGrid`, `SetBox`).
+
+## Keywords & Parentheses
+
+No space between a keyword and its parenthesis:
+
+```cpp
+// GOOD
+if(condition)
+for(size_t i = 0; i < n; ++i)
+while(running)
+switch(val)
+
+// BAD
+if (condition)
+for (size_t i = 0; i < n; ++i)
+```
