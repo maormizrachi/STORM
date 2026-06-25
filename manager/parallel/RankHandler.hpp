@@ -141,11 +141,11 @@ private:
     bool destroyed;
     MPI_Group group_world, group_internal;
 
-    #ifdef ADVANCED_MONTECARLO_DEBUG
+    #ifdef ADVANCED_RDMONT_DEBUG
     void ValidateArraysContents(void) const;
 
     void ValidateRemoteArraysContents(void);
-    #endif // ADVANCED_MONTECARLO_DEBUG
+    #endif // ADVANCED_RDMONT_DEBUG
 };
 
 template<typename T, typename Grid>
@@ -361,7 +361,7 @@ RankHandler<T, Grid>::~RankHandler()
     }
 }
 
-#ifdef ADVANCED_MONTECARLO_DEBUG
+#ifdef ADVANCED_RDMONT_DEBUG
 template<typename T, typename Grid>
 void RankHandler<T, Grid>::ValidateArraysContents(void) const
 {
@@ -550,7 +550,7 @@ void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
         thMap[thValue] = i;
     }
 }
-#endif // ADVANCED_MONTECARLO_DEBUG
+#endif // ADVANCED_RDMONT_DEBUG
 
 template<typename T, typename Grid>
 void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInToHandle, size_t num)
@@ -571,7 +571,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
     volatile int &th_length = this->th_length;
     volatile int &av_length = this->av_length;
     
-    #ifdef ADVANCED_MONTECARLO_DEBUG
+    #ifdef ADVANCED_RDMONT_DEBUG
     try
     {
         this->ValidateArraysContents();
@@ -582,11 +582,11 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
         e.addEntry("To Remove", num);
         throw e;
     }
-    #endif // ADVANCED_MONTECARLO_DEBUG
+    #endif // ADVANCED_RDMONT_DEBUG
 
-    #ifdef MONTECARLO_DEBUG
+    #ifdef RDMONT_DEBUG
     boost::container::flat_map<size_t, size_t> indicesMap;
-    #endif // MONTECARLO_DEBUG
+    #endif // RDMONT_DEBUG
     static thread_local std::vector<index_t> freedIndices;
     freedIndices.clear();
     freedIndices.reserve(num);
@@ -598,7 +598,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
         // std::cout << "Rank " << this->rank_world << " removes particle " << toHandleIndex << " from handler of rank " << this->peer_rank_world << std::endl;
         assert(toHandleIndex < th_length);
         index_t particleIdx = this->th[toHandleIndex];
-        #ifdef MONTECARLO_DEBUG
+        #ifdef RDMONT_DEBUG
         if(indicesMap.find(particleIdx) != indicesMap.end())
         {
             UniversalError eo("RankHandler::RemoveParticles: trying to remove the same particle twice");
@@ -609,9 +609,9 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
             throw eo;
         }
         indicesMap.insert({particleIdx, toHandleIndex});
-        #endif // MONTECARLO_DEBUG
+        #endif // RDMONT_DEBUG
         assert(av_length < this->buffsize);
-        #ifdef MONTECARLO_DEBUG
+        #ifdef RDMONT_DEBUG
         auto it = std::find(this->av, this->av + av_length, particleIdx);
         if(it != this->av + av_length)
         {
@@ -622,7 +622,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
             eo.addEntry("Rank", this->rank_world);
             throw eo;
         }
-        #endif // MONTECARLO_DEBUG
+        #endif // RDMONT_DEBUG
         freedIndices.push_back(particleIdx);
         this->th[toHandleIndex] = this->th[--th_length];
         this->th[th_length] = inf;
@@ -645,7 +645,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
         this->av[av_length++] = particleIdx;
     }
 
-    #ifdef ADVANCED_MONTECARLO_DEBUG
+    #ifdef ADVANCED_RDMONT_DEBUG
     try
     {
         this->ValidateArraysContents();
@@ -656,7 +656,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
         e.addEntry("To Remove", num);
         throw e;
     }
-    #endif // ADVANCED_MONTECARLO_DEBUG
+    #endif // ADVANCED_RDMONT_DEBUG
 
     if(this->size_internal > 1)
     {
@@ -753,9 +753,9 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         }
         MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, &this->peer_buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
+        #ifdef ADVANCED_RDMONT_DEBUG
             this->ValidateArraysContents();
-        #endif // ADVANCED_MONTECARLO_DEBUG
+        #endif // ADVANCED_RDMONT_DEBUG
     }
     else
     {
@@ -809,9 +809,9 @@ void RankHandler<T, Grid>::Reallocate(double factor)
 
         this->peer_buffsize = this->buffsize;
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
+        #ifdef ADVANCED_RDMONT_DEBUG
             this->ValidateArraysContents();
-        #endif // ADVANCED_MONTECARLO_DEBUG
+        #endif // ADVANCED_RDMONT_DEBUG
     }
 
     this->requestedFactor = 1;
@@ -889,9 +889,9 @@ ReallocationMetadata RankHandler<T, Grid>::LocalReallocate(double factor)
             this->av_length += static_cast<int>(difference);
         }
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
+        #ifdef ADVANCED_RDMONT_DEBUG
             this->ValidateArraysContents();
-        #endif // ADVANCED_MONTECARLO_DEBUG
+        #endif // ADVANCED_RDMONT_DEBUG
 
         this->UnlockSelfBuffer();
         locked = false;
@@ -954,7 +954,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         this->remoteLockCallsThisStep++;
         #endif // TIMING
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
+        #ifdef ADVANCED_RDMONT_DEBUG
             try
             {
                 ValidateRemoteArraysContents();
@@ -964,11 +964,11 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
                 eo.addEntry("Where", std::string("RankHandler<T, Grid>::TransferParticles - before transfer"));
                 throw eo;
             }
-        #endif // ADVANCED_MONTECARLO_DEBUG
+        #endif // ADVANCED_RDMONT_DEBUG
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
+        #ifdef ADVANCED_RDMONT_DEBUG
         size_t reallocationsCounter = 0;
-        #endif // ADVANCED_MONTECARLO_DEBUG
+        #endif // ADVANCED_RDMONT_DEBUG
         #ifdef TIMING
         size_t reallocationRequestsForThisTransfer = 0;
         #endif // TIMING
@@ -980,9 +980,9 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             assert(availLength <= static_cast<int>(this->peer_buffsize));
             if(availLength < static_cast<int>(Np))
             {
-                #ifdef ADVANCED_MONTECARLO_DEBUG
+                #ifdef ADVANCED_RDMONT_DEBUG
                 reallocationsCounter++;
-                #endif // ADVANCED_MONTECARLO_DEBUG
+                #endif // ADVANCED_RDMONT_DEBUG
             }
             assert(availLength >= 0);
             return availLength;
@@ -1061,7 +1061,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         this->transferAvailIndexGetTimeThisStep += secondsSince(transferSectionStart);
         #endif // TIMING
 
-        #ifdef MONTECARLO_DEBUG
+        #ifdef RDMONT_DEBUG
         boost::container::flat_map<index_t, size_t> availIndicesMap;
         for(size_t i = 0; i < Np; i++)
         {
@@ -1088,7 +1088,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
                 throw eo;
             }
         }
-        #endif // MONTECARLO_DEBUG
+        #endif // RDMONT_DEBUG
 
         assert(this->other_rank != this->rank_internal);
         #ifdef TIMING
@@ -1243,7 +1243,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         this->transferAVLengthFlushTimeThisStep += 0;
         #endif // TIMING
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
+        #ifdef ADVANCED_RDMONT_DEBUG
         try
         {
             ValidateRemoteArraysContents();
@@ -1258,7 +1258,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             eo.addEntry("Reallocations Counter", reallocationsCounter);
             throw eo;
         }
-        #endif // ADVANCED_MONTECARLO_DEBUG
+        #endif // ADVANCED_RDMONT_DEBUG
 
         // release remote mutex
         #ifdef TIMING
@@ -1280,7 +1280,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             assert(this->av_length > 0);
             size_t availIndex = this->av[--this->av_length];
             this->particles[availIndex] = particles[i];
-            #ifdef MONTECARLO_DEBUG
+            #ifdef RDMONT_DEBUG
             if(particles[i].nextRank != this->rank_world)
             {
                 UniversalError eo("Particle will not be sent to the expected rank #2");
@@ -1289,7 +1289,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
                 eo.addEntry("Next Rank", particles[i].nextRank);
                 throw eo;
             }
-            #endif // MONTECARLO_DEBUG
+            #endif // RDMONT_DEBUG
             this->th[this->th_length++] = availIndex;
             assert(this->th_length < static_cast<int>(this->buffsize));
         }

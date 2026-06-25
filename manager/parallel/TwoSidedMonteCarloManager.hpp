@@ -182,7 +182,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 template<typename T, typename Grid>
 void TwoSidedMonteCarloManager<T, Grid>::PutSelfParticles(const MCParticle *newParticles, size_t particlesNum)
 {
-    #ifdef MONTECARLO_DEBUG
+    #ifdef RDMONT_DEBUG
     boost::container::flat_set<std::pair<rank_t, size_t>> particlesSet;
     for(size_t i = 0; i < particlesNum; i++)
     {
@@ -202,7 +202,7 @@ void TwoSidedMonteCarloManager<T, Grid>::PutSelfParticles(const MCParticle *newP
         }
         particlesSet.insert(particleSetKey);
     }
-    #endif // MONTECARLO_DEBUG
+    #endif // RDMONT_DEBUG
 
     size_t oldSize = this->particles.size();
     this->particles.insert(this->particles.end(), newParticles, newParticles + particlesNum);
@@ -272,7 +272,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
         MCParticle &particle = this->particles[i];
         bool debug = false;
 
-        #ifdef MONTECARLO_DEBUG
+        #ifdef RDMONT_DEBUG
         if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
         {
             UniversalError eo("Particle was already handled in this iteration");
@@ -289,7 +289,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
         particle.lastSeen = this->iteration;
         particle.lastSeenRank = this->rank_world;
         particle.lastSeenIndex = i;
-        #endif // MONTECARLO_DEBUG
+        #endif // RDMONT_DEBUG
 
         while(true)
         {
@@ -319,7 +319,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
 
             // std::cout << "Rank " << this->rank_world << " handles particle " << particle.id << " of rank " << particle.rank << ", step " << particle.steps << std::endl;
 
-            #ifdef MONTECARLO_DEBUG
+            #ifdef RDMONT_DEBUG
             if(particle.cellIndex >= this->Ncells)
             {
                 UniversalError eo("Particle has invalid cell index (ghost)");
@@ -411,7 +411,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     throw eo;
                 }
             }
-            #endif // MONTECARLO_DEBUG
+            #endif // RDMONT_DEBUG
             if(particle.sent)
             {
                 particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
@@ -419,9 +419,9 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 particle.sent = false;
             }
             T prevLoc = particle.location;
-            #ifdef MONTECARLO_DEBUG
+            #ifdef RDMONT_DEBUG
                 particle.previousLocation = particle.location;
-            #endif // MONTECARLO_DEBUG
+            #endif // RDMONT_DEBUG
             MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
 
             if(particle.on_track)
@@ -450,7 +450,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     size_t previousCell = particle.cellIndex;
                     particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                     particle.cellIndex = nextCellIndex;
-                    #ifdef MONTECARLO_DEBUG
+                    #ifdef RDMONT_DEBUG
                     if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
                     {
                         const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
@@ -478,7 +478,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         }
                         throw eo;
                     }
-                    #endif // MONTECARLO_DEBUG
+                    #endif // RDMONT_DEBUG
                 }
                 else
                 {
@@ -513,7 +513,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
 
                     particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                     auto [otherRank, neighborIndexInRank] = it->second;
-                    #ifdef MONTECARLO_DEBUG
+                    #ifdef RDMONT_DEBUG
                     particle.checkedHere = false; // reset checked here flag
                     if(particle.nextRank != std::numeric_limits<rank_t>::max())
                     {
@@ -550,7 +550,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         eo.addEntry("Index In Remote Rank", neighborIndexInRank);
                         throw eo;
                     }
-                    #endif // MONTECARLO_DEBUG
+                    #endif // RDMONT_DEBUG
                     particle.sent = true;
                     particle.cellIndex = neighborIndexInRank;
 
@@ -617,13 +617,13 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         for(int i = 0; i < length; i++)
         {
             MCParticle &p = this->particles[i];
-            #ifdef MONTECARLO_DEBUG
+            #ifdef RDMONT_DEBUG
             p.checkedHere = true;
             p.nextRank = std::numeric_limits<rank_t>::max();
             p.removedFromRank = false;
             p.sentByRank = std::numeric_limits<rank_t>::max();
             p.lastSeen = 0;
-            #endif // MONTECARLO_DEBUG
+            #endif // RDMONT_DEBUG
             p.timeLeft = fullDt;
             p.initialWeight = p.weight;
             p.steps = 0;

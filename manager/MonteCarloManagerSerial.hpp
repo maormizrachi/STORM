@@ -301,7 +301,7 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 this->tracker.ReportParticle(trackedParticle);
             }
 
-            #ifdef MC_TRACING_HISTORY
+            #ifdef RDMONT_WITH_TRACING_HISTORY
                 particle.recordHistory(particle.cellIndex, 0, static_cast<int>(functionality.change));
             #endif
 
@@ -317,14 +317,14 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 }
                 else
                 {
-                    #ifdef MC_TRACING_HISTORY
+                    #ifdef RDMONT_WITH_TRACING_HISTORY
                         T preReflectLoc = particle.location;
                         T preReflectVel = particle.velocity;
                     #endif
                     ParticleStatus status = this->boundaryCondition->apply(particle);
                     if(status == ParticleStatus::REFLECT)
                     {
-                        #ifdef MC_TRACING_HISTORY
+                        #ifdef RDMONT_WITH_TRACING_HISTORY
                             particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
                         #endif
                     }
@@ -383,7 +383,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     {
         size_t particleIndex = this->particlesData.th[i];
         MCParticle &p = this->particlesData.particles[particleIndex];
-        #ifdef MC_TRACING_HISTORY
+        #ifdef RDMONT_WITH_TRACING_HISTORY
         p.tracingHistoryIndex = 0;
         p.tracingHistoryCount = 0;
         #endif
