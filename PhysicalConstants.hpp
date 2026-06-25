@@ -1,7 +1,7 @@
-#ifndef RDMONT_PHYSICAL_CONSTANTS_HPP
-#define RDMONT_PHYSICAL_CONSTANTS_HPP
+#ifndef STORM_PHYSICAL_CONSTANTS_HPP
+#define STORM_PHYSICAL_CONSTANTS_HPP
 
-namespace RDMont {
+namespace STORM {
 namespace constants {
 
 static constexpr double clight = 2.99792458e10;           // cm/s
@@ -11,6 +11,6 @@ static constexpr double arad = 4.0 * sigma_sb / clight;   // erg cm^-3 K^-4
 static constexpr double k_boltz = 1.380649e-16;           // erg/K
 
 } // namespace constants
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_PHYSICAL_CONSTANTS_HPP
+#endif // STORM_PHYSICAL_CONSTANTS_HPP

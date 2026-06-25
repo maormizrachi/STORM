@@ -1,11 +1,11 @@
-#ifndef RDMONT_PLANCK_INTEGRAL_HPP
-#define RDMONT_PLANCK_INTEGRAL_HPP
+#ifndef STORM_PLANCK_INTEGRAL_HPP
+#define STORM_PLANCK_INTEGRAL_HPP
 
 #include <boost/math/special_functions/pow.hpp>
 #include <cmath>
 #include <cassert>
 
-namespace RDMont {
+namespace STORM {
 namespace planck_integral {
 
 static int constexpr N_clark = 5;
@@ -51,6 +51,6 @@ inline double PlanckIntegral(double const a, double const b)
 }
 
 } // namespace planck_integral
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_PLANCK_INTEGRAL_HPP
+#endif // STORM_PLANCK_INTEGRAL_HPP

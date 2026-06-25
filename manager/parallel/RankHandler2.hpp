@@ -802,7 +802,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
         }
         #endif // TIMING
 
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
         for(size_t i = 0; i < Np; i++)
         {
             const MCParticle &particle = particles[i];
@@ -816,7 +816,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
                 throw eo;
             }
         }
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
 
         RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
                                  ? RMAFactory::ResolveAutoRDMA()

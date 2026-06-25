@@ -1,5 +1,5 @@
-#ifndef RDMONT_MONTE_CARLO_MANAGER_SERIAL_HPP
-#define RDMONT_MONTE_CARLO_MANAGER_SERIAL_HPP
+#ifndef STORM_MONTE_CARLO_MANAGER_SERIAL_HPP
+#define STORM_MONTE_CARLO_MANAGER_SERIAL_HPP
 
 #include <cassert>
 #include <memory>
@@ -13,11 +13,11 @@
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "monte/manager/MonteCarloConfig.hpp"
-#include "monte/RDMontError.hpp"
+#include "monte/STORMError.hpp"
 
 #define SERIAL_REALLOCATION_FACTOR 2
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class MonteCarloManagerSerial
@@ -301,7 +301,7 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 this->tracker.ReportParticle(trackedParticle);
             }
 
-            #ifdef RDMONT_WITH_TRACING_HISTORY
+            #ifdef STORM_WITH_TRACING_HISTORY
                 particle.recordHistory(particle.cellIndex, 0, static_cast<int>(functionality.change));
             #endif
 
@@ -317,14 +317,14 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 }
                 else
                 {
-                    #ifdef RDMONT_WITH_TRACING_HISTORY
+                    #ifdef STORM_WITH_TRACING_HISTORY
                         T preReflectLoc = particle.location;
                         T preReflectVel = particle.velocity;
                     #endif
                     ParticleStatus status = this->boundaryCondition->apply(particle);
                     if(status == ParticleStatus::REFLECT)
                     {
-                        #ifdef RDMONT_WITH_TRACING_HISTORY
+                        #ifdef STORM_WITH_TRACING_HISTORY
                             particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
                         #endif
                     }
@@ -336,7 +336,7 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                     }
                     else
                     {
-                        RDMontError eo("Unknown boundary condition for particle");
+                        STORMError eo("Unknown boundary condition for particle");
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Status", status);
                         throw eo;
@@ -383,7 +383,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     {
         size_t particleIndex = this->particlesData.th[i];
         MCParticle &p = this->particlesData.particles[particleIndex];
-        #ifdef RDMONT_WITH_TRACING_HISTORY
+        #ifdef STORM_WITH_TRACING_HISTORY
         p.tracingHistoryIndex = 0;
         p.tracingHistoryCount = 0;
         #endif
@@ -416,7 +416,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
             this->HandleAll(data);
         }
     }
-    catch(const RDMontError &eo)
+    catch(const STORMError &eo)
     {
         reportError(eo);
         throw;
@@ -429,6 +429,6 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     return populationControlParticles;
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_MONTE_CARLO_MANAGER_SERIAL_HPP
+#endif // STORM_MONTE_CARLO_MANAGER_SERIAL_HPP

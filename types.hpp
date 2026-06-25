@@ -1,18 +1,18 @@
-#ifndef RDMONT_TYPES_HPP
-#define RDMONT_TYPES_HPP
+#ifndef STORM_TYPES_HPP
+#define STORM_TYPES_HPP
 
 #include <cstddef>
 #include <cstdint>
 
-namespace RDMont {
+namespace STORM {
 
 using dt_t = double;
 using distance_t = double;
 
-#ifdef RDMONT_WITH_MPI
+#ifdef STORM_WITH_MPI
 using rank_t = int;
 #endif
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_TYPES_HPP
+#endif // STORM_TYPES_HPP

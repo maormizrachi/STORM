@@ -1,5 +1,5 @@
-#ifndef RDMONT_EXAMPLE_VECTOR3D_HPP
-#define RDMONT_EXAMPLE_VECTOR3D_HPP
+#ifndef STORM_EXAMPLE_VECTOR3D_HPP
+#define STORM_EXAMPLE_VECTOR3D_HPP
 
 #include <cmath>
 #include <iostream>
@@ -34,4 +34,4 @@ inline Vector3D normalize(const Vector3D &v) { double m = abs(v); return (m > 0)
 
 inline std::ostream &operator<<(std::ostream &os, const Vector3D &v) { return os << "(" << v.x << ", " << v.y << ", " << v.z << ")"; }
 
-#endif // RDMONT_EXAMPLE_VECTOR3D_HPP
+#endif // STORM_EXAMPLE_VECTOR3D_HPP

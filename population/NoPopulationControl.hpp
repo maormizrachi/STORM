@@ -1,9 +1,9 @@
-#ifndef RDMONT_NO_POPULATION_CONTROL_HPP
-#define RDMONT_NO_POPULATION_CONTROL_HPP
+#ifndef STORM_NO_POPULATION_CONTROL_HPP
+#define STORM_NO_POPULATION_CONTROL_HPP
 
 #include "PopulationControl.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class NoPopulationControl : public PopulationControl<T, Grid>
@@ -27,6 +27,6 @@ std::vector<typename NoPopulationControl<T, Grid>::MCParticle> NoPopulationContr
     return particles;
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_NO_POPULATION_CONTROL_HPP
+#endif // STORM_NO_POPULATION_CONTROL_HPP

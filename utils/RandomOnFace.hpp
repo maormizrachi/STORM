@@ -1,12 +1,12 @@
-#ifndef RDMONT_RANDOM_ON_FACE_HPP
-#define RDMONT_RANDOM_ON_FACE_HPP
+#ifndef STORM_RANDOM_ON_FACE_HPP
+#define STORM_RANDOM_ON_FACE_HPP
 
 #include <random>
 #include <vector>
 #include <array>
 #include <algorithm>
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 T RandomPointOnFace(const Grid &grid, size_t faceIndex)
@@ -62,6 +62,6 @@ T RandomPointOnFace(const Grid &grid, size_t faceIndex)
     return (1 - r1 - r2) * verts[tv[0]] + r1 * verts[tv[1]] + r2 * verts[tv[2]];
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_RANDOM_ON_FACE_HPP
+#endif // STORM_RANDOM_ON_FACE_HPP

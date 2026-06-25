@@ -1,10 +1,10 @@
-#ifndef RDMONT_STEP_RESULT_HPP
-#define RDMONT_STEP_RESULT_HPP
+#ifndef STORM_STEP_RESULT_HPP
+#define STORM_STEP_RESULT_HPP
 
 #include <limits>
 #include "monte/particle/ParticleStatus.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 struct StepResult
@@ -13,10 +13,10 @@ struct StepResult
     size_t nextCellIndex = std::numeric_limits<size_t>::max();
 };
 
-} // namespace RDMont
+} // namespace STORM
 
 // Back-compat alias
 template<typename T, typename Grid>
-using MonteCarloFunctionality = RDMont::StepResult<T, Grid>;
+using MonteCarloFunctionality = STORM::StepResult<T, Grid>;
 
-#endif // RDMONT_STEP_RESULT_HPP
+#endif // STORM_STEP_RESULT_HPP

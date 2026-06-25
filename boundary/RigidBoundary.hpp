@@ -1,10 +1,10 @@
-#ifndef RDMONT_RIGID_BOUNDARY_HPP
-#define RDMONT_RIGID_BOUNDARY_HPP
+#ifndef STORM_RIGID_BOUNDARY_HPP
+#define STORM_RIGID_BOUNDARY_HPP
 
 #include "BoundaryCondition.hpp"
-#include "monte/RDMontError.hpp"
+#include "monte/STORMError.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class RigidBoundary : public BoundaryCondition<T, Grid>
@@ -63,10 +63,10 @@ std::vector<Particle<T, Grid>> RigidBoundary<T, Grid>::generateNewBoundaryPartic
     return {};
 }
 
-} // namespace RDMont
+} // namespace STORM
 
 // Back-compat alias
 template<typename T, typename Grid>
-using RigidBoundaryCondition = RDMont::RigidBoundary<T, Grid>;
+using RigidBoundaryCondition = STORM::RigidBoundary<T, Grid>;
 
-#endif // RDMONT_RIGID_BOUNDARY_HPP
+#endif // STORM_RIGID_BOUNDARY_HPP

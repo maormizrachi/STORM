@@ -1,26 +1,26 @@
-#ifndef RDMONT_PARTICLE_HPP
-#define RDMONT_PARTICLE_HPP
+#ifndef STORM_PARTICLE_HPP
+#define STORM_PARTICLE_HPP
 
 #include <sstream>
 #include <vector>
 #include <limits>
-#ifdef RDMONT_WITH_MPI
+#ifdef STORM_WITH_MPI
     #include <mpi.h>
     #include <functional>
     #include "mpi_utils/mpi_commands.hpp"
     #include "mpi_utils/Serializer.hpp"
-#endif // RDMONT_WITH_MPI
-#include "monte/RDMontError.hpp"
+#endif // STORM_WITH_MPI
+#include "monte/StormError.hpp"
 #include "monte/particle/ParticleStatus.hpp"
 
 #define EPSILON 1e-12
 
-namespace RDMont {
+namespace STORM {
 
 using dt_t = double;
 using distance_t = double;
 
-#ifdef RDMONT_WITH_TRACING_HISTORY
+#ifdef STORM_WITH_TRACING_HISTORY
 
 template<typename T>
 struct ParticleHistory
@@ -35,17 +35,17 @@ struct ParticleHistory
     T preReflectLocation = T();
     T preReflectVelocity = T();
 };
-#endif // RDMONT_WITH_TRACING_HISTORY
+#endif // STORM_WITH_TRACING_HISTORY
 
 template<typename T, typename Grid>
 struct Particle
-                    #ifdef RDMONT_WITH_MPI
+                    #ifdef STORM_WITH_MPI
                         : public Serializable
-                    #endif // RDMONT_WITH_MPI
+                    #endif // STORM_WITH_MPI
 {
-    #ifdef RDMONT_WITH_MPI
+    #ifdef STORM_WITH_MPI
         rank_t rank = -1;
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
             size_t cellIndexInPrevRank = std::numeric_limits<size_t>::max();
             T previousLocation = T(std::numeric_limits<double>::max());
             size_t particleTHInLastRank = std::numeric_limits<size_t>::max();
@@ -60,8 +60,8 @@ struct Particle
             rank_t lastSeenRank = std::numeric_limits<rank_t>::max();
             rank_t lastSeenRankBuf = std::numeric_limits<rank_t>::max();
             size_t lastSeenIndex = std::numeric_limits<size_t>::max();
-        #endif // RDMONT_DEBUG
-    #endif // RDMONT_WITH_MPI
+        #endif // STORM_DEBUG
+    #endif // STORM_WITH_MPI
     size_t id = std::numeric_limits<size_t>::max();
     size_t cellID = std::numeric_limits<size_t>::max();
     T location = T(std::numeric_limits<typename T::value_type>::max());
@@ -75,8 +75,8 @@ struct Particle
     bool on_track = false;
     bool sent = false;
 
-    #ifdef RDMONT_WITH_TRACING_HISTORY
-        ParticleHistory<T> tracingHistory[RDMONT_WITH_TRACING_HISTORY] = {};
+    #ifdef STORM_WITH_TRACING_HISTORY
+        ParticleHistory<T> tracingHistory[STORM_WITH_TRACING_HISTORY] = {};
         size_t tracingHistoryIndex = 0;
         size_t tracingHistoryCount = 0;
 
@@ -90,8 +90,8 @@ struct Particle
             entry.reflected = false;
             entry.location = this->location;
             entry.velocity = this->velocity;
-            this->tracingHistoryIndex = (this->tracingHistoryIndex + 1) % RDMONT_WITH_TRACING_HISTORY;
-            if(this->tracingHistoryCount < RDMONT_WITH_TRACING_HISTORY)
+            this->tracingHistoryIndex = (this->tracingHistoryIndex + 1) % STORM_WITH_TRACING_HISTORY;
+            if(this->tracingHistoryCount < STORM_WITH_TRACING_HISTORY)
             {
                 this->tracingHistoryCount++;
             }
@@ -103,18 +103,18 @@ struct Particle
             {
                 return;
             }
-            size_t lastIdx = (this->tracingHistoryIndex + RDMONT_WITH_TRACING_HISTORY - 1) % RDMONT_WITH_TRACING_HISTORY;
+            size_t lastIdx = (this->tracingHistoryIndex + STORM_WITH_TRACING_HISTORY - 1) % STORM_WITH_TRACING_HISTORY;
             this->tracingHistory[lastIdx].reflected = true;
             this->tracingHistory[lastIdx].preReflectLocation = locBeforeReflect;
             this->tracingHistory[lastIdx].preReflectVelocity = velBeforeReflect;
         }
 
-        inline void addTracingHistoryToError(RDMontError &eo) const
+        inline void addTracingHistoryToError(StormError &eo) const
         {
             eo.addEntry("Tracing History Count", this->tracingHistoryCount);
             for(size_t h = 0; h < this->tracingHistoryCount; h++)
             {
-                size_t idx = (this->tracingHistoryIndex - this->tracingHistoryCount + h + RDMONT_WITH_TRACING_HISTORY) % RDMONT_WITH_TRACING_HISTORY;
+                size_t idx = (this->tracingHistoryIndex - this->tracingHistoryCount + h + STORM_WITH_TRACING_HISTORY) % STORM_WITH_TRACING_HISTORY;
                 const ParticleHistory<T> &hist = this->tracingHistory[idx];
                 std::string prefix = "History[" + std::to_string(h) + "] ";
                 eo.addEntry(prefix + "Cell", hist.cellIndex);
@@ -123,45 +123,45 @@ struct Particle
                 eo.addEntry(prefix + "Step", hist.step);
             }
         }
-    #endif // RDMONT_WITH_TRACING_HISTORY
+    #endif // STORM_WITH_TRACING_HISTORY
 
     explicit Particle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(std::numeric_limits<double>::max()), const T &velocity_ = T(std::numeric_limits<double>::max()), dt_t timeLeft_ = dt_t(std::numeric_limits<double>::max())):
         id(id_), location(location_), velocity(velocity_), cellIndex(std::numeric_limits<size_t>::max()), timeLeft(timeLeft_), frequency(std::numeric_limits<double>::max()), weight(0), initialWeight(0), steps(0), on_track(false)
     {
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
         this->checkedHere = true;
         this->ghostIndex = std::numeric_limits<size_t>::max();
         this->newCellValue = T(std::numeric_limits<double>::max());
         this->nextRank = std::numeric_limits<rank_t>::max();
         this->removedFromRank = false;
         this->sentByRank = std::numeric_limits<rank_t>::max();
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
     };
 
     std::pair<size_t, distance_t> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
 
     friend inline std::ostream &operator<<(std::ostream &stream, const Particle &particle)
     {
-        #ifdef RDMONT_WITH_MPI
+        #ifdef STORM_WITH_MPI
                 return stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
-        #else // RDMONT_WITH_MPI
+        #else // STORM_WITH_MPI
                 return stream << "Particle(ID " << particle.id << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
-        #endif // RDMONT_WITH_MPI
+        #endif // STORM_WITH_MPI
     }
 
     inline bool operator==(const Particle &other) const
     {
-        #ifdef RDMONT_WITH_MPI
+        #ifdef STORM_WITH_MPI
             return this->id == other.id and this->rank == other.rank;
         #else
             return this->id == other.id;
         #endif
     }
 
-    #ifdef RDMONT_WITH_MPI
+    #ifdef STORM_WITH_MPI
         size_t dump(Serializer *serializer) const override;
         size_t load(const Serializer *serializer, size_t byteOffset) override;
-    #endif // RDMONT_WITH_MPI
+    #endif // STORM_WITH_MPI
 };
 
 template<typename T, typename Grid>
@@ -216,47 +216,47 @@ std::pair<size_t, dt_t> Particle<T, Grid>::distanceToNearestFace(const Grid &gri
 
     if(grid.IsPointOutsideBox(this->location))
     {
-        RDMontError eo("Particle is outside the domain, but still considered");
-        #ifdef RDMONT_WITH_MPI
+        StormError eo("Particle is outside the domain, but still considered");
+        #ifdef STORM_WITH_MPI
             rank_t rank;
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
             eo.addEntry("Rank", rank);
-        #endif // RDMONT_WITH_MPI
+        #endif // STORM_WITH_MPI
         eo.addEntry("Particle", *this);
         eo.addEntry("Cell Index", this->cellIndex);
-        #ifdef RDMONT_WITH_TRACING_HISTORY
+        #ifdef STORM_WITH_TRACING_HISTORY
             this->addTracingHistoryToError(eo);
-        #endif // RDMONT_WITH_TRACING_HISTORY
+        #endif // STORM_WITH_TRACING_HISTORY
         throw eo;
     }
     size_t realContainingCell = grid.GetContainingCell(this->location);
     if(realContainingCell != this->cellIndex)
     {
-        RDMontError eo("Particle::distanceToNearestFace: the containing cellIndex is incorrect");
+        StormError eo("Particle::distanceToNearestFace: the containing cellIndex is incorrect");
         eo.addEntry("Real containing cell index", realContainingCell);
         eo.addEntry("Declared containing cell", this->cellIndex);
         eo.addEntry("Particle", (*this));
-        #ifdef RDMONT_WITH_TRACING_HISTORY
+        #ifdef STORM_WITH_TRACING_HISTORY
             this->addTracingHistoryToError(eo);
-        #endif // RDMONT_WITH_TRACING_HISTORY
+        #endif // STORM_WITH_TRACING_HISTORY
         throw eo;
     }
 
-    RDMontError eo("Particle::distanceToNearestFace: no face intersection found");
-    #ifdef RDMONT_WITH_MPI
+    StormError eo("Particle::distanceToNearestFace: no face intersection found");
+    #ifdef STORM_WITH_MPI
         rank_t rank;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         eo.addEntry("Rank", rank);
-    #endif // RDMONT_WITH_MPI
+    #endif // STORM_WITH_MPI
     eo.addEntry("Particle", *this);
     eo.addEntry("Cell Index", this->cellIndex);
-    #ifdef RDMONT_WITH_TRACING_HISTORY
+    #ifdef STORM_WITH_TRACING_HISTORY
         this->addTracingHistoryToError(eo);
-    #endif // RDMONT_WITH_TRACING_HISTORY
+    #endif // STORM_WITH_TRACING_HISTORY
     throw eo;
 }
 
-#ifdef RDMONT_WITH_MPI
+#ifdef STORM_WITH_MPI
 template<typename T, typename Grid>
 size_t Particle<T, Grid>::dump(Serializer *serializer) const
 {
@@ -274,7 +274,7 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->steps);
     bytes += serializer->insert(this->on_track);
     bytes += serializer->insert(this->sent);
-    #ifdef RDMONT_DEBUG
+    #ifdef STORM_DEBUG
     bytes += serializer->insert(this->checkedHere);
     bytes += serializer->insert(this->ghostIndex);
     bytes += serializer->insert(this->newCellValue);
@@ -285,9 +285,9 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->lastSeenRank);
     bytes += serializer->insert(this->lastSeenRankBuf);
     bytes += serializer->insert(this->lastSeenIndex);
-    #endif // RDMONT_DEBUG
-    #ifdef RDMONT_WITH_TRACING_HISTORY
-    for(size_t h = 0; h < RDMONT_WITH_TRACING_HISTORY; h++)
+    #endif // STORM_DEBUG
+    #ifdef STORM_WITH_TRACING_HISTORY
+    for(size_t h = 0; h < STORM_WITH_TRACING_HISTORY; h++)
     {
         bytes += serializer->insert(this->tracingHistory[h].cellIndex);
         bytes += serializer->insert(this->tracingHistory[h].rank);
@@ -301,7 +301,7 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     }
     bytes += serializer->insert(this->tracingHistoryIndex);
     bytes += serializer->insert(this->tracingHistoryCount);
-    #endif // RDMONT_WITH_TRACING_HISTORY
+    #endif // STORM_WITH_TRACING_HISTORY
     return bytes;
 }
 
@@ -322,7 +322,7 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
     bytes += serializer->extract(this->steps, byteOffset + bytes);
     bytes += serializer->extract(this->on_track, byteOffset + bytes);
     bytes += serializer->extract(this->sent, byteOffset + bytes);
-    #ifdef RDMONT_DEBUG
+    #ifdef STORM_DEBUG
     bytes += serializer->extract(this->checkedHere, byteOffset + bytes);
     bytes += serializer->extract(this->ghostIndex, byteOffset + bytes);
     bytes += serializer->extract(this->newCellValue, byteOffset + bytes);
@@ -333,9 +333,9 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
     bytes += serializer->extract(this->lastSeenRank, byteOffset + bytes);
     bytes += serializer->extract(this->lastSeenRankBuf, byteOffset + bytes);
     bytes += serializer->extract(this->lastSeenIndex, byteOffset + bytes);
-    #endif // RDMONT_DEBUG
-    #ifdef RDMONT_WITH_TRACING_HISTORY
-    for(size_t h = 0; h < RDMONT_WITH_TRACING_HISTORY; h++)
+    #endif // STORM_DEBUG
+    #ifdef STORM_WITH_TRACING_HISTORY
+    for(size_t h = 0; h < STORM_WITH_TRACING_HISTORY; h++)
     {
         bytes += serializer->extract(this->tracingHistory[h].cellIndex, byteOffset + bytes);
         bytes += serializer->extract(this->tracingHistory[h].rank, byteOffset + bytes);
@@ -349,15 +349,15 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
     }
     bytes += serializer->extract(this->tracingHistoryIndex, byteOffset + bytes);
     bytes += serializer->extract(this->tracingHistoryCount, byteOffset + bytes);
-    #endif // RDMONT_WITH_TRACING_HISTORY
+    #endif // STORM_WITH_TRACING_HISTORY
     return bytes;
 }
-#endif // RDMONT_WITH_MPI
+#endif // STORM_WITH_MPI
 
-} // namespace RDMont
+} // namespace STORM
 
 // Back-compat alias
 template<typename T, typename Grid>
-using MonteCarloParticle = RDMont::Particle<T, Grid>;
+using MonteCarloParticle = STORM::Particle<T, Grid>;
 
-#endif // RDMONT_PARTICLE_HPP
+#endif // STORM_PARTICLE_HPP

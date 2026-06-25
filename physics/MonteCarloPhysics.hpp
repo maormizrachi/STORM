@@ -1,5 +1,5 @@
-#ifndef RDMONT_MONTE_CARLO_PHYSICS_HPP
-#define RDMONT_MONTE_CARLO_PHYSICS_HPP
+#ifndef STORM_MONTE_CARLO_PHYSICS_HPP
+#define STORM_MONTE_CARLO_PHYSICS_HPP
 
 #include <memory>
 #include <tuple>
@@ -7,7 +7,7 @@
 #include "monte/particle/StepResult.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class MonteCarloPhysics
@@ -86,6 +86,6 @@ inline std::tuple<size_t, dt_t, size_t> MonteCarloPhysics<T, Grid>::getIntersect
     return std::make_tuple(faceIntersect, timeIntersect, nextCellIndex);
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_MONTE_CARLO_PHYSICS_HPP
+#endif // STORM_MONTE_CARLO_PHYSICS_HPP

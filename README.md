@@ -1,10 +1,10 @@
-# RDMont - Monte Carlo Particle Transport Library
+# STORM - Scalable Three-dimensional Optimized RDMA Monte Carlo
 
 ![C++ project](https://img.shields.io/badge/C++-2874a6)
 ![Linux](https://img.shields.io/badge/Linux-0e6655)
 ![macOS](https://img.shields.io/badge/macOS-27ae60)
 
-RDMont provides a templated Monte Carlo particle transport engine used by the [RICH](https://github.com/maormizrachi/RICH) astrophysical simulation code. It can also be used as a standalone library for radiation transport and other Monte Carlo applications.
+STORM provides a templated Monte Carlo particle transport engine used by the [RICH](https://github.com/maormizrachi/RICH) astrophysical simulation code. It can also be used as a standalone library for radiation transport and other Monte Carlo applications.
 
 ## Features
 
@@ -19,8 +19,8 @@ RDMont provides a templated Monte Carlo particle transport engine used by the [R
 ## Directory Structure
 
 ```
-RDMont/
-├── RDMontError.hpp             Error handling
+STORM/
+├── STORMError.hpp             Error handling
 ├── types.hpp                   Type aliases
 ├── PhysicalConstants.hpp       Physical constants (CGS)
 ├── particle/                   Particle, status, step result
@@ -60,8 +60,8 @@ This clones into `deps/`:
 ```bash
 ./install_deps.sh
 mkdir build && cd build
-cmake .. -DRDMONT_DEPS_DIR=../deps \
-         -DRDMONT_BUILD_EXAMPLES=ON
+cmake .. -DSTORM_DEPS_DIR=../deps \
+         -DSTORM_BUILD_EXAMPLES=ON
 make -j$(nproc)
 ```
 

@@ -1,5 +1,5 @@
-#ifndef RDMONT_ERROR_HPP
-#define RDMONT_ERROR_HPP
+#ifndef STORM_ERROR_HPP
+#define STORM_ERROR_HPP
 
 #include <stdexcept>
 #include <string>
@@ -7,12 +7,12 @@
 #include <vector>
 #include <utility>
 
-namespace RDMont {
+namespace STORM {
 
-class RDMontError : public std::runtime_error
+class StormError : public std::runtime_error
 {
 public:
-    explicit RDMontError(const std::string &msg)
+    explicit StormError(const std::string &msg)
         : std::runtime_error(msg), msg_(msg) {}
 
     template<typename T>
@@ -46,7 +46,7 @@ private:
     std::vector<std::pair<std::string, std::string>> entries_;
 };
 
-inline void reportError(const RDMontError &eo, std::ostream &os = std::cout)
+inline void reportError(const StormError &eo, std::ostream &os = std::cout)
 {
     os << eo.getErrorMessage() << std::endl;
     for(const auto &[name, val] : eo.getEntries())
@@ -55,6 +55,6 @@ inline void reportError(const RDMontError &eo, std::ostream &os = std::cout)
     }
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_ERROR_HPP
+#endif // STORM_ERROR_HPP

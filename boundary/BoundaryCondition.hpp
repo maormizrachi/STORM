@@ -1,10 +1,10 @@
-#ifndef RDMONT_BOUNDARY_CONDITION_HPP
-#define RDMONT_BOUNDARY_CONDITION_HPP
+#ifndef STORM_BOUNDARY_CONDITION_HPP
+#define STORM_BOUNDARY_CONDITION_HPP
 
 #include "monte/particle/Particle.hpp"
 #include "monte/particle/ParticleStatus.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class BoundaryCondition
@@ -27,6 +27,6 @@ BoundaryCondition<T, Grid>::BoundaryCondition(const Grid &grid)
     : grid(grid)
 {}
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_BOUNDARY_CONDITION_HPP
+#endif // STORM_BOUNDARY_CONDITION_HPP

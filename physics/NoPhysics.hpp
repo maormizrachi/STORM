@@ -1,9 +1,9 @@
-#ifndef RDMONT_NO_PHYSICS_HPP
-#define RDMONT_NO_PHYSICS_HPP
+#ifndef STORM_NO_PHYSICS_HPP
+#define STORM_NO_PHYSICS_HPP
 
 #include "MonteCarloPhysics.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class NoPhysics : public MonteCarloPhysics<T, Grid>
@@ -69,10 +69,10 @@ void NoPhysics<T, Grid>::postStep(const std::vector<MCParticle> &particles, doub
     (void) fullDt;
 }
 
-} // namespace RDMont
+} // namespace STORM
 
 // Back-compat alias
 template<typename T, typename Grid>
-using NoMonteCarloPhysics = RDMont::NoPhysics<T, Grid>;
+using NoMonteCarloPhysics = STORM::NoPhysics<T, Grid>;
 
-#endif // RDMONT_NO_PHYSICS_HPP
+#endif // STORM_NO_PHYSICS_HPP

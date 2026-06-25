@@ -26,7 +26,7 @@ int main()
     size_t Ncells = grid.GetPointNo();
     std::cout << "Hohlraum grid: " << Ncells << " cells" << std::endl;
 
-    std::vector<RDMont::RadiationCell> cells(Ncells);
+    std::vector<STORM::RadiationCell> cells(Ncells);
     std::vector<int> materialFlags(Ncells, 0);
 
     double T_init = 300.0;         // 300 K initial temperature
@@ -46,14 +46,14 @@ int main()
 
     double T_drive = 1.0 * 1.16045e7;  // 1 keV in Kelvin
 
-    auto opacityModel = std::make_shared<RDMont::examples::HohlraumOpacity>(materialFlags);
-    auto boundary = std::make_shared<RDMont::SideTemperature<Vector3D, Grid>>(grid, T_drive, 5);
-    auto physics = std::make_shared<RDMont::SimpleRadiationPhysics<Vector3D, Grid>>(grid, boundary, cells, opacityModel, 5);
-    auto popControl = std::make_shared<RDMont::CombPopulationControl<Vector3D, Grid>>(grid, 15, 6.0);
+    auto opacityModel = std::make_shared<STORM::examples::HohlraumOpacity>(materialFlags);
+    auto boundary = std::make_shared<STORM::SideTemperature<Vector3D, Grid>>(grid, T_drive, 5);
+    auto physics = std::make_shared<STORM::SimpleRadiationPhysics<Vector3D, Grid>>(grid, boundary, cells, opacityModel, 5);
+    auto popControl = std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, 15, 6.0);
 
-    RDMont::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
+    STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 
-    std::vector<RDMont::Particle<Vector3D, Grid>> particles;
+    std::vector<STORM::Particle<Vector3D, Grid>> particles;
 
     double dt = 1e-11;  // 10 ps
     size_t Nsteps = 100;

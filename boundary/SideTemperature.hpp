@@ -1,5 +1,5 @@
-#ifndef RDMONT_SIDE_TEMPERATURE_HPP
-#define RDMONT_SIDE_TEMPERATURE_HPP
+#ifndef STORM_SIDE_TEMPERATURE_HPP
+#define STORM_SIDE_TEMPERATURE_HPP
 
 #include <boost/math/special_functions/pow.hpp>
 #include <random>
@@ -11,9 +11,9 @@
 #include "monte/utils/PlanckIntegral.hpp"
 #include "monte/utils/LinearInterpolation.hpp"
 #include "monte/utils/RandomOnFace.hpp"
-#include "monte/RDMontError.hpp"
+#include "monte/STORMError.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class SideTemperature : public BoundaryCondition<T, Grid>
@@ -52,7 +52,7 @@ SideTemperature<T, Grid>::SideTemperature(const Grid &grid, double temperature, 
         }
         if(std::abs(this->cumulativePlanckFunction.back() - 1.0) > 1e-8)
         {
-            RDMontError eo("Cumulative Planck function does not sum to 1");
+            STORMError eo("Cumulative Planck function does not sum to 1");
             eo.addEntry("Sum", this->cumulativePlanckFunction.back());
             throw eo;
         }
@@ -141,6 +141,6 @@ std::vector<Particle<T, Grid>> SideTemperature<T, Grid>::generateNewBoundaryPart
     return newParticles;
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_SIDE_TEMPERATURE_HPP
+#endif // STORM_SIDE_TEMPERATURE_HPP

@@ -1,9 +1,9 @@
-#ifndef RDMONT_POPULATION_CONTROL_HPP
-#define RDMONT_POPULATION_CONTROL_HPP
+#ifndef STORM_POPULATION_CONTROL_HPP
+#define STORM_POPULATION_CONTROL_HPP
 
 #include "monte/particle/Particle.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class PopulationControl
@@ -26,6 +26,6 @@ PopulationControl<T, Grid>::PopulationControl(const Grid &grid)
     : grid(grid)
 {}
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_POPULATION_CONTROL_HPP
+#endif // STORM_POPULATION_CONTROL_HPP

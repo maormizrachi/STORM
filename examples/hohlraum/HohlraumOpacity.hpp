@@ -1,11 +1,11 @@
-#ifndef RDMONT_HOHLRAUM_OPACITY_HPP
-#define RDMONT_HOHLRAUM_OPACITY_HPP
+#ifndef STORM_HOHLRAUM_OPACITY_HPP
+#define STORM_HOHLRAUM_OPACITY_HPP
 
 #include <cmath>
 #include <vector>
 #include "monte/radiation/OpacityModel.hpp"
 
-namespace RDMont {
+namespace STORM {
 namespace examples {
 
 class HohlraumOpacity : public OpacityModel
@@ -40,6 +40,6 @@ private:
 };
 
 } // namespace examples
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_HOHLRAUM_OPACITY_HPP
+#endif // STORM_HOHLRAUM_OPACITY_HPP

@@ -1,9 +1,9 @@
-#ifndef RDMONT_PARTICLE_STATUS_HPP
-#define RDMONT_PARTICLE_STATUS_HPP
+#ifndef STORM_PARTICLE_STATUS_HPP
+#define STORM_PARTICLE_STATUS_HPP
 
 #include <string>
 
-namespace RDMont {
+namespace STORM {
 
 enum ParticleStatus
 {
@@ -27,10 +27,10 @@ inline std::string ParticleStatusToString(int status)
     }
 }
 
-} // namespace RDMont
+} // namespace STORM
 
 // Back-compat aliases used throughout existing code
-using MonteCarloParticleStatus = RDMont::ParticleStatus;
-inline std::string MonteCarloParticleStatusToString(int s) { return RDMont::ParticleStatusToString(s); }
+using MonteCarloParticleStatus = STORM::ParticleStatus;
+inline std::string MonteCarloParticleStatusToString(int s) { return STORM::ParticleStatusToString(s); }
 
-#endif // RDMONT_PARTICLE_STATUS_HPP
+#endif // STORM_PARTICLE_STATUS_HPP

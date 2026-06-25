@@ -1,9 +1,9 @@
-#ifndef RDMONT_OPACITY_MODEL_HPP
-#define RDMONT_OPACITY_MODEL_HPP
+#ifndef STORM_OPACITY_MODEL_HPP
+#define STORM_OPACITY_MODEL_HPP
 
 #include <cstddef>
 
-namespace RDMont {
+namespace STORM {
 
 class OpacityModel
 {
@@ -20,6 +20,6 @@ public:
     }
 };
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_OPACITY_MODEL_HPP
+#endif // STORM_OPACITY_MODEL_HPP

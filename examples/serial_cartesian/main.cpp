@@ -17,16 +17,16 @@ int main()
 
     std::cout << "Grid: " << grid.GetPointNo() << " cells, " << grid.GetTotalFacesNumber() << " faces" << std::endl;
 
-    auto boundary = std::make_shared<RDMont::RigidBoundary<Vector3D, Grid>>(grid);
-    auto physics = std::make_shared<RDMont::NoPhysics<Vector3D, Grid>>(grid, boundary);
-    auto popControl = std::make_shared<RDMont::NoPopulationControl<Vector3D, Grid>>(grid);
+    auto boundary = std::make_shared<STORM::RigidBoundary<Vector3D, Grid>>(grid);
+    auto physics = std::make_shared<STORM::NoPhysics<Vector3D, Grid>>(grid, boundary);
+    auto popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
 
-    RDMont::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
+    STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 
-    std::vector<RDMont::Particle<Vector3D, Grid>> particles;
+    std::vector<STORM::Particle<Vector3D, Grid>> particles;
     for(size_t i = 0; i < 100; i++)
     {
-        RDMont::Particle<Vector3D, Grid> p;
+        STORM::Particle<Vector3D, Grid> p;
         p.location = Vector3D(0.5, 0.5, 0.5);
         double theta = 2 * M_PI * i / 100.0;
         double phi = M_PI * (i % 50) / 50.0;

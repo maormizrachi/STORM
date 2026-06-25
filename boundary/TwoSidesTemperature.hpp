@@ -1,5 +1,5 @@
-#ifndef RDMONT_TWO_SIDES_TEMPERATURE_HPP
-#define RDMONT_TWO_SIDES_TEMPERATURE_HPP
+#ifndef STORM_TWO_SIDES_TEMPERATURE_HPP
+#define STORM_TWO_SIDES_TEMPERATURE_HPP
 
 #include <boost/math/special_functions/pow.hpp>
 #include <random>
@@ -10,9 +10,9 @@
 #include "monte/utils/PlanckIntegral.hpp"
 #include "monte/utils/LinearInterpolation.hpp"
 #include "monte/utils/RandomOnFace.hpp"
-#include "monte/RDMontError.hpp"
+#include "monte/STORMError.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class TwoSidesTemperature : public BoundaryCondition<T, Grid>
@@ -60,13 +60,13 @@ TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, double tempe
         }
         if(std::abs(this->cumulativePlanckFunctionLeft.back() - 1.0) > 1e-8)
         {
-            RDMontError eo("Cumulative Planck function left does not sum to 1");
+            STORMError eo("Cumulative Planck function left does not sum to 1");
             eo.addEntry("Sum", this->cumulativePlanckFunctionLeft.back());
             throw eo;
         }
         if(std::abs(this->cumulativePlanckFunctionRight.back() - 1.0) > 1e-8)
         {
-            RDMontError eo("Cumulative Planck function right does not sum to 1");
+            STORMError eo("Cumulative Planck function right does not sum to 1");
             eo.addEntry("Sum", this->cumulativePlanckFunctionRight.back());
             throw eo;
         }
@@ -109,7 +109,7 @@ ParticleStatus TwoSidesTemperature<T, Grid>::apply(Particle<T, Grid> &particle)
         return ParticleStatus::REFLECT;
     }
 
-    RDMontError eo("Particle is not on any boundary");
+    STORMError eo("Particle is not on any boundary");
     eo.addEntry("Particle", particle);
     throw eo;
 }
@@ -190,6 +190,6 @@ std::vector<Particle<T, Grid>> TwoSidesTemperature<T, Grid>::generateNewBoundary
     return newParticles;
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_TWO_SIDES_TEMPERATURE_HPP
+#endif // STORM_TWO_SIDES_TEMPERATURE_HPP

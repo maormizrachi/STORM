@@ -495,15 +495,15 @@ void MonteCarloManagerLegacy<T, Grid>::AddParticles(const std::vector<MCParticle
         particle->rank = this->rank_world;
         particle->id = firstID + i;
 
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
             particle->checkedHere = true;
             particle->nextRank = std::numeric_limits<rank_t>::max();
             particle->removedFromRank = false;
             particle->sentByRank = std::numeric_limits<rank_t>::max();
             particle->lastSeen = 0;
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
 
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
         if(not this->grid.IsPointInCell(particle->location, particle->cellIndex))
         {
             const T &declaredCell = this->grid.GetMeshPoint(particle->cellIndex);
@@ -520,7 +520,7 @@ void MonteCarloManagerLegacy<T, Grid>::AddParticles(const std::vector<MCParticle
             eo.addEntry("Real Cell - Distance", abs(containingCell - particle->location));
             throw eo;
         }
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
     }
 
     this->localDecrementAmount -= static_cast<typename AmountManager::counter_t>(particlesNum);
@@ -605,7 +605,7 @@ void MonteCarloManagerLegacy<T, Grid>::PutSelfParticles(std::vector<MCParticle> 
 {
     using index_t = typename RankHandler_t::index_t;
 
-    #ifdef RDMONT_DEBUG
+    #ifdef STORM_DEBUG
     boost::container::flat_set<std::pair<rank_t, size_t>> particlesSet;
     for(const MCParticle &particle : particles)
     {
@@ -624,7 +624,7 @@ void MonteCarloManagerLegacy<T, Grid>::PutSelfParticles(std::vector<MCParticle> 
         }
         particlesSet.insert(particleSetKey);
     }
-    #endif // RDMONT_DEBUG
+    #endif // STORM_DEBUG
 
     size_t particlesNum = particles.size();
     if(particlesNum == 0)
@@ -676,9 +676,9 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
     this->transfersCounter++;
 
     boost::container::flat_map<rank_t, std::vector<MCParticle>> rankToParticles;
-    #ifdef RDMONT_DEBUG
+    #ifdef STORM_DEBUG
         boost::container::flat_map<size_t, rank_t> sentAndToWhom;
-    #endif // RDMONT_DEBUG
+    #endif // STORM_DEBUG
     RankHandler_t *currRankHandler = this->rankHandlers[fromRank];
 
     for(size_t i = 0; i < num; i++)
@@ -693,7 +693,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
             rankToParticles[toRank] = std::vector<MCParticle>();
         }
 
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
             if(sentAndToWhom.find(particleIdx) == sentAndToWhom.end())
             {
                 sentAndToWhom[particleIdx] = toRank;
@@ -709,7 +709,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
                 eo.addEntry("Now Sending To", toRank);
                 throw eo;
             }
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
         MCParticle &particle = currRankHandler->particles[particleIdx];
         particle.sent = false; // reset
 
@@ -723,7 +723,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
             eo.addEntry("To Rank", toRank);
             throw eo;
         }
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
         if(std::find_if(rankToParticles[toRank].begin(), rankToParticles[toRank].end(),
                         [&particle](const MCParticle &p) { return p == particle; }) != rankToParticles[toRank].end())
         {
@@ -749,11 +749,11 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
             eo.addEntry("To Rank", toRank);
             throw eo;
         }
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
 
         rankToParticles[toRank].push_back(particle);
 
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
         if(toRank != particle.nextRank)
         {
             UniversalError eo("Particle will not be sent to the expected rank #1");
@@ -763,7 +763,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
             eo.addEntry("Next Rank", particle.nextRank);
             throw eo;
         }
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
     }
 
     for(const auto &[toRank, particles] : rankToParticles)
@@ -771,7 +771,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
         assert(toRank != this->rank_world); // can't send to self
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         assert(remoteHandler->peer_rank_world == toRank);
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
         {
             UniversalError eo("Remote handler has wrong peer rank world");
@@ -791,7 +791,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
                 throw eo;
             }
         }
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
         bool transferred = remoteHandler->TransferParticles(particles);
         if(not transferred)
         {
@@ -816,9 +816,9 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
     this->transfersCounter++;
 
     boost::container::flat_map<rank_t, std::vector<MCParticle>> rankToParticles;
-    #ifdef RDMONT_DEBUG
+    #ifdef STORM_DEBUG
         boost::container::flat_map<std::pair<rank_t, size_t>, rank_t> sentAndToWhom;
-    #endif // RDMONT_DEBUG
+    #endif // STORM_DEBUG
 
     assert(rankBuffers.size() == indicesInToHandle.size());
 
@@ -844,7 +844,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
                 rankToParticles[toRank] = std::vector<MCParticle>();
             }
 
-            #ifdef RDMONT_DEBUG
+            #ifdef STORM_DEBUG
                 std::pair<rank_t, size_t> particleKey = {fromRank, particleIdx};
                 if(sentAndToWhom.find(particleKey) == sentAndToWhom.end())
                 {
@@ -861,7 +861,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
                     eo.addEntry("Now Sending To", toRank);
                     throw eo;
                 }
-            #endif // RDMONT_DEBUG
+            #endif // STORM_DEBUG
             MCParticle &particle = currRankHandler->particles[particleIdx];
             particle.sent = false; // reset
 
@@ -875,7 +875,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
                 eo.addEntry("To Rank", toRank);
                 throw eo;
             }
-            #ifdef RDMONT_DEBUG
+            #ifdef STORM_DEBUG
             if(std::find_if(rankToParticles[toRank].begin(), rankToParticles[toRank].end(),
                             [&particle](const MCParticle &p) { return p == particle; }) != rankToParticles[toRank].end())
             {
@@ -901,11 +901,11 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
                 eo.addEntry("To Rank", toRank);
                 throw eo;
             }
-            #endif // RDMONT_DEBUG
+            #endif // STORM_DEBUG
 
             rankToParticles[toRank].push_back(particle);
 
-            #ifdef RDMONT_DEBUG
+            #ifdef STORM_DEBUG
             if(toRank != particle.nextRank)
             {
                 UniversalError eo("Particle will not be sent to the expected rank #1");
@@ -915,7 +915,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
                 eo.addEntry("Next Rank", particle.nextRank);
                 throw eo;
             }
-            #endif // RDMONT_DEBUG
+            #endif // STORM_DEBUG
         }
     }
 
@@ -924,7 +924,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
         assert(toRank != this->rank_world); // can't send to self
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         assert(remoteHandler->peer_rank_world == toRank);
-        #ifdef RDMONT_DEBUG
+        #ifdef STORM_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
         {
             UniversalError eo("Remote handler has wrong peer rank world");
@@ -944,7 +944,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
                 throw eo;
             }
         }
-        #endif // RDMONT_DEBUG
+        #endif // STORM_DEBUG
         bool transferred = remoteHandler->TransferParticles(particles);
         if(not transferred)
         {
@@ -1099,7 +1099,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
 
             try
             {
-                #ifdef RDMONT_DEBUG
+                #ifdef STORM_DEBUG
                 if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
                 {
                     UniversalError eo("Particle was already handled in this iteration");
@@ -1116,7 +1116,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 particle.lastSeenRankBuf = _rank;
                 particle.lastSeenRank = this->rank_world;
                 particle.lastSeenIndex = i;
-                #endif // RDMONT_DEBUG
+                #endif // STORM_DEBUG
 
                 isEmpty = false;
                 while(true)
@@ -1141,7 +1141,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
 
                     // std::cout << "Rank " << this->rank_world << " handles particle " << particle.id << " of rank " << particle.rank << ", step " << particle.steps << std::endl;
 
-                    #ifdef RDMONT_DEBUG
+                    #ifdef STORM_DEBUG
                     if(particle.cellIndex >= this->Ncells)
                     {
                         UniversalError eo("Particle has invalid cell index (ghost)");
@@ -1242,7 +1242,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
 
                     prevLoc = particle.location;
                     particle.previousLocation = particle.location;
-                    #endif // RDMONT_DEBUG
+                    #endif // STORM_DEBUG
 
                     if(particle.sent)
                     {
@@ -1265,9 +1265,9 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                         this->tracker.ReportParticle(trackedParticle);
                     }
 
-                    #ifdef RDMONT_WITH_TRACING_HISTORY
+                    #ifdef STORM_WITH_TRACING_HISTORY
                         particle.recordHistory(particle.cellIndex, static_cast<int>(this->rank_world), static_cast<int>(functionality.change));
-                    #endif // RDMONT_WITH_TRACING_HISTORY
+                    #endif // STORM_WITH_TRACING_HISTORY
 
                     // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
                     if(debug)
@@ -1285,12 +1285,12 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                         if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                         {
                             // local neighbor
-                            #ifdef RDMONT_DEBUG
+                            #ifdef STORM_DEBUG
                             size_t previousCell = particle.cellIndex;
-                            #endif // RDMONT_DEBUG
+                            #endif // STORM_DEBUG
                             particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                             particle.cellIndex = nextCellIndex;
-                            #ifdef RDMONT_DEBUG
+                            #ifdef STORM_DEBUG
                             if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
                             {
                                 const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
@@ -1318,7 +1318,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                 }
                                 throw eo;
                             }
-                            #endif // RDMONT_DEBUG
+                            #endif // STORM_DEBUG
                         }
                         else
                         {
@@ -1327,10 +1327,10 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                             if(it == ranks_ghost_map.end())
                             {
                                 // leaving domain
-                                #ifdef RDMONT_WITH_TRACING_HISTORY
+                                #ifdef STORM_WITH_TRACING_HISTORY
                                     T preReflectLoc = particle.location;
                                     T preReflectVel = particle.velocity;
-                                #endif // RDMONT_WITH_TRACING_HISTORY
+                                #endif // STORM_WITH_TRACING_HISTORY
                                 MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
                                 if(debug)
                                 {
@@ -1338,9 +1338,9 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                 }
                                 if(status == MonteCarloParticleStatus::REFLECT)
                                 {
-                                    #ifdef RDMONT_WITH_TRACING_HISTORY
+                                    #ifdef STORM_WITH_TRACING_HISTORY
                                         particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
-                                    #endif // RDMONT_WITH_TRACING_HISTORY
+                                    #endif // STORM_WITH_TRACING_HISTORY
                                 }
                                 else if(status == MonteCarloParticleStatus::REMOVE)
                                 {
@@ -1361,7 +1361,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
 
                             particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                             auto [otherRank, neighborIndexInRank] = it->second;
-                            #ifdef RDMONT_DEBUG
+                            #ifdef STORM_DEBUG
                             particle.checkedHere = false; // reset checked here flag
                             if(particle.nextRank != std::numeric_limits<rank_t>::max())
                             {
@@ -1399,11 +1399,11 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                 eo.addEntry("Index In Remote Rank", neighborIndexInRank);
                                 throw eo;
                             }
-                            #endif // RDMONT_DEBUG
+                            #endif // STORM_DEBUG
                             particle.sent = true;
                             particle.cellIndex = neighborIndexInRank;
 
-                            #ifdef RDMONT_DEBUG
+                            #ifdef STORM_DEBUG
                             if(not TransferParticlesVecOfRank.empty())
                             {
                                 size_t lastTHIndex = TransferParticlesVecOfRank.back();
@@ -1423,7 +1423,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                     throw eo;
                                 }
                             }
-                            #endif // RDMONT_DEBUG
+                            #endif // STORM_DEBUG
 
                             transferParticle(index, i, otherRank);
                             break;
@@ -2729,17 +2729,17 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
         {
             size_t particleIndex = handler->th[i];
             MCParticle &p = handler->particles[particleIndex];
-            #ifdef RDMONT_DEBUG
+            #ifdef STORM_DEBUG
             p.checkedHere = true;
             p.nextRank = std::numeric_limits<rank_t>::max();
             p.removedFromRank = false;
             p.sentByRank = std::numeric_limits<rank_t>::max();
             p.lastSeen = 0;
-            #endif // RDMONT_DEBUG
-            #ifdef RDMONT_WITH_TRACING_HISTORY
+            #endif // STORM_DEBUG
+            #ifdef STORM_WITH_TRACING_HISTORY
             p.tracingHistoryIndex = 0;
             p.tracingHistoryCount = 0;
-            #endif // RDMONT_WITH_TRACING_HISTORY
+            #endif // STORM_WITH_TRACING_HISTORY
             p.timeLeft = fullDt;
             p.initialWeight = p.weight;
             p.steps = 0;

@@ -1,5 +1,5 @@
-#ifndef RDMONT_SIMPLE_RADIATION_PHYSICS_HPP
-#define RDMONT_SIMPLE_RADIATION_PHYSICS_HPP
+#ifndef STORM_SIMPLE_RADIATION_PHYSICS_HPP
+#define STORM_SIMPLE_RADIATION_PHYSICS_HPP
 
 #include <cmath>
 #include <random>
@@ -12,7 +12,7 @@
 #include "monte/radiation/OpacityModel.hpp"
 #include "monte/PhysicalConstants.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class SimpleRadiationPhysics : public MonteCarloPhysics<T, Grid>
@@ -260,6 +260,6 @@ void SimpleRadiationPhysics<T, Grid>::postStep(const std::vector<MCParticle> &pa
     }
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_SIMPLE_RADIATION_PHYSICS_HPP
+#endif // STORM_SIMPLE_RADIATION_PHYSICS_HPP

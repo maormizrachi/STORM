@@ -1,7 +1,7 @@
-#ifndef RDMONT_RADIATION_CELL_HPP
-#define RDMONT_RADIATION_CELL_HPP
+#ifndef STORM_RADIATION_CELL_HPP
+#define STORM_RADIATION_CELL_HPP
 
-namespace RDMont {
+namespace STORM {
 
 struct RadiationCell
 {
@@ -11,6 +11,6 @@ struct RadiationCell
     double Erad = 0;              // radiation energy density [erg/cm^3] (output)
 };
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_RADIATION_CELL_HPP
+#endif // STORM_RADIATION_CELL_HPP

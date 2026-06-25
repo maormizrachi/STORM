@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install_deps.sh — Clone RDMont's external dependencies for standalone builds.
+# install_deps.sh — Clone STORM's external dependencies for standalone builds.
 #
-# When RDMont is used inside RICH, these packages are already present as
+# When STORM is used inside RICH, these packages are already present as
 # submodules.  Standalone users should run this script once before building.
 #
 # Usage:
@@ -29,7 +29,7 @@ clone_if_missing() {
     fi
 }
 
-echo "=== Installing RDMont dependencies into $DEST ==="
+echo "=== Installing STORM dependencies into $DEST ==="
 echo ""
 
 # MPI utilities (serialization, exchange, collectives)
@@ -51,4 +51,4 @@ echo ""
 echo "=== Done ==="
 echo ""
 echo "Pass the following to CMake:"
-echo "  -DRDMONT_DEPS_DIR=$(cd "$DEST" && pwd)"
+echo "  -DSTORM_DEPS_DIR=$(cd "$DEST" && pwd)"

@@ -1,17 +1,17 @@
-#ifndef RDMONT_COMB_POPULATION_CONTROL_HPP
-#define RDMONT_COMB_POPULATION_CONTROL_HPP
+#ifndef STORM_COMB_POPULATION_CONTROL_HPP
+#define STORM_COMB_POPULATION_CONTROL_HPP
 
 #include <random>
 #include <algorithm>
 #include <cmath>
 #include <cassert>
 #include <boost/random/mersenne_twister.hpp>
-#ifdef RDMONT_WITH_MPI
+#ifdef STORM_WITH_MPI
     #include <mpi.h>
 #endif
 #include "PopulationControl.hpp"
 
-namespace RDMont {
+namespace STORM {
 
 template<typename T, typename Grid>
 class CombPopulationControl : public PopulationControl<T, Grid>
@@ -37,7 +37,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
 {
     using MCParticle = Particle<T, Grid>;
 
-    #ifdef RDMONT_WITH_MPI
+    #ifdef STORM_WITH_MPI
         rank_t rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         static std::mt19937_64 gen((873 * rank) + particles.size());
@@ -49,7 +49,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
 
     size_t Ncells = this->grid.GetPointNo();
     size_t Ntotal = Ncells;
-    #ifdef RDMONT_WITH_MPI
+    #ifdef STORM_WITH_MPI
         MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     #endif
     std::vector<double> weights(Ncells, 0);
@@ -64,7 +64,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
         particlesInCells[particle.cellIndex].push_back(&particle);
     }
 
-    #ifdef RDMONT_WITH_MPI
+    #ifdef STORM_WITH_MPI
         MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
@@ -87,7 +87,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
                     double weight_split = particle->weight / Nsplit;
                     particleCpy.weight = weight_split;
                     particleCpy.id = std::numeric_limits<size_t>::max();
-                    #ifdef RDMONT_WITH_MPI
+                    #ifdef STORM_WITH_MPI
                         particleCpy.rank = std::numeric_limits<rank_t>::max();
                     #endif
                     particleCpy.steps = 0;
@@ -104,7 +104,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
             continue;
         }
 
-        #ifdef RDMONT_WITH_MPI
+        #ifdef STORM_WITH_MPI
             std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){ return (p1->rank) < (p2->rank) or ((p1->rank) == (p2->rank) and p1->id < p2->id); });
         #else
             std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){ return p1->id < p2->id; });
@@ -124,7 +124,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
                 ++comb_index;
                 result.push_back(*particle);
                 result.back().id = std::numeric_limits<size_t>::max();
-                #ifdef RDMONT_WITH_MPI
+                #ifdef STORM_WITH_MPI
                     result.back().rank = std::numeric_limits<rank_t>::max();
                 #endif
                 result.back().cellIndex = i;
@@ -154,6 +154,6 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
     return result;
 }
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_COMB_POPULATION_CONTROL_HPP
+#endif // STORM_COMB_POPULATION_CONTROL_HPP

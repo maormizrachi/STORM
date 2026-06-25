@@ -1,12 +1,12 @@
-#ifndef RDMONT_MONTE_CARLO_CONFIG_HPP
-#define RDMONT_MONTE_CARLO_CONFIG_HPP
+#ifndef STORM_MONTE_CARLO_CONFIG_HPP
+#define STORM_MONTE_CARLO_CONFIG_HPP
 
 #include <cstddef>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
 
-namespace RDMont {
+namespace STORM {
 
 constexpr double MONTECARLO_EPSILON = 1e-8;
 
@@ -100,6 +100,6 @@ public:
     #endif // TIMING
 };
 
-} // namespace RDMont
+} // namespace STORM
 
-#endif // RDMONT_MONTE_CARLO_CONFIG_HPP
+#endif // STORM_MONTE_CARLO_CONFIG_HPP
