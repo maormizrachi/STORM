@@ -3,7 +3,7 @@
 
 #include <cmath>
 #include <vector>
-#include "monte/radiation/OpacityModel.hpp"
+#include "radiation/OpacityModel.hpp"
 
 namespace STORM {
 namespace examples {

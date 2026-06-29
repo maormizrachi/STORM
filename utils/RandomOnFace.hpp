@@ -5,8 +5,11 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include "../elementary/PointOps.hpp"
 
 namespace STORM {
+
+using namespace STORM::fallback;
 
 template<typename T, typename Grid>
 T RandomPointOnFace(const Grid &grid, size_t faceIndex)

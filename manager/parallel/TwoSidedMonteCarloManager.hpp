@@ -1,21 +1,29 @@
 #ifndef TWO_SIDED_MONTE_CARLO_MANAGER_HPP
 #define TWO_SIDED_MONTE_CARLO_MANAGER_HPP
 
+#ifdef STORM_WITH_MPI
+
 #include <cassert>
+#include <cmath>
+#include <iostream>
 #include <memory>
-#include <random>
+#include <chrono>
 #include <boost/container/flat_set.hpp>
 #include <mpi.h>
-#include "mpi/mpi_commands.hpp"
-#include "mpi/mpi_commands.hpp"
-#include "monte/utils/GhostMap.hpp"
-#include "monte/MonteCarloParticle.hpp"
-#include "monte/physics/MonteCarloPhysics.hpp"
-#include "monte/population/PopulationControl.hpp"
-#include "monte/boundary/BoundaryCondition.hpp"
-#include "utils/amountManager/AmountManager.hpp"
-#include "utils/buffersManager/BuffersManager.hpp"
-#include "monte/manager/MonteCarloConfig.hpp"
+#include <mpi_utils/AmountManager.hpp>
+#include <mpi_utils/BuffersManager.hpp>
+#include <mpi_utils/mpi_commands.hpp>
+#include "../../utils/GhostMap.hpp"
+#include "../../particle/Particle.hpp"
+#include "../../physics/MonteCarloPhysics.hpp"
+#include "../../population/PopulationControl.hpp"
+#include "../../boundary/BoundaryCondition.hpp"
+#include "../MonteCarloConfig.hpp"
+#include "../../elementary/PointOps.hpp"
+
+namespace STORM {
+
+using namespace STORM::fallback;
 
 #define PARTICLES_TAG 8817
 #define RECV_BUFFER_MAX_SIZE 1000
@@ -47,6 +55,8 @@ public:
 
     inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount_;}
 
+    inline size_t GetPreStepParticleCount(void) const {return this->preStepParticleCount_;}
+
     inline double GetPureComputeTime(void) const {return 0;}
 
     inline const std::vector<size_t> &GetBeginningParticleCount(void) const {return this->beginningParticleCount_;}
@@ -65,9 +75,9 @@ public:
 
         void Reset(void);
 
-        #ifdef RICH_MPI
+        #ifdef STORM_WITH_MPI
             std::vector<MCParticle> GetLocalTrackParticleRoute(size_t id) const;
-        #endif // RICH_MPI
+        #endif // STORM_WITH_MPI
 
         std::vector<MCParticle> GetTrackParticleRoute(size_t id) const;
 
@@ -113,6 +123,7 @@ private:
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
     size_t initialParticleCount_ = 0;
+    size_t preStepParticleCount_ = 0;
     std::vector<size_t> beginningParticleCount_;
     size_t handlerMemoryBytes_ = 0;
 
@@ -194,7 +205,7 @@ void TwoSidedMonteCarloManager<T, Grid>::PutSelfParticles(const MCParticle *newP
         std::pair<rank_t, size_t> particleSetKey = {particle.rank, particle.id};
         if(particlesSet.find(particleSetKey) != particlesSet.end())
         {
-            UniversalError eo("Particle with the same ID is being added to the same rank twice");
+            STORMError eo("Particle with the same ID is being added to the same rank twice");
             eo.addEntry("Particle", particle);
             eo.addEntry("Rank", this->rank_world);
             eo.addEntry("ID", particle.id);
@@ -275,7 +286,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
         #ifdef STORM_DEBUG
         if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
         {
-            UniversalError eo("Particle was already handled in this iteration");
+            STORMError eo("Particle was already handled in this iteration");
             auto it = std::find(this->particles.cbegin() + i, this->particles.cend(), particle);
             if(it != this->particles.cend())
             {
@@ -322,7 +333,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
             #ifdef STORM_DEBUG
             if(particle.cellIndex >= this->Ncells)
             {
-                UniversalError eo("Particle has invalid cell index (ghost)");
+                STORMError eo("Particle has invalid cell index (ghost)");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Cell Index", particle.cellIndex);
                 eo.addEntry("Rank", this->rank_world);
@@ -331,7 +342,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
             if(particle.removedFromRank)
             {
                 continue; 
-                UniversalError eo("Particle was removed from rank, but still in the list");
+                STORMError eo("Particle was removed from rank, but still in the list");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Rank", this->rank_world);
                 throw eo;
@@ -341,7 +352,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 if(particle.nextRank != this->rank_world)
                 {
                     // particle is in the right cell, but not in the right place
-                    UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                    STORMError eo("Particle Arrived to a Wrong Rank After Transfer");
                     eo.addEntry("Particle", particle);
                     eo.addEntry("Origin", particle.sentByRank);
                     eo.addEntry("Particle Previous Location", particle.previousLocation);
@@ -369,7 +380,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     if(not this->grid.IsPointInCell(particle.location, containingIdx))
                     {
                         // particle is in the right cell, but not in the right place
-                        UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                        STORMError eo("Particle Arrived to a Wrong Rank After Transfer");
                         eo.addEntry("My Rank", this->rank_world);
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
@@ -388,7 +399,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 }
                 if(abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
                 {
-                    UniversalError eo("Particle is in Wrong Location After Transfer");
+                    STORMError eo("Particle is in Wrong Location After Transfer");
                     eo.addEntry("My Rank", this->rank_world);
                     eo.addEntry("Particle", particle);
                     eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
@@ -444,7 +455,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 assert(nextCellIndex != particle.cellIndex);
                 assert(particle.timeLeft >= 0);
 
-                if(BOOST_LIKELY(nextCellIndex < this->Ncells))
+                if(__builtin_expect(nextCellIndex < this->Ncells, 1))
                 {
                     // local neighbor
                     size_t previousCell = particle.cellIndex;
@@ -456,7 +467,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
                         size_t containingIdx = this->grid.GetContainingCell(particle.location);
                         const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                        UniversalError eo("Particle is in Wrong Location");
+                        STORMError eo("Particle is in Wrong Location");
                         eo.addEntry("rank", this->rank_world);
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Previous Cell Index", previousCell);
@@ -503,7 +514,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         }
                         else
                         {
-                            UniversalError eo("Unknown boundary condition for particle");
+                            STORMError eo("Unknown boundary condition for particle");
                             eo.addEntry("Particle", particle);
                             eo.addEntry("Status", status);
                             throw eo;
@@ -517,7 +528,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     particle.checkedHere = false; // reset checked here flag
                     if(particle.nextRank != std::numeric_limits<rank_t>::max())
                     {
-                        UniversalError eo("Particle was already sent, and not sent again");
+                        STORMError eo("Particle was already sent, and not sent again");
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Already Transferred To Rank", particle.nextRank);
                         eo.addEntry("Being Transferred To Rank", otherRank);
@@ -527,7 +538,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
                     if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
                     {
-                        UniversalError eo("Particle is going to be transffered to a non-neighboring rank");
+                        STORMError eo("Particle is going to be transffered to a non-neighboring rank");
                         eo.addEntry("Particle", particle);
                         eo.addEntry("My Rank", this->rank_world);
                         eo.addEntry("Next Rank", otherRank);
@@ -543,7 +554,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
 
                     if(particle.nextRank == this->rank_world)
                     {
-                        UniversalError eo("Particle is going to be sent to the same rank");
+                        STORMError eo("Particle is going to be sent to the same rank");
                         eo.addEntry("Particle", particle);
                         eo.addEntry("My Rank", this->rank_world);
                         eo.addEntry("Next Rank", otherRank);
@@ -625,7 +636,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
             p.lastSeen = 0;
             #endif // STORM_DEBUG
             p.timeLeft = fullDt;
-            p.initialWeight = p.weight;
+            p.initialWeight = std::abs(p.weight);
             p.steps = 0;
         }
 
@@ -646,7 +657,22 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
 
         size_t preStepParticlesNum = newParticles1.size();
+        this->preStepParticleCount_ = preStepParticlesNum;
         this->startParticleCount_ = initialParticlesNum + preStepParticlesNum;
+        unsigned long long globalInitialParticles = static_cast<unsigned long long>(this->initialParticleCount_);
+        unsigned long long globalPreStepParticles = static_cast<unsigned long long>(this->preStepParticleCount_);
+        unsigned long long globalStartParticles = static_cast<unsigned long long>(this->startParticleCount_);
+        MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalInitialParticles, &globalInitialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalPreStepParticles, &globalPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalStartParticles, &globalStartParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        if(this->rank_world == 0)
+        {
+            std::cout << "MC particle counts before transport:"
+                      << " initial=" << globalInitialParticles
+                      << " prestep_generated=" << globalPreStepParticles
+                      << " active_after_prestep=" << globalStartParticles
+                      << std::endl;
+        }
 
         this->beginningParticleCount_.assign(this->Ncells, 0);
         for(const auto &p : this->particles) this->beginningParticleCount_[p.cellIndex]++;
@@ -796,11 +822,15 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         // MPI_Barrier(this->comm_world);
         return populationControlParticles;
     } 
-    catch(const UniversalError &eo)
+    catch(const STORMError &eo)
     {
         reportError(eo);
         throw;
     }
 }
+
+} // namespace STORM
+
+#endif // STORM_WITH_MPI
 
 #endif // TWO_SIDED_MONTE_CARLO_MANAGER_HPP

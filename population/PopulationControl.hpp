@@ -1,7 +1,7 @@
 #ifndef STORM_POPULATION_CONTROL_HPP
 #define STORM_POPULATION_CONTROL_HPP
 
-#include "monte/particle/Particle.hpp"
+#include "../particle/Particle.hpp"
 
 namespace STORM {
 

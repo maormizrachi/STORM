@@ -2,7 +2,7 @@
 #define STORM_STEP_RESULT_HPP
 
 #include <limits>
-#include "monte/particle/ParticleStatus.hpp"
+#include "ParticleStatus.hpp"
 
 namespace STORM {
 

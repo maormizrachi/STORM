@@ -24,11 +24,7 @@ if(NOT DEFINED STORM_DEPS_DIR)
 endif()
 if(IS_DIRECTORY "${STORM_DEPS_DIR}")
   get_filename_component(_deps "${STORM_DEPS_DIR}" ABSOLUTE)
-  include_directories("${_deps}/mpi_utils")
-  include_directories("${_deps}/spatial_ds")
-  include_directories("${_deps}/MeshDecomposer3D")
-  include_directories("${_deps}/MadVoro")
-  include_directories("${_deps}/MadCart")
+  include_directories("${_deps}")
 endif()
 
 # ---------- Required dependencies ----------
@@ -62,7 +58,7 @@ else()
 endif()
 
 target_include_directories(storm INTERFACE
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(storm INTERFACE Boost::boost)
@@ -71,7 +67,7 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 if(STORM_WITH_MPI)
-  target_compile_definitions(storm PUBLIC STORM_WITH_MPI RICH_MPI)
+  target_compile_definitions(storm PUBLIC STORM_WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
 endif()
 

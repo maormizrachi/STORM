@@ -33,19 +33,22 @@ echo "=== Installing STORM dependencies into $DEST ==="
 echo ""
 
 # MPI utilities (serialization, exchange, collectives)
-clone_if_missing "mpi_utils" "https://github.com/maormizrachi/mpi_utils.git"
+clone_if_missing "mpi_utils" "git@github.com:maormizrachi/mpi_utils.git"
 
 # Spatial data structures (OctTree, KDTree, RangeTree, BoundingBox, Sphere)
-clone_if_missing "spatial_ds" "https://github.com/maormizrachi/spatial_ds.git"
+clone_if_missing "spatial_ds" "git@github.com:maormizrachi/spatial_ds.git"
 
 # Mesh decomposition (Hilbert ordering, load balancing, points manager)
-clone_if_missing "MeshDecomposer3D" "https://github.com/maormizrachi/MeshDecomposer3D.git"
+clone_if_missing "MeshDecomposer3D" "git@github.com:maormizrachi/MeshDecomposer3D.git"
 
 # MadVoro (3D Voronoi tessellation)
-clone_if_missing "MadVoro" "https://github.com/maormizrachi/MadVoro.git" "cmake"
+clone_if_missing "MadVoro" "git@github.com:maormizrachi/MadVoro.git"
 
 # MadCart (3D Cartesian mesh)
-clone_if_missing "MadCart" "https://github.com/maormizrachi/MadCart.git"
+clone_if_missing "MadCart" "git@github.com:maormizrachi/MadCart.git"
+
+# EasyRMA (Remote Memory Agent — RMA-based one-sided MPI communication, needed for MPI builds)
+clone_if_missing "rma" "git@github.com:maormizrachi/EasyRMA.git"
 
 echo ""
 echo "=== Done ==="

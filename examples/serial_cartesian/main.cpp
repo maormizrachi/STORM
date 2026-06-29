@@ -1,12 +1,12 @@
 #include <iostream>
 #include <memory>
 #include "examples/Vector3D.hpp"
-#include "CartesianMesh3D.hpp"
-#include "monte/particle/Particle.hpp"
-#include "monte/physics/NoPhysics.hpp"
-#include "monte/boundary/RigidBoundary.hpp"
-#include "monte/population/NoPopulationControl.hpp"
-#include "monte/manager/MonteCarloManagerSerial.hpp"
+#include "MadCart/CartesianMesh3D.hpp"
+#include "particle/Particle.hpp"
+#include "physics/NoPhysics.hpp"
+#include "boundary/RigidBoundary.hpp"
+#include "population/NoPopulationControl.hpp"
+#include "manager/MonteCarloManagerSerial.hpp"
 
 int main()
 {
@@ -27,7 +27,7 @@ int main()
     for(size_t i = 0; i < 100; i++)
     {
         STORM::Particle<Vector3D, Grid> p;
-        p.location = Vector3D(0.5, 0.5, 0.5);
+        p.location = Vector3D(0.55, 0.55, 0.55);
         double theta = 2 * M_PI * i / 100.0;
         double phi = M_PI * (i % 50) / 50.0;
         p.velocity = Vector3D(std::sin(phi) * std::cos(theta), std::sin(phi) * std::sin(theta), std::cos(phi));

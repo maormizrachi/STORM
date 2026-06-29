@@ -7,15 +7,18 @@
 #ifdef STORM_WITH_MPI
     #include <mpi.h>
     #include <functional>
-    #include "mpi_utils/mpi_commands.hpp"
-    #include "mpi_utils/Serializer.hpp"
+    #include <mpi_utils/mpi_commands.hpp>
+    #include <mpi_utils/serialize/Serializer.hpp>
 #endif // STORM_WITH_MPI
-#include "monte/StormError.hpp"
-#include "monte/particle/ParticleStatus.hpp"
+#include "../StormError.hpp"
+#include "ParticleStatus.hpp"
+#include "../elementary/PointOps.hpp"
 
 #define EPSILON 1e-12
 
 namespace STORM {
+
+using namespace STORM::fallback;
 
 using dt_t = double;
 using distance_t = double;
@@ -64,13 +67,20 @@ struct Particle
     #endif // STORM_WITH_MPI
     size_t id = std::numeric_limits<size_t>::max();
     size_t cellID = std::numeric_limits<size_t>::max();
-    T location = T(std::numeric_limits<typename T::value_type>::max());
-    T velocity = T(std::numeric_limits<typename T::value_type>::max());
+    size_t sourceCellID = std::numeric_limits<size_t>::max();
+    T location = T(std::numeric_limits<typename T::coord_type>::max());
+    T velocity = T(std::numeric_limits<typename T::coord_type>::max());
     size_t cellIndex = std::numeric_limits<size_t>::max();
     dt_t timeLeft = std::numeric_limits<dt_t>::max();
     double frequency = std::numeric_limits<double>::max();
     double weight = std::numeric_limits<double>::max();
     double initialWeight = std::numeric_limits<double>::max();
+#ifdef MONTECARLO_POLARIZATION
+    double stokesQ = 0.0;
+    double stokesU = 0.0;
+    T polarizationBasis = T();
+    bool polarizationInitialized = false;
+#endif
     size_t steps = 0;
     bool on_track = false;
     bool sent = false;
@@ -136,6 +146,12 @@ struct Particle
         this->removedFromRank = false;
         this->sentByRank = std::numeric_limits<rank_t>::max();
         #endif // STORM_DEBUG
+#ifdef MONTECARLO_POLARIZATION
+        this->stokesQ = 0.0;
+        this->stokesU = 0.0;
+        this->polarizationBasis = T();
+        this->polarizationInitialized = false;
+#endif
     };
 
     std::pair<size_t, distance_t> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
@@ -143,10 +159,16 @@ struct Particle
     friend inline std::ostream &operator<<(std::ostream &stream, const Particle &particle)
     {
         #ifdef STORM_WITH_MPI
-                return stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
+                stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps;
         #else // STORM_WITH_MPI
-                return stream << "Particle(ID " << particle.id << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
+                stream << "Particle(ID " << particle.id << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps;
         #endif // STORM_WITH_MPI
+#ifdef MONTECARLO_POLARIZATION
+                stream << ", q " << particle.stokesQ
+                       << ", u " << particle.stokesU
+                       << ", polInit " << particle.polarizationInitialized;
+#endif
+                return stream << ")";
     }
 
     inline bool operator==(const Particle &other) const
@@ -181,7 +203,7 @@ std::pair<size_t, dt_t> Particle<T, Grid>::distanceToNearestFace(const Grid &gri
         const T &normal = normalsOfCell[i];
 
         double normalVelocityScalarProd = ScalarProd(normal, this->velocity);
-        if(BOOST_UNLIKELY(normalVelocityScalarProd >= -velocityAbs))
+        if(__builtin_expect(normalVelocityScalarProd >= -velocityAbs, 0))
         {
             continue;
         }
@@ -199,7 +221,7 @@ std::pair<size_t, dt_t> Particle<T, Grid>::distanceToNearestFace(const Grid &gri
 
         __builtin_prefetch(&min_alpha, 1, 3);
         __builtin_prefetch(&min_face, 1, 3);
-        if(BOOST_UNLIKELY(alpha < min_alpha))
+        if(__builtin_expect(alpha < min_alpha, 0))
         {
             if(alpha > 0)
             {
@@ -264,6 +286,7 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->rank);
     bytes += serializer->insert(this->id);
     bytes += serializer->insert(this->cellID);
+    bytes += serializer->insert(this->sourceCellID);
     bytes += serializer->insert(this->location);
     bytes += serializer->insert(this->velocity);
     bytes += serializer->insert(this->cellIndex);
@@ -271,6 +294,12 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->frequency);
     bytes += serializer->insert(this->weight);
     bytes += serializer->insert(this->initialWeight);
+#ifdef MONTECARLO_POLARIZATION
+    bytes += serializer->insert(this->stokesQ);
+    bytes += serializer->insert(this->stokesU);
+    bytes += serializer->insert(this->polarizationBasis);
+    bytes += serializer->insert(this->polarizationInitialized);
+#endif
     bytes += serializer->insert(this->steps);
     bytes += serializer->insert(this->on_track);
     bytes += serializer->insert(this->sent);
@@ -312,6 +341,7 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
     bytes += serializer->extract(this->rank, byteOffset);
     bytes += serializer->extract(this->id, byteOffset + bytes);
     bytes += serializer->extract(this->cellID, byteOffset + bytes);
+    bytes += serializer->extract(this->sourceCellID, byteOffset + bytes);
     bytes += serializer->extract(this->location, byteOffset + bytes);
     bytes += serializer->extract(this->velocity, byteOffset + bytes);
     bytes += serializer->extract(this->cellIndex, byteOffset + bytes);
@@ -319,6 +349,12 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
     bytes += serializer->extract(this->frequency, byteOffset + bytes);
     bytes += serializer->extract(this->weight, byteOffset + bytes);
     bytes += serializer->extract(this->initialWeight, byteOffset + bytes);
+#ifdef MONTECARLO_POLARIZATION
+    bytes += serializer->extract(this->stokesQ, byteOffset + bytes);
+    bytes += serializer->extract(this->stokesU, byteOffset + bytes);
+    bytes += serializer->extract(this->polarizationBasis, byteOffset + bytes);
+    bytes += serializer->extract(this->polarizationInitialized, byteOffset + bytes);
+#endif
     bytes += serializer->extract(this->steps, byteOffset + bytes);
     bytes += serializer->extract(this->on_track, byteOffset + bytes);
     bytes += serializer->extract(this->sent, byteOffset + bytes);

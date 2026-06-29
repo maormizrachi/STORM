@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <sstream>
+#include <iostream>
 #include <vector>
 #include <utility>
 
@@ -56,5 +57,7 @@ inline void reportError(const StormError &eo, std::ostream &os = std::cout)
 }
 
 } // namespace STORM
+
+using STORMError = STORM::StormError;
 
 #endif // STORM_ERROR_HPP

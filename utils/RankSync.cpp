@@ -1,6 +1,8 @@
-#ifdef RICH_MPI
+#ifdef STORM_WITH_MPI
 
 #include "RankSync.hpp"
+
+namespace STORM {
 
 std::vector<rank_t> GetRanksOrder(const MPI_Comm &comm)
 {
@@ -238,4 +240,7 @@ void ForEachRankSyncByList(const MPI_Comm &comm, const std::vector<rank_t> &new_
         }
     }
 }
-#endif // RICH_MPI
+
+} // namespace STORM
+
+#endif // STORM_WITH_MPI

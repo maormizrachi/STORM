@@ -1,22 +1,37 @@
 #ifndef MONTE_CARLO_MANAGER_LEGACY_HPP
 #define MONTE_CARLO_MANAGER_LEGACY_HPP
 
+#ifdef STORM_WITH_MPI
+
 #include <cassert>
-#include "mpi/mpi_commands.hpp"
-#include "mpi/mpi_commands.hpp"
-#include "monte/MonteCarloParticle.hpp"
-#include "monte/physics/MonteCarloPhysics.hpp"
-#include "monte/population/PopulationControl.hpp"
-#include "utils/amountManager/AmountManager.hpp"
-#include "monte/boundary/BoundaryCondition.hpp"
-#include "monte/utils/GhostMap.hpp"
-#include "monte/utils/RankSync.hpp"
-#include "utils/debug/vtune.h" // TODO: remove
-#include "monte/manager/rdma_legacy/RankHandler.hpp"
-#include "monte/manager/ReallocationAgent.hpp"
+#include <mpi_utils/mpi_commands.hpp>
+#include <mpi_utils/AmountManager.hpp>
+#include "../../particle/Particle.hpp"
+#include "../../physics/MonteCarloPhysics.hpp"
+#include "../../population/PopulationControl.hpp"
+#include "../../boundary/BoundaryCondition.hpp"
+#include "../../utils/GhostMap.hpp"
+#include "../../utils/RankSync.hpp"
+#include "RankHandler.hpp"
+#include "ReallocationAgent.hpp"
+#ifdef ALLOW_TIMING
 #include "utils/debug/SmartTimer.hpp"
+#else
+#ifndef START_TIMER
+#define START_TIMER(name)
+#define START_TIMER_PREEMPTIVE(name)
+#define START_TIMER_DISTINCT(name)
+#endif
+#endif
+#ifdef MEMORY_DEBUG
 #include "misc/memory_debug.hpp"
+#else
+#ifndef MEMORY_DEBUG_PRINT
+#define MEMORY_DEBUG_PRINT(label) ((void)0)
+#endif
+#endif
 #include <array>
+#include <boost/container/flat_set.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +43,12 @@
 #include <stdexcept>
 #include <vector>
 #include <mpi.h>
-#include "monte/manager/MonteCarloConfig.hpp"
+#include "../MonteCarloConfig.hpp"
+#include "../../elementary/PointOps.hpp"
+
+namespace STORM {
+
+using namespace STORM::fallback;
 
 template<typename Grid>
 std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
@@ -119,7 +139,7 @@ template<typename T, typename Grid>
 class MonteCarloManagerLegacy
 {
     using MCParticle = MonteCarloParticle<T, Grid>;
-    using RankHandler_t = ::RankHandler<T, Grid>;
+    using RankHandler_t = RankHandler<T, Grid>;
 
 public:
     struct MonteCarloStepFinalData
@@ -179,9 +199,9 @@ public:
 
         void Reset(void);
 
-        #ifdef RICH_MPI
+        #ifdef STORM_WITH_MPI
             std::vector<MCParticle> GetLocalTrackParticleRoute(size_t id) const;
-        #endif // RICH_MPI
+        #endif // STORM_WITH_MPI
 
         std::vector<MCParticle> GetTrackParticleRoute(size_t id) const;
 
@@ -509,7 +529,7 @@ void MonteCarloManagerLegacy<T, Grid>::AddParticles(const std::vector<MCParticle
             const T &declaredCell = this->grid.GetMeshPoint(particle->cellIndex);
             size_t containingIdx = this->grid.GetContainingCell(particle->location);
             const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-            UniversalError eo("MonteCarloManagerLegacy<T, Grid>::AddParticles");
+            STORMError eo("MonteCarloManagerLegacy<T, Grid>::AddParticles");
             eo.addEntry("rank", this->rank_world);
             eo.addEntry("Particle", *particle);
             eo.addEntry("Declared Cell Index", particle->cellIndex);
@@ -616,7 +636,7 @@ void MonteCarloManagerLegacy<T, Grid>::PutSelfParticles(std::vector<MCParticle> 
         std::pair<rank_t, size_t> particleSetKey = {particle.rank, particle.id};
         if(particlesSet.find(particleSetKey) != particlesSet.end())
         {
-            UniversalError eo("Particle with the same ID is being added to the same rank twice");
+            STORMError eo("Particle with the same ID is being added to the same rank twice");
             eo.addEntry("Particle", particle);
             eo.addEntry("Rank", this->rank_world);
             eo.addEntry("ID", particle.id);
@@ -700,7 +720,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
             }
             else
             {
-                UniversalError eo("Particle is being sent to multiple ranks");
+                STORMError eo("Particle is being sent to multiple ranks");
                 eo.addEntry("Particle Index", particleIdx);
                 eo.addEntry("Particle", currRankHandler->particles[particleIdx]);
                 eo.addEntry("I am rank", this->rank_world);
@@ -717,7 +737,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
 
         if(toRank == this->rank_world)
         {
-            UniversalError eo("Trying to transfer particle to the same rank");
+            STORMError eo("Trying to transfer particle to the same rank");
             eo.addEntry("Particle", particle);
             eo.addEntry("From Rank", fromRank);
             eo.addEntry("To Rank", toRank);
@@ -727,7 +747,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
         if(std::find_if(rankToParticles[toRank].begin(), rankToParticles[toRank].end(),
                         [&particle](const MCParticle &p) { return p == particle; }) != rankToParticles[toRank].end())
         {
-            UniversalError eo("Particle with the same ID is being sent to the same rank twice");
+            STORMError eo("Particle with the same ID is being sent to the same rank twice");
             eo.addEntry("Index In Transfer Queue", i);
             eo.addEntry("Particle Index", particleIdx);
             eo.addEntry("Particle", particle);
@@ -756,7 +776,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
         #ifdef STORM_DEBUG
         if(toRank != particle.nextRank)
         {
-            UniversalError eo("Particle will not be sent to the expected rank #1");
+            STORMError eo("Particle will not be sent to the expected rank #1");
             eo.addEntry("Particle", particle);
             eo.addEntry("Origin", particle.sentByRank);
             eo.addEntry("Expected Rank", toRank);
@@ -774,7 +794,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
         #ifdef STORM_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
         {
-            UniversalError eo("Remote handler has wrong peer rank world");
+            STORMError eo("Remote handler has wrong peer rank world");
             eo.addEntry("Expected", toRank);
             eo.addEntry("Got", remoteHandler->peer_rank_world);
             throw eo;
@@ -783,7 +803,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(rank_t fromRank, const 
         {
             if(particle.nextRank != toRank)
             {
-                UniversalError eo("Particle will not be sent to the expected rank #2");
+                STORMError eo("Particle will not be sent to the expected rank #2");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Origin", particle.sentByRank);
                 eo.addEntry("Expected Rank", toRank);
@@ -852,7 +872,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
                 }
                 else
                 {
-                    UniversalError eo("Particle is being sent to multiple ranks");
+                    STORMError eo("Particle is being sent to multiple ranks");
                     eo.addEntry("Particle Index", particleIdx);
                     eo.addEntry("Particle", currRankHandler->particles[particleIdx]);
                     eo.addEntry("I am rank", this->rank_world);
@@ -869,7 +889,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
 
             if(toRank == this->rank_world)
             {
-                UniversalError eo("Trying to transfer particle to the same rank");
+                STORMError eo("Trying to transfer particle to the same rank");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("From Rank", fromRank);
                 eo.addEntry("To Rank", toRank);
@@ -879,7 +899,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
             if(std::find_if(rankToParticles[toRank].begin(), rankToParticles[toRank].end(),
                             [&particle](const MCParticle &p) { return p == particle; }) != rankToParticles[toRank].end())
             {
-                UniversalError eo("Particle with the same ID is being sent to the same rank twice");
+                STORMError eo("Particle with the same ID is being sent to the same rank twice");
                 eo.addEntry("Index In Transfer Queue", i);
                 eo.addEntry("Particle Index", particleIdx);
                 eo.addEntry("Particle", particle);
@@ -908,7 +928,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
             #ifdef STORM_DEBUG
             if(toRank != particle.nextRank)
             {
-                UniversalError eo("Particle will not be sent to the expected rank #1");
+                STORMError eo("Particle will not be sent to the expected rank #1");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Origin", particle.sentByRank);
                 eo.addEntry("Expected Rank", toRank);
@@ -927,7 +947,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
         #ifdef STORM_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
         {
-            UniversalError eo("Remote handler has wrong peer rank world");
+            STORMError eo("Remote handler has wrong peer rank world");
             eo.addEntry("Expected", toRank);
             eo.addEntry("Got", remoteHandler->peer_rank_world);
             throw eo;
@@ -936,7 +956,7 @@ void MonteCarloManagerLegacy<T, Grid>::TransferParticles(const std::vector<rank_
         {
             if(particle.nextRank != toRank)
             {
-                UniversalError eo("Particle will not be sent to the expected rank #2");
+                STORMError eo("Particle will not be sent to the expected rank #2");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Origin", particle.sentByRank);
                 eo.addEntry("Expected Rank", toRank);
@@ -1102,7 +1122,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 #ifdef STORM_DEBUG
                 if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
                 {
-                    UniversalError eo("Particle was already handled in this iteration");
+                    STORMError eo("Particle was already handled in this iteration");
                     eo.addEntry("My Rank", this->rank_world);
                     eo.addEntry("Particle", particle);
                     eo.addEntry("Iteration", this->iteration);
@@ -1144,7 +1164,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                     #ifdef STORM_DEBUG
                     if(particle.cellIndex >= this->Ncells)
                     {
-                        UniversalError eo("Particle has invalid cell index (ghost)");
+                        STORMError eo("Particle has invalid cell index (ghost)");
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Cell Index", particle.cellIndex);
                         eo.addEntry("Rank", this->rank_world);
@@ -1154,7 +1174,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                     if(particle.removedFromRank)
                     {
                         continue;
-                        UniversalError eo("Particle was removed from rank, but still in the list");
+                        STORMError eo("Particle was removed from rank, but still in the list");
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Rank", this->rank_world);
                         eo.addEntry("Buffer of Rank", _rank);
@@ -1165,7 +1185,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                         if(particle.nextRank != this->rank_world)
                         {
                             // particle is in the right cell, but not in the right place
-                            UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                            STORMError eo("Particle Arrived to a Wrong Rank After Transfer");
                             eo.addEntry("Particle", particle);
                             eo.addEntry("Origin", particle.sentByRank);
                             eo.addEntry("Particle Previous Location", particle.previousLocation);
@@ -1195,7 +1215,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                             if(not this->grid.IsPointInCell(particle.location, containingIdx))
                             {
                                 // particle is in the right cell, but not in the right place
-                                UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                                STORMError eo("Particle Arrived to a Wrong Rank After Transfer");
                                 eo.addEntry("My Rank", this->rank_world);
                                 eo.addEntry("Transferred From Rank", _rank);
                                 eo.addEntry("Particle", particle);
@@ -1215,7 +1235,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                         }
                         if(abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
                         {
-                            UniversalError eo("Particle is in Wrong Location After Transfer");
+                            STORMError eo("Particle is in Wrong Location After Transfer");
                             eo.addEntry("My Rank", this->rank_world);
                             eo.addEntry("Transferred From Rank", _rank);
                             eo.addEntry("Particle", particle);
@@ -1282,7 +1302,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                         assert(nextCellIndex != particle.cellIndex);
                         assert(particle.timeLeft >= 0);
 
-                        if(BOOST_LIKELY(nextCellIndex < this->Ncells))
+                        if(__builtin_expect(nextCellIndex < this->Ncells, 1))
                         {
                             // local neighbor
                             #ifdef STORM_DEBUG
@@ -1296,7 +1316,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                 const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
                                 size_t containingIdx = this->grid.GetContainingCell(particle.location);
                                 const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                                UniversalError eo("Particle is in Wrong Location");
+                                STORMError eo("Particle is in Wrong Location");
                                 eo.addEntry("rank", this->rank_world);
                                 eo.addEntry("Particle", particle);
                                 eo.addEntry("Previous Cell Index", previousCell);
@@ -1351,7 +1371,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                 }
                                 else
                                 {
-                                    UniversalError eo("Unknown boundary condition for particle");
+                                    STORMError eo("Unknown boundary condition for particle");
                                     eo.addEntry("Particle", particle);
                                     eo.addEntry("Status", status);
                                     throw eo;
@@ -1365,7 +1385,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                             particle.checkedHere = false; // reset checked here flag
                             if(particle.nextRank != std::numeric_limits<rank_t>::max())
                             {
-                                UniversalError eo("Particle was already sent, and not sent again");
+                                STORMError eo("Particle was already sent, and not sent again");
                                 eo.addEntry("Particle", particle);
                                 eo.addEntry("Already Transferred To Rank", particle.nextRank);
                                 eo.addEntry("Being Transferred To Rank", otherRank);
@@ -1375,7 +1395,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                             const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
                             if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
                             {
-                                UniversalError eo("Particle is going to be transffered to a non-neighboring rank");
+                                STORMError eo("Particle is going to be transffered to a non-neighboring rank");
                                 eo.addEntry("Particle", particle);
                                 eo.addEntry("My Rank", this->rank_world);
                                 eo.addEntry("Next Rank", otherRank);
@@ -1392,7 +1412,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
 
                             if(particle.nextRank == this->rank_world)
                             {
-                                UniversalError eo("Particle is going to be sent to the same rank");
+                                STORMError eo("Particle is going to be sent to the same rank");
                                 eo.addEntry("Particle", particle);
                                 eo.addEntry("My Rank", this->rank_world);
                                 eo.addEntry("Next Rank", otherRank);
@@ -1411,7 +1431,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                 const MCParticle &lastParticle = handler->particles[lastParticleIndex];
                                 if(lastParticle == particle)
                                 {
-                                    UniversalError eo("Particle is already in the transfer list");
+                                    STORMError eo("Particle is already in the transfer list");
                                     eo.addEntry("Iteration", this->iteration);
                                     eo.addEntry("Particle", particle);
                                     eo.addEntry("My Rank", this->rank_world);
@@ -1445,7 +1465,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                     }
                 }
             }
-            catch(UniversalError &eo)
+            catch(STORMError &eo)
             {
                 eo.addEntry("Particle TH index", i);
                 eo.addEntry("Particle index", particleIndex);
@@ -2537,7 +2557,7 @@ void MonteCarloManagerLegacy<T, Grid>::PrepareHandlers(void)
             #endif // TIMING
             if(this->rankHandlers[rank]->peer_rank_world != rank)
             {
-                UniversalError eo("Peer rank world does not match");
+                STORMError eo("Peer rank world does not match");
                 eo.addEntry("Rank", rank);
                 eo.addEntry("Peer Rank World", this->rankHandlers[rank]->peer_rank_world);
                 throw eo;
@@ -2943,7 +2963,7 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
             this->iteration++;
         }
     }
-    catch(const UniversalError &eo)
+    catch(const STORMError &eo)
     {
         reportError(eo);
         throw;
@@ -3139,7 +3159,7 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
         }
         if(handler->th_length != 0)
         {
-            UniversalError eo("End of MonteCarloManagerLegacy::step: th length is not 0");
+            STORMError eo("End of MonteCarloManagerLegacy::step: th length is not 0");
             eo.addEntry("Rank", this->rank_world);
             eo.addEntry("TH Length", handler->th_length);
             eo.addEntry("Peer Rank", handler->peer_rank_world);
@@ -3393,5 +3413,9 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
 
     return data.remaining;
 }
+
+} // namespace STORM
+
+#endif // STORM_WITH_MPI
 
 #endif // MONTE_CARLO_MANAGER_LEGACY_HPP

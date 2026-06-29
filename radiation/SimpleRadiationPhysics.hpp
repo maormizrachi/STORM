@@ -7,10 +7,10 @@
 #include <memory>
 #include <cassert>
 #include <boost/math/special_functions/pow.hpp>
-#include "monte/physics/MonteCarloPhysics.hpp"
-#include "monte/radiation/RadiationCell.hpp"
-#include "monte/radiation/OpacityModel.hpp"
-#include "monte/PhysicalConstants.hpp"
+#include "physics/MonteCarloPhysics.hpp"
+#include "radiation/RadiationCell.hpp"
+#include "radiation/OpacityModel.hpp"
+#include "PhysicalConstants.hpp"
 
 namespace STORM {
 

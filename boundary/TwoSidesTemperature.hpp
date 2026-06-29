@@ -6,13 +6,16 @@
 #include <cmath>
 #include <vector>
 #include "BoundaryCondition.hpp"
-#include "monte/PhysicalConstants.hpp"
-#include "monte/utils/PlanckIntegral.hpp"
-#include "monte/utils/LinearInterpolation.hpp"
-#include "monte/utils/RandomOnFace.hpp"
-#include "monte/STORMError.hpp"
+#include "PhysicalConstants.hpp"
+#include "utils/PlanckIntegral.hpp"
+#include "utils/LinearInterpolation.hpp"
+#include "utils/RandomOnFace.hpp"
+#include "StormError.hpp"
+#include "elementary/PointOps.hpp"
 
 namespace STORM {
+
+using namespace STORM::fallback;
 
 template<typename T, typename Grid>
 class TwoSidesTemperature : public BoundaryCondition<T, Grid>
@@ -23,6 +26,23 @@ public:
     ParticleStatus apply(Particle<T, Grid> &particle) override;
 
     std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        T nOut;
+        if(!this->getDDMCOrientedOutwardNormal(
+                faceIdx, insideCellIndex, outsidePointIndex, nOut))
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        // Both x sides are thermal source / removal boundaries.
+        if(std::abs(nOut.x) > 0.99)
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
 
 private:
     double temperatureLeft;
@@ -76,33 +96,21 @@ TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, double tempe
 template<typename T, typename Grid>
 ParticleStatus TwoSidesTemperature<T, Grid>::apply(Particle<T, Grid> &particle)
 {
-    const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     size_t reflectsHad = 0;
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
     for(const typename Grid::Face_T &face : faces)
     {
-        const T &onFace = face.vertices[0];
-        T u = face.vertices[1] - face.vertices[0];
-        T v = face.vertices[2] - face.vertices[0];
-        T normal = CrossProduct(u, v);
-        double absU = abs(u);
-        if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
+        T normal;
+        double faceScale = 0.0;
+        if(this->getInwardBoxFaceNormalIfClose(face, particle.location, normal, faceScale))
         {
-            normal /= abs(normal);
             if(std::abs(normal.x) > 0.99)
             {
                 return ParticleStatus::REMOVE;
             }
-            reflectsHad++;
-            particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
+            if(this->reflectParticleOnBoxFace(particle, face))
+                reflectsHad++;
         }
-    }
-
-    if(reflectsHad >= 2)
-    {
-        const T &center = this->grid.GetMeshPoint(particle.cellIndex);
-        constexpr double nudge = 1e-6;
-        particle.location = particle.location + nudge * (center - particle.location);
     }
     if(reflectsHad > 0)
     {

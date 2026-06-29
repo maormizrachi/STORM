@@ -3,7 +3,7 @@
 
 #include <cassert>
 
-#ifdef RICH_MPI
+#ifdef STORM_WITH_MPI
 
 #include <vector>
 #include <memory>
@@ -20,15 +20,19 @@
 #include <stdexcept>
 #include <utility>
 #include <mpi.h>
-#include "mpi/mpi_commands.hpp"
-#include "utils/rma-helpers/DistributedMutex.hpp"
-#include "monte/MonteCarloParticle.hpp"
-#include "monte/manager/ReallocationAgent.hpp"
-#include "utils/rma/RMAFactory.hpp"
+#include <mpi_utils/mpi_commands.hpp>
+#include <rma/DistributedMutex.hpp>
+#include "../../particle/Particle.hpp"
+#include "ReallocationAgent.hpp"
+#include <rma/RMAFactory.hpp>
+#ifdef MEMORY_DEBUG
 #include "misc/memory_debug.hpp"
-#include "monte/manager/MonteCarloConfig.hpp"
+#endif
+#include "../MonteCarloConfig.hpp"
 
 #define MPI_INDEX_T MPI_UINT32_T
+
+namespace STORM {
 
 template<typename T, typename Grid>
 class RankHandler
@@ -280,7 +284,7 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
         // MPI_Group_translate_ranks(this->group_internal, 2, ranks_in_group, this->group_world, ranks_in_world);
         // if(ranks_in_world[0] != this->rank_world)
         // {
-        //     // UniversalError eo("RankHandler constructor: ranks translation failed");
+        //     // STORMError eo("RankHandler constructor: ranks translation failed");
         //     // eo.addEntry("Real rank", ranks_in_world[0]);
         //     // eo.addEntry("Expected rank", this->rank_world);
         //     // eo.addEntry("Peer rank", this->peer_rank_world);
@@ -323,7 +327,7 @@ void RankHandler<T, Grid>::Destroy(void)
         return;
     }
 
-    #ifdef RICH_MPI
+    #ifdef STORM_WITH_MPI
     if(this->size_internal > 1)
     {
         this->particles_agent->Free();
@@ -339,13 +343,13 @@ void RankHandler<T, Grid>::Destroy(void)
     }
     else
     {
-    #endif // RICH_MPI
+    #endif // STORM_WITH_MPI
         delete[] this->particles;
         delete[] this->av;
         delete[] this->th;
-    #ifdef RICH_MPI
+    #ifdef STORM_WITH_MPI
     }
-    #endif // RICH_MPI
+    #endif // STORM_WITH_MPI
     this->destroyed = true;
 }
 
@@ -377,7 +381,7 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
         index_t avValue = this->av[i];
         if(avValue >= this->buffsize)
         {
-            UniversalError eo("RankHandler::ValidateArraysContents: AV value is out of bounds");
+            STORMError eo("RankHandler::ValidateArraysContents: AV value is out of bounds");
             eo.addEntry("AV value", avValue);
             eo.addEntry("AV index", i);
             eo.addEntry("AV length", av_length);
@@ -388,7 +392,7 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
         }
         if(avMap.find(avValue) != avMap.end())
         {
-            UniversalError eo("RankHandler::ValidateArraysContents: AV value is duplicated");
+            STORMError eo("RankHandler::ValidateArraysContents: AV value is duplicated");
             eo.addEntry("AV value", avValue);
             eo.addEntry("AV index", i);
             eo.addEntry("Previously In Index", avMap[avValue]);
@@ -408,7 +412,7 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
         index_t thValue = this->th[i];
         if(thValue >= this->buffsize)
         {
-            UniversalError eo("RankHandler::ValidateArraysContents: TH value is out of bounds");
+            STORMError eo("RankHandler::ValidateArraysContents: TH value is out of bounds");
             eo.addEntry("TH value", thValue);
             eo.addEntry("TH index", i);
             eo.addEntry("TH length", th_length);
@@ -419,7 +423,7 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
         }
         if(thMap.find(thValue) != thMap.end())
         {
-            UniversalError eo("RankHandler::ValidateArraysContents: TH value is duplicated");
+            STORMError eo("RankHandler::ValidateArraysContents: TH value is duplicated");
             eo.addEntry("TH value", thValue);
             eo.addEntry("TH index", i);
             eo.addEntry("Previously In Index", thMap[thValue]);
@@ -431,7 +435,7 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
         }
         if(avMap.find(thValue) != avMap.end())
         {
-            UniversalError eo("RankHandler::ValidateArraysContents: TH value is in AV");
+            STORMError eo("RankHandler::ValidateArraysContents: TH value is in AV");
             eo.addEntry("Value", thValue);
             eo.addEntry("TH index", i);
             eo.addEntry("AV index", avMap[thValue]);
@@ -483,7 +487,7 @@ void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
         index_t avValue = remoteAV[i];
         if(avValue >= this->peer_buffsize)
         {
-            UniversalError eo("RankHandler::ValidateRemoteArraysContents: Remote AV value is out of bounds");
+            STORMError eo("RankHandler::ValidateRemoteArraysContents: Remote AV value is out of bounds");
             eo.addEntry("AV value", avValue);
             eo.addEntry("AV index", i);
             eo.addEntry("AV length", av_length);
@@ -494,7 +498,7 @@ void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
         }
         if(avMap.find(avValue) != avMap.end())
         {
-            UniversalError eo("RankHandler::ValidateRemoteArraysContents: Remote AV value is duplicated");
+            STORMError eo("RankHandler::ValidateRemoteArraysContents: Remote AV value is duplicated");
             eo.addEntry("AV value", avValue);
             eo.addEntry("AV index", i);
             eo.addEntry("Previously In Index", avMap[avValue]);
@@ -513,7 +517,7 @@ void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
         index_t thValue = remoteTH[i];
         if(thValue >= this->peer_buffsize)
         {
-            UniversalError eo("RankHandler::ValidateRemoteArraysContents: Remote TH value is out of bounds");
+            STORMError eo("RankHandler::ValidateRemoteArraysContents: Remote TH value is out of bounds");
             eo.addEntry("TH value", thValue);
             eo.addEntry("TH index", i);
             eo.addEntry("TH length", th_length);
@@ -524,7 +528,7 @@ void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
         }
         if(thMap.find(thValue) != thMap.end())
         {
-            UniversalError eo("RankHandler::ValidateRemoteArraysContents: Remote TH value is duplicated");
+            STORMError eo("RankHandler::ValidateRemoteArraysContents: Remote TH value is duplicated");
             eo.addEntry("TH value", thValue);
             eo.addEntry("TH index", i);
             eo.addEntry("Previously In Index", thMap[thValue]);
@@ -536,7 +540,7 @@ void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
         }
         if(avMap.find(thValue) != avMap.end())
         {
-            UniversalError eo("RankHandler::ValidateRemoteArraysContents: Remote TH value is in AV");
+            STORMError eo("RankHandler::ValidateRemoteArraysContents: Remote TH value is in AV");
             eo.addEntry("Value", thValue);
             eo.addEntry("TH index", i);
             eo.addEntry("AV index", avMap[thValue]);
@@ -576,7 +580,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
     {
         this->ValidateArraysContents();
     }
-    catch(UniversalError &e)
+    catch(STORMError &e)
     {
         e.addEntry("Where", std::string("RankHandler::RemoveParticles - beginning"));
         e.addEntry("To Remove", num);
@@ -601,7 +605,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
         #ifdef STORM_DEBUG
         if(indicesMap.find(particleIdx) != indicesMap.end())
         {
-            UniversalError eo("RankHandler::RemoveParticles: trying to remove the same particle twice");
+            STORMError eo("RankHandler::RemoveParticles: trying to remove the same particle twice");
             eo.addEntry("Particle index", particleIdx);
             eo.addEntry("TH 1", indicesMap[particleIdx]);
             eo.addEntry("TH 2", toHandleIndex);
@@ -615,7 +619,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
         auto it = std::find(this->av, this->av + av_length, particleIdx);
         if(it != this->av + av_length)
         {
-            UniversalError eo("RankHandler::RemoveParticles: trying to remove an already available particle");
+            STORMError eo("RankHandler::RemoveParticles: trying to remove an already available particle");
             eo.addEntry("Particle index", particleIdx);
             eo.addEntry("Already found in index", std::distance(this->av, it));
             eo.addEntry("AV Length", av_length);
@@ -632,7 +636,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
     std::sort(freedIndices.begin(), freedIndices.end());
     if(static_cast<size_t>(av_length) + freedIndices.size() > this->buffsize)
     {
-        UniversalError eo("RankHandler::RemoveParticles: insufficient AV capacity while appending freed slots");
+        STORMError eo("RankHandler::RemoveParticles: insufficient AV capacity while appending freed slots");
         eo.addEntry("My Rank", this->rank_world);
         eo.addEntry("Peer Rank", this->peer_rank_world);
         eo.addEntry("AV Length", av_length);
@@ -650,7 +654,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
     {
         this->ValidateArraysContents();
     }
-    catch(UniversalError &e)
+    catch(STORMError &e)
     {
         e.addEntry("Where", std::string("RankHandler::RemoveParticles - end"));
         e.addEntry("To Remove", num);
@@ -668,7 +672,9 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
 template<typename T, typename Grid>
 void RankHandler<T, Grid>::Reallocate(double factor)
 {
+#ifdef MEMORY_DEBUG
     memory_debug::check_system_memory("RankHandler::Reallocate");
+#endif
 
     static constexpr index_t inf = std::numeric_limits<index_t>::max();
     
@@ -689,7 +695,7 @@ void RankHandler<T, Grid>::Reallocate(double factor)
     {
         if(not noParticles)
         {
-            UniversalError eo("Can not shrink memory when there are particles (there are " + std::to_string(this->th_length) + " particles)");
+            STORMError eo("Can not shrink memory when there are particles (there are " + std::to_string(this->th_length) + " particles)");
             eo.addEntry("My Rank", this->rank_world);
             eo.addEntry("Peer Rank", this->peer_rank_world);
             eo.addEntry("TH Length", this->th_length);
@@ -838,7 +844,9 @@ ReallocationMetadata RankHandler<T, Grid>::LocalReallocate(double factor)
         throw std::runtime_error("RankHandler::LocalReallocate is only supported for the IBV RMA backend");
     }
 
+#ifdef MEMORY_DEBUG
     memory_debug::check_system_memory("RankHandler::LocalReallocate");
+#endif
 
     static constexpr index_t inf = std::numeric_limits<index_t>::max();
 
@@ -959,7 +967,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             {
                 ValidateRemoteArraysContents();
             }
-            catch(UniversalError &eo)
+            catch(STORMError &eo)
             {
                 eo.addEntry("Where", std::string("RankHandler<T, Grid>::TransferParticles - before transfer"));
                 throw eo;
@@ -1068,7 +1076,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             index_t availIndex = availIndices[i];
             if(availIndicesMap.find(availIndex) != availIndicesMap.end())
             {
-                UniversalError eo("RankHandler<T, Grid>::TransferParticles: duplication in available Index");
+                STORMError eo("RankHandler<T, Grid>::TransferParticles: duplication in available Index");
                 eo.addEntry("Available Index", availIndex);
                 eo.addEntry("Already in Index", availIndicesMap[availIndex]);
                 eo.addEntry("Index", i);
@@ -1080,7 +1088,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             assert(availIndex < this->peer_buffsize);
             if(particles[i].nextRank != this->peer_rank_world)
             {
-                UniversalError eo("RankHandler<T, Grid>::TransferParticles: Particle will not be sent to the expected rank");
+                STORMError eo("RankHandler<T, Grid>::TransferParticles: Particle will not be sent to the expected rank");
                 eo.addEntry("Particle", particles[i]);
                 eo.addEntry("Origin", this->rank_world);
                 eo.addEntry("Expected Rank", particles[i].nextRank);
@@ -1248,7 +1256,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         {
             ValidateRemoteArraysContents();
         }
-        catch(UniversalError &eo)
+        catch(STORMError &eo)
         {
             eo.addEntry("Where", std::string("RankHandler<T, Grid>::TransferParticles - after transfer"));
             eo.addEntry("Transfer Amount", Np);
@@ -1283,7 +1291,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             #ifdef STORM_DEBUG
             if(particles[i].nextRank != this->rank_world)
             {
-                UniversalError eo("Particle will not be sent to the expected rank #2");
+                STORMError eo("Particle will not be sent to the expected rank #2");
                 eo.addEntry("Particle", particles[i]);
                 eo.addEntry("Origin", particles[i].sentByRank);
                 eo.addEntry("Next Rank", particles[i].nextRank);
@@ -1303,6 +1311,8 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
     return true;
 }
 
-#endif // RICH_MPI
+} // namespace STORM
+
+#endif // STORM_WITH_MPI
 
 #endif // MONTECARLO_RANK_HANDLER_HPP

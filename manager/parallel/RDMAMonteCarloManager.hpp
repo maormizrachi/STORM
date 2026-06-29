@@ -1,21 +1,43 @@
 #ifndef RDMA_MONTE_CARLO_MANAGER_HPP
 #define RDMA_MONTE_CARLO_MANAGER_HPP
 
+#ifdef STORM_WITH_MPI
+
 #include <cassert>
-#include "mpi/mpi_commands.hpp"
-#include "mpi/mpi_commands.hpp"
-#include "monte/MonteCarloParticle.hpp"
-#include "monte/physics/MonteCarloPhysics.hpp"
-#include "monte/population/PopulationControl.hpp"
-#include "utils/amountManager/AmountManager.hpp"
-#include "monte/boundary/BoundaryCondition.hpp"
-#include "monte/utils/GhostMap.hpp"
-#include "monte/utils/RankSync.hpp"
-#include "utils/debug/vtune.h" // TODO: remove
-#include "monte/manager/rdma/RankHandler2.hpp"
-#include "monte/manager/ReallocationAgent.hpp"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <string>
+#include <boost/container/flat_set.hpp>
+#include <mpi_utils/mpi_commands.hpp>
+#include <mpi_utils/AmountManager.hpp>
+#include "../../particle/Particle.hpp"
+#include "../../physics/MonteCarloPhysics.hpp"
+#include "../../population/PopulationControl.hpp"
+#include "../../boundary/BoundaryCondition.hpp"
+#include "../../utils/GhostMap.hpp"
+#include "../../utils/RankSync.hpp"
+#include "RankHandler2.hpp"
+#include "ReallocationAgent.hpp"
+#ifdef ALLOW_TIMING
 #include "utils/debug/SmartTimer.hpp"
+#else
+#ifndef START_TIMER
+#define START_TIMER(name)
+#define START_TIMER_PREEMPTIVE(name)
+#define START_TIMER_DISTINCT(name)
+#endif
+#endif
+#ifdef MEMORY_DEBUG
 #include "misc/memory_debug.hpp"
+#else
+#ifndef MEMORY_DEBUG_PRINT
+#define MEMORY_DEBUG_PRINT(label) ((void)0)
+#endif
+#endif
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -29,7 +51,60 @@
 #include <utility>
 #include <vector>
 #include <mpi.h>
-#include "monte/manager/MonteCarloConfig.hpp"
+#include "../MonteCarloConfig.hpp"
+#include "../../elementary/PointOps.hpp"
+
+namespace STORM {
+
+using namespace STORM::fallback;
+
+#define RW_PROGRESS_TAG 9941
+#define MC_PROGRESS_COUNTERS 6
+
+enum MCProgressCounterIndex : size_t
+{
+    MC_PROGRESS_RW_STEPS = 0,
+    MC_PROGRESS_DDMC_STEPS,
+    MC_PROGRESS_DDMC_LEAKS,
+    MC_PROGRESS_DDMC_CENSUS,
+    MC_PROGRESS_DDMC_UPSCATTER,
+    MC_PROGRESS_DDMC_FALLBACK,
+    MC_PROGRESS_COUNTER_COUNT
+};
+
+static_assert(MC_PROGRESS_COUNTER_COUNT == MC_PROGRESS_COUNTERS,
+              "Update MC_PROGRESS_COUNTERS when progress fields change");
+
+template<typename T>
+double MaxAxisRelativeDrift(const T &drift, const T &boxSize)
+{
+    double maxRelDrift = 0.0;
+    auto update = [&maxRelDrift](double delta, double size)
+    {
+        if(size > 0.0)
+            maxRelDrift = std::max(maxRelDrift, std::abs(delta) / size);
+    };
+
+    update(std::abs(drift.x), std::abs(boxSize.x));
+    update(std::abs(drift.y), std::abs(boxSize.y));
+    update(std::abs(drift.z), std::abs(boxSize.z));
+    return maxRelDrift;
+}
+
+template<typename T>
+void ComputeBoxDriftDiagnostics(const T &location, const T &boxLL, const T &boxUR,
+                                double &relativeDrift, double &maxAxisRelativeDrift)
+{
+    T boxSize = boxUR - boxLL;
+    T clamped = location;
+    clamped.x = std::max(boxLL.x, std::min(boxUR.x, clamped.x));
+    clamped.y = std::max(boxLL.y, std::min(boxUR.y, clamped.y));
+    clamped.z = std::max(boxLL.z, std::min(boxUR.z, clamped.z));
+
+    T drift = location - clamped;
+    relativeDrift = abs(drift) / abs(boxSize);
+    maxAxisRelativeDrift = MaxAxisRelativeDrift(drift, boxSize);
+}
 
 template<typename Grid>
 std::vector<rank_t> GetNeighborList2(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
@@ -120,7 +195,7 @@ template<typename T, typename Grid>
 class RDMAMonteCarloManager
 {
     using MCParticle = MonteCarloParticle<T, Grid>;
-    using RankHandler_t = ::RankHandler2<T, Grid>;
+    using RankHandler_t = RankHandler2<T, Grid>;
 
 public:
     struct MonteCarloStepFinalData
@@ -157,6 +232,8 @@ public:
 
     inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount;}
 
+    inline size_t GetPreStepParticleCount(void) const {return this->preStepParticleCount;}
+
     inline double GetPureComputeTime(void) const {
         #ifdef TIMING
         return this->pureComputeTime;
@@ -180,9 +257,9 @@ public:
 
         void Reset(void);
 
-        #ifdef RICH_MPI
+        #ifdef STORM_WITH_MPI
             std::vector<MCParticle> GetLocalTrackParticleRoute(size_t id) const;
-        #endif // RICH_MPI
+        #endif // STORM_WITH_MPI
 
         std::vector<MCParticle> GetTrackParticleRoute(size_t id) const;
 
@@ -325,6 +402,14 @@ private:
     size_t currentStep;
     size_t allStepsCounter;
     size_t transfersCounter;
+    std::chrono::high_resolution_clock::time_point progressStartTime_;
+    double lastProgressPrintTime_ = 0.0;
+    int64_t progressStartParticles_ = 0;
+    size_t progressRemovedCount_ = 0;
+public:
+    const void* progressCellsPtr_ = nullptr;
+    const void* progressOpacityPtr_ = nullptr;
+private:
     std::vector<rank_t> neighbors;
     std::vector<size_t> cellsStepsCounters;
     std::vector<size_t> cellsParticleCounters;
@@ -335,6 +420,7 @@ private:
     size_t startParticleCount = 0;
     size_t endParticleCount = 0;
     size_t initialParticleCount = 0;
+    size_t preStepParticleCount = 0;
     std::vector<size_t> beginningParticleCount;
     size_t handlerMemoryBytes = 0;
     #ifdef TIMING
@@ -597,7 +683,7 @@ void RDMAMonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> 
             const T &declaredCell = this->grid.GetMeshPoint(destination.cellIndex);
             size_t containingIdx = this->grid.GetContainingCell(destination.location);
             const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-            UniversalError eo("RDMAMonteCarloManager<T, Grid>::AddParticles");
+            STORMError eo("RDMAMonteCarloManager<T, Grid>::AddParticles");
             eo.addEntry("rank", this->rank_world);
             eo.addEntry("Particle", destination);
             eo.addEntry("Declared Cell Index", destination.cellIndex);
@@ -702,7 +788,7 @@ void RDMAMonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&
         std::pair<rank_t, size_t> particleSetKey = {particle.rank, particle.id};
         if(particlesSet.find(particleSetKey) != particlesSet.end())
         {
-            UniversalError eo("Particle with the same ID is being added to the same rank twice");
+            STORMError eo("Particle with the same ID is being added to the same rank twice");
             eo.addEntry("Particle", particle);
             eo.addEntry("Rank", this->rank_world);
             eo.addEntry("ID", particle.id);
@@ -766,7 +852,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const st
 
         if(toRank == this->rank_world)
         {
-            UniversalError eo("Trying to transfer particle to the same rank");
+            STORMError eo("Trying to transfer particle to the same rank");
             eo.addEntry("Particle", particle);
             eo.addEntry("From Rank", fromRank);
             eo.addEntry("To Rank", toRank);
@@ -778,7 +864,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const st
         #ifdef STORM_DEBUG
         if(toRank != particle.nextRank)
         {
-            UniversalError eo("Particle will not be sent to the expected rank #1");
+            STORMError eo("Particle will not be sent to the expected rank #1");
             eo.addEntry("Particle", particle);
             eo.addEntry("Origin", particle.sentByRank);
             eo.addEntry("Expected Rank", toRank);
@@ -796,7 +882,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const st
         #ifdef STORM_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
         {
-            UniversalError eo("Remote handler has wrong peer rank world");
+            STORMError eo("Remote handler has wrong peer rank world");
             eo.addEntry("Expected", toRank);
             eo.addEntry("Got", remoteHandler->peer_rank_world);
             throw eo;
@@ -805,7 +891,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const st
         {
             if(particle.nextRank != toRank)
             {
-                UniversalError eo("Particle will not be sent to the expected rank #2");
+                STORMError eo("Particle will not be sent to the expected rank #2");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Origin", particle.sentByRank);
                 eo.addEntry("Expected Rank", toRank);
@@ -868,7 +954,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t>
 
             if(toRank == this->rank_world)
             {
-                UniversalError eo("Trying to transfer particle to the same rank");
+                STORMError eo("Trying to transfer particle to the same rank");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("From Rank", fromRank);
                 eo.addEntry("To Rank", toRank);
@@ -880,7 +966,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t>
             #ifdef STORM_DEBUG
             if(toRank != particle.nextRank)
             {
-                UniversalError eo("Particle will not be sent to the expected rank #1");
+                STORMError eo("Particle will not be sent to the expected rank #1");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Origin", particle.sentByRank);
                 eo.addEntry("Expected Rank", toRank);
@@ -899,7 +985,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t>
         #ifdef STORM_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
         {
-            UniversalError eo("Remote handler has wrong peer rank world");
+            STORMError eo("Remote handler has wrong peer rank world");
             eo.addEntry("Expected", toRank);
             eo.addEntry("Got", remoteHandler->peer_rank_world);
             throw eo;
@@ -908,7 +994,7 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t>
         {
             if(particle.nextRank != toRank)
             {
-                UniversalError eo("Particle will not be sent to the expected rank #2");
+                STORMError eo("Particle will not be sent to the expected rank #2");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Origin", particle.sentByRank);
                 eo.addEntry("Expected Rank", toRank);
@@ -933,6 +1019,7 @@ template<typename T, typename Grid>
 bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
 {
     static std::vector<MCParticle> particlesToAdd;
+    static size_t progressStepCounter;
     std::vector<rank_t> &active_ranks = this->activeRanks;
     std::vector<rank_t> &next_active_ranks = this->nextActiveRanks;
 
@@ -1034,7 +1121,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                     #ifdef STORM_DEBUG
                     if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
                     {
-                        UniversalError eo("Particle was already handled in this iteration");
+                        STORMError eo("Particle was already handled in this iteration");
                         eo.addEntry("My Rank", this->rank_world);
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Iteration", this->iteration);
@@ -1053,6 +1140,24 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                     isEmpty = false;
                     while(true)
                     {
+                        ++progressStepCounter;
+                        if((progressStepCounter & 0x3FFFF) == 0 && particle.steps > 100000)
+                        {
+                            std::cerr << "[StuckParticle] rank=" << this->rank_world
+                                      << " localPts=" << this->grid.GetPointNo()
+                                      << " " << particle
+                                      << " freq=" << particle.frequency
+                                      << " w/w0=" << (particle.initialWeight > 0 ? particle.weight / particle.initialWeight : 0.0) << std::endl;
+                            if(this->progressCellsPtr_ && particle.cellIndex < this->Ncells)
+                            {
+                                std::cerr << " cellIndex=" << particle.cellIndex << std::endl;
+                            }
+                            std::string accelInfo = this->physics->getAccelerationDebugInfo(particle.cellIndex, particle.frequency);
+                            if(!accelInfo.empty())
+                                std::cerr << accelInfo << std::endl;
+                            std::cerr << std::endl;
+                        }
+
                         const size_t traceStep = particle.steps;
                         if(particle.on_track)
                         {
@@ -1066,7 +1171,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                         #ifdef STORM_DEBUG
                         if(particle.cellIndex >= this->Ncells)
                         {
-                            UniversalError eo("Particle has invalid cell index (ghost)");
+                            STORMError eo("Particle has invalid cell index (ghost)");
                             eo.addEntry("Particle", particle);
                             eo.addEntry("Cell Index", particle.cellIndex);
                             eo.addEntry("Rank", this->rank_world);
@@ -1075,7 +1180,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                         }
                         if(particle.removedFromRank)
                         {
-                            UniversalError eo("Particle was removed from rank, but still in the list");
+                            STORMError eo("Particle was removed from rank, but still in the list");
                             eo.addEntry("Particle", particle);
                             eo.addEntry("Rank", this->rank_world);
                             eo.addEntry("Buffer of Rank", _rank);
@@ -1085,7 +1190,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                         {
                             if(particle.nextRank != this->rank_world)
                             {
-                                UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                                STORMError eo("Particle Arrived to a Wrong Rank After Transfer");
                                 eo.addEntry("Particle", particle);
                                 eo.addEntry("Origin", particle.sentByRank);
                                 eo.addEntry("Particle Previous Location", particle.previousLocation);
@@ -1113,7 +1218,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                             if(containingIdx != particle.cellIndex and
                                not this->grid.IsPointInCell(particle.location, containingIdx))
                             {
-                                UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                                STORMError eo("Particle Arrived to a Wrong Rank After Transfer");
                                 eo.addEntry("My Rank", this->rank_world);
                                 eo.addEntry("Transferred From Rank", _rank);
                                 eo.addEntry("Particle", particle);
@@ -1150,7 +1255,68 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                             std::cout << "Before running particle step, particle is " << particle << std::endl;
                         }
 
+                        const T beforeStepLocation = particle.location;
+                        const T beforeStepVelocity = particle.velocity;
+                        const dt_t beforeStepTimeLeft = particle.timeLeft;
+                        if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
+                        {
+                            auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
+                            double relDrift = 0.0;
+                            double maxAxisRelDrift = 0.0;
+                            ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
+
+                            STORMError eo("RDMAMonteCarloManager: particle outside box before physics step");
+                            eo.addEntry("Rank", this->rank_world);
+                            eo.addEntry("Particle before step", particle);
+                            eo.addEntry("Location before step", beforeStepLocation);
+                            eo.addEntry("Velocity before step", beforeStepVelocity);
+                            eo.addEntry("Time left before step", beforeStepTimeLeft);
+                            eo.addEntry("Box lower", boxLL);
+                            eo.addEntry("Box upper", boxUR);
+                            eo.addEntry("Relative drift", relDrift);
+                            eo.addEntry("Max axis relative drift", maxAxisRelDrift);
+                            eo.addEntry("Cell count", this->Ncells);
+                            if(particle.cellIndex < this->Ncells)
+                            {
+                                eo.addEntry("Cell index", particle.cellIndex);
+                                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                                eo.addEntry("Inside declared cell before step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                            }
+                            throw eo;
+                        }
+
                         MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+
+                        if(__builtin_expect(functionality.change != MonteCarloParticleStatus::REMOVE &&
+                                          functionality.change != MonteCarloParticleStatus::CELL_MOVE &&
+                                          this->grid.IsPointOutsideBox(particle.location), 0))
+                        {
+                            auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
+                            double relDrift = 0.0;
+                            double maxAxisRelDrift = 0.0;
+                            ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
+
+                            STORMError eo("RDMAMonteCarloManager: physics step moved particle outside the box");
+                            eo.addEntry("Rank", this->rank_world);
+                            eo.addEntry("Particle after step", particle);
+                            eo.addEntry("Functionality", MonteCarloParticleStatusToString(functionality.change));
+                            eo.addEntry("Next cell index", functionality.nextCellIndex);
+                            eo.addEntry("Location before step", beforeStepLocation);
+                            eo.addEntry("Velocity before step", beforeStepVelocity);
+                            eo.addEntry("Time left before step", beforeStepTimeLeft);
+                            eo.addEntry("Box lower", boxLL);
+                            eo.addEntry("Box upper", boxUR);
+                            eo.addEntry("Relative drift", relDrift);
+                            eo.addEntry("Max axis relative drift", maxAxisRelDrift);
+                            eo.addEntry("Cell count", this->Ncells);
+                            if(particle.cellIndex < this->Ncells)
+                            {
+                                eo.addEntry("Cell index", particle.cellIndex);
+                                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                                eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                            }
+                            throw eo;
+                        }
 
                         if(particle.on_track)
                         {
@@ -1170,8 +1336,40 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                             assert(nextCellIndex != particle.cellIndex);
                             assert(particle.timeLeft >= 0);
 
-                            if(BOOST_LIKELY(nextCellIndex < this->Ncells))
+                            auto throwCellMoveOutsideBox = [&](const std::string &cellMoveTarget)
                             {
+                                auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
+                                double relDrift = 0.0;
+                                double maxAxisRelDrift = 0.0;
+                                ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
+
+                                STORMError eo("RDMAMonteCarloManager: CELL_MOVE moved particle outside box before a non-boundary cell move");
+                                eo.addEntry("Rank", this->rank_world);
+                                eo.addEntry("Particle after step", particle);
+                                eo.addEntry("Cell move target", cellMoveTarget);
+                                eo.addEntry("Next cell index", nextCellIndex);
+                                eo.addEntry("Location before step", beforeStepLocation);
+                                eo.addEntry("Velocity before step", beforeStepVelocity);
+                                eo.addEntry("Time left before step", beforeStepTimeLeft);
+                                eo.addEntry("Box lower", boxLL);
+                                eo.addEntry("Box upper", boxUR);
+                                eo.addEntry("Relative drift", relDrift);
+                                eo.addEntry("Max axis relative drift", maxAxisRelDrift);
+                                eo.addEntry("Cell count", this->Ncells);
+                                if(particle.cellIndex < this->Ncells)
+                                {
+                                    eo.addEntry("Cell index", particle.cellIndex);
+                                    eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                                    eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                                }
+                                throw eo;
+                            };
+
+                            if(__builtin_expect(nextCellIndex < this->Ncells, 1))
+                            {
+                                if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
+                                    throwCellMoveOutsideBox("local cell move");
+
                                 #ifdef STORM_DEBUG
                                 size_t previousCell = particle.cellIndex;
                                 #endif // STORM_DEBUG
@@ -1184,7 +1382,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                     const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
                                     size_t containingIdx = this->grid.GetContainingCell(particle.location);
                                     const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                                    UniversalError eo("Particle is in Wrong Location");
+                                    STORMError eo("Particle is in Wrong Location");
                                     eo.addEntry("rank", this->rank_world);
                                     eo.addEntry("Particle", particle);
                                     eo.addEntry("Previous Cell Index", previousCell);
@@ -1223,17 +1421,21 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                         stepData.leavingCount++;
                                         this->allStepsCounter += particle.steps;
                                         this->localDecrementAmount += 1;
+                                        ++this->progressRemovedCount_;
                                         removeCurrent = true;
                                     }
                                     else
                                     {
-                                        UniversalError eo("Unknown boundary condition for particle");
+                                        STORMError eo("Unknown boundary condition for particle");
                                         eo.addEntry("Particle", particle);
                                         eo.addEntry("Status", status);
                                         throw eo;
                                     }
                                     break;
                                 }
+
+                                if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
+                                    throwCellMoveOutsideBox("remote rank transfer");
 
                                 particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
                                                     MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
@@ -1242,7 +1444,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                 particle.checkedHere = false;
                                 if(particle.nextRank != std::numeric_limits<rank_t>::max())
                                 {
-                                    UniversalError eo("Particle was already sent, and not sent again");
+                                    STORMError eo("Particle was already sent, and not sent again");
                                     eo.addEntry("Particle", particle);
                                     eo.addEntry("Already Transferred To Rank", particle.nextRank);
                                     eo.addEntry("Being Transferred To Rank", otherRank);
@@ -1252,7 +1454,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                 const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
                                 if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
                                 {
-                                    UniversalError eo("Particle is going to be transffered to a non-neighboring rank");
+                                    STORMError eo("Particle is going to be transffered to a non-neighboring rank");
                                     eo.addEntry("Particle", particle);
                                     eo.addEntry("My Rank", this->rank_world);
                                     eo.addEntry("Next Rank", otherRank);
@@ -1268,7 +1470,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                 particle.nextRank = otherRank;
                                 if(particle.nextRank == this->rank_world)
                                 {
-                                    UniversalError eo("Particle is going to be sent to the same rank");
+                                    STORMError eo("Particle is going to be sent to the same rank");
                                     eo.addEntry("Particle", particle);
                                     eo.addEntry("My Rank", this->rank_world);
                                     eo.addEntry("Next Rank", otherRank);
@@ -1309,14 +1511,14 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                         }
                         else
                         {
-                            UniversalError eo("Unknown Monte Carlo particle status");
+                            STORMError eo("Unknown Monte Carlo particle status");
                             eo.addEntry("Particle", particle);
                             eo.addEntry("Status", functionality.change);
                             throw eo;
                         }
                     }
                 }
-                catch(UniversalError &eo)
+                catch(STORMError &eo)
                 {
                     eo.addEntry("Particle list index", particleIndex);
                     eo.addEntry("Handler rank buffer", _rank);
@@ -1379,6 +1581,8 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
 template<typename T, typename Grid>
 void RDMAMonteCarloManager<T, Grid>::ResetAllBuffers(void)
 {
+    this->activeRanks.clear();
+    this->nextActiveRanks.clear();
     for(std::vector<MCParticle> &particles : this->detachedRankParticles)
     {
         particles.clear();
@@ -2361,7 +2565,7 @@ void RDMAMonteCarloManager<T, Grid>::PrepareHandlers(void)
             #endif // TIMING
             if(this->rankHandlers[rank]->peer_rank_world != rank)
             {
-                UniversalError eo("Peer rank world does not match");
+                STORMError eo("Peer rank world does not match");
                 eo.addEntry("Rank", rank);
                 eo.addEntry("Peer Rank World", this->rankHandlers[rank]->peer_rank_world);
                 throw eo;
@@ -2499,9 +2703,25 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
     #endif // TIMING
 
     size_t preStepParticlesNum = newParticles1.size();
+    this->preStepParticleCount = preStepParticlesNum;
     for(const auto &p : newParticles1) this->cellsParticleCounters[p.cellIndex]++;
     this->startParticleCount = initialParticlesNum + preStepParticlesNum;
     this->beginningParticleCount = this->cellsParticleCounters;
+
+    unsigned long long globalInitialParticles = static_cast<unsigned long long>(this->initialParticleCount);
+    unsigned long long globalPreStepParticles = static_cast<unsigned long long>(this->preStepParticleCount);
+    unsigned long long globalStartParticles = static_cast<unsigned long long>(this->startParticleCount);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalInitialParticles, &globalInitialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalPreStepParticles, &globalPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalStartParticles, &globalStartParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        std::cout << "MC particle counts before transport:"
+                  << " initial=" << globalInitialParticles
+                  << " prestep_generated=" << globalPreStepParticles
+                  << " active_after_prestep=" << globalStartParticles
+                  << std::endl;
+    }
 
     this->resetTracker();
     this->currentStep++;
@@ -2562,7 +2782,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
             p.tracingHistoryCount = 0;
             #endif // STORM_WITH_TRACING_HISTORY
             p.timeLeft = fullDt;
-            p.initialWeight = p.weight;
+            p.initialWeight = std::abs(p.weight);
             p.steps = 0;
         });
     }
@@ -2689,6 +2909,36 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
         ? std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles)
         : 1;
     auto loopStart = std::chrono::high_resolution_clock::now();
+    this->progressStartTime_ = loopStart;
+    this->lastProgressPrintTime_ = 0.0;
+    this->progressStartParticles_ = (this->rank_world == 0) ? static_cast<int64_t>(numParticles) : startingParticleNum;
+    this->progressRemovedCount_ = 0;
+    int64_t globalInitialForProgress = (this->rank_world == 0) ? static_cast<int64_t>(numParticles) : startingParticleNum;
+#ifdef STORM_WITH_MPI
+    std::vector<std::array<unsigned long long, MC_PROGRESS_COUNTERS>> progressCountersByRank(this->size_world);
+    MPI_Request progressReportSendReq = MPI_REQUEST_NULL;
+    std::array<unsigned long long, MC_PROGRESS_COUNTERS> progressReportSendValue{};
+    double progressLastReportSendTime = 0.0;
+#endif
+
+    auto buildProgressCounters = [this]()
+    {
+        std::array<unsigned long long, MC_PROGRESS_COUNTERS> counters{};
+        counters[MC_PROGRESS_RW_STEPS] =
+            static_cast<unsigned long long>(this->physics->getRandomWalkStepCount());
+        counters[MC_PROGRESS_DDMC_STEPS] =
+            static_cast<unsigned long long>(this->physics->getDDMCStepCount());
+        counters[MC_PROGRESS_DDMC_LEAKS] =
+            static_cast<unsigned long long>(this->physics->getDDMCLeakCount());
+        counters[MC_PROGRESS_DDMC_CENSUS] =
+            static_cast<unsigned long long>(this->physics->getDDMCCensusCount());
+        counters[MC_PROGRESS_DDMC_UPSCATTER] =
+            static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount());
+        counters[MC_PROGRESS_DDMC_FALLBACK] =
+            static_cast<unsigned long long>(this->physics->getDDMCFallbackCount());
+        return counters;
+    };
+
     try
     {
         while(not done)
@@ -2738,6 +2988,83 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
                 mainLoopSectionStart = std::chrono::high_resolution_clock::now();
                 #endif // TIMING
                 amountManager.Progress();
+
+                auto now = std::chrono::high_resolution_clock::now();
+                double elapsed_s = std::chrono::duration<double>(now - this->progressStartTime_).count();
+
+#ifdef STORM_WITH_MPI
+                if(this->rank_world == 0)
+                {
+                    progressCountersByRank[0] = buildProgressCounters();
+
+                    int hasMsg = 0;
+                    MPI_Status status;
+                    while(true)
+                    {
+                        MPI_Iprobe(MPI_ANY_SOURCE, RW_PROGRESS_TAG, this->comm_world, &hasMsg, &status);
+                        if(!hasMsg)
+                            break;
+                        std::array<unsigned long long, MC_PROGRESS_COUNTERS> recvCounters{};
+                        MPI_Recv(recvCounters.data(), MC_PROGRESS_COUNTERS, MPI_UNSIGNED_LONG_LONG, status.MPI_SOURCE,
+                                 RW_PROGRESS_TAG, this->comm_world, MPI_STATUS_IGNORE);
+                        progressCountersByRank[status.MPI_SOURCE] = recvCounters;
+                    }
+                }
+                else if(elapsed_s - progressLastReportSendTime >= 5.0)
+                {
+                    if(progressReportSendReq != MPI_REQUEST_NULL)
+                    {
+                        int sendDone = 0;
+                        MPI_Test(&progressReportSendReq, &sendDone, MPI_STATUS_IGNORE);
+                        if(sendDone)
+                            progressReportSendReq = MPI_REQUEST_NULL;
+                    }
+                    if(progressReportSendReq == MPI_REQUEST_NULL)
+                    {
+                        progressReportSendValue = buildProgressCounters();
+                        MPI_Isend(progressReportSendValue.data(), MC_PROGRESS_COUNTERS, MPI_UNSIGNED_LONG_LONG, 0,
+                                  RW_PROGRESS_TAG, this->comm_world, &progressReportSendReq);
+                        progressLastReportSendTime = elapsed_s;
+                    }
+                }
+#endif
+
+                if(this->rank_world == 0 && elapsed_s - this->lastProgressPrintTime_ >= 10.0)
+                {
+                    this->lastProgressPrintTime_ = elapsed_s;
+                    std::array<unsigned long long, MC_PROGRESS_COUNTERS> globalCounters{};
+#ifdef STORM_WITH_MPI
+                    for(const auto &counters : progressCountersByRank)
+                    {
+                        for(size_t i = 0; i < globalCounters.size(); ++i)
+                            globalCounters[i] += counters[i];
+                    }
+#else
+                    globalCounters = buildProgressCounters();
+#endif
+                    int64_t globalRemaining = amountManager.GetValue();
+                    int64_t globalDone = globalInitialForProgress - globalRemaining;
+                    double done_frac = (globalInitialForProgress > 0) ? static_cast<double>(globalDone) / static_cast<double>(globalInitialForProgress) : 0.0;
+                    double rate = (elapsed_s > 0) ? static_cast<double>(globalDone) / elapsed_s : 0.0;
+                    double eta = (rate > 0) ? static_cast<double>(globalRemaining) / rate : 0.0;
+                    RankHandler_t *selfHandler = this->rankHandlers[this->rank_world];
+                    int localRemaining = selfHandler ? static_cast<int>(selfHandler->LocalSize()) : 0;
+                    std::cerr << "[Progress] ~"
+                              << (done_frac * 100.0) << "% done, "
+                              << elapsed_s << "s elapsed, "
+                              << "~" << eta << "s ETA, "
+                              << "global_done=" << globalDone << "/" << globalInitialForProgress
+                              << " rank0_local_remaining=" << localRemaining
+                              << " rw_steps_total=" << globalCounters[MC_PROGRESS_RW_STEPS]
+                              << " ddmc_steps_total=" << globalCounters[MC_PROGRESS_DDMC_STEPS]
+                              << " ddmc_leaks=" << globalCounters[MC_PROGRESS_DDMC_LEAKS]
+                              << " ddmc_census=" << globalCounters[MC_PROGRESS_DDMC_CENSUS]
+                              << " ddmc_upscatter=" << globalCounters[MC_PROGRESS_DDMC_UPSCATTER]
+                              << " ddmc_fallback=" << globalCounters[MC_PROGRESS_DDMC_FALLBACK]
+                              << " eta_is_count_based=1"
+                              << std::endl;
+                }
+
                 #ifdef TIMING
                 mainAmountProgressTime += MonteCarloTimingDetail2::SecondsSince(mainLoopSectionStart);
                 mainAmountProgressCalls++;
@@ -2764,11 +3091,16 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
             this->iteration++;
         }
     }
-    catch(const UniversalError &eo)
+    catch(const STORMError &eo)
     {
         reportError(eo);
         throw;
     }
+
+#ifdef STORM_WITH_MPI
+    if(this->rank_world != 0 && progressReportSendReq != MPI_REQUEST_NULL)
+        MPI_Wait(&progressReportSendReq, MPI_STATUS_IGNORE);
+#endif
 
     auto loopEnd = std::chrono::high_resolution_clock::now();
     double loopTime = std::chrono::duration_cast<std::chrono::duration<double>>(loopEnd - loopStart).count();
@@ -2961,7 +3293,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
         size_t localSize = handler->LocalSize();
         if(localSize != 0)
         {
-            UniversalError eo("End of RDMAMonteCarloManager::step: queue is not empty");
+            STORMError eo("End of RDMAMonteCarloManager::step: queue is not empty");
             eo.addEntry("Rank", this->rank_world);
             eo.addEntry("Head", static_cast<size_t>(handler->head));
             eo.addEntry("Tail", static_cast<size_t>(handler->tail));
@@ -2975,7 +3307,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
         const std::vector<MCParticle> &particles = this->detachedRankParticles[static_cast<size_t>(rank)];
         if(not particles.empty())
         {
-            UniversalError eo("End of RDMAMonteCarloManager::step: detached particle list is not empty");
+            STORMError eo("End of RDMAMonteCarloManager::step: detached particle list is not empty");
             eo.addEntry("Rank", this->rank_world);
             eo.addEntry("Peer Rank", rank);
             eo.addEntry("Detached Particles", particles.size());
@@ -3229,5 +3561,9 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
 
     return data.remaining;
 }
+
+} // namespace STORM
+
+#endif // STORM_WITH_MPI
 
 #endif // RDMA_MONTE_CARLO_MANAGER_HPP

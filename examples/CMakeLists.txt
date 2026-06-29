@@ -1,12 +1,6 @@
 add_executable(serial_cartesian serial_cartesian/main.cpp)
 target_link_libraries(serial_cartesian PRIVATE storm)
-if(DEFINED STORM_DEPS_DIR)
-  target_include_directories(serial_cartesian PRIVATE "${_deps}/MadCart")
-endif()
 
 add_executable(hohlraum hohlraum/main.cpp)
 target_link_libraries(hohlraum PRIVATE storm)
 target_include_directories(hohlraum PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/hohlraum)
-if(DEFINED STORM_DEPS_DIR)
-  target_include_directories(hohlraum PRIVATE "${_deps}/MadCart")
-endif()

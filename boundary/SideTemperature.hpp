@@ -7,13 +7,16 @@
 #include <vector>
 #include <array>
 #include "BoundaryCondition.hpp"
-#include "monte/PhysicalConstants.hpp"
-#include "monte/utils/PlanckIntegral.hpp"
-#include "monte/utils/LinearInterpolation.hpp"
-#include "monte/utils/RandomOnFace.hpp"
-#include "monte/STORMError.hpp"
+#include "../PhysicalConstants.hpp"
+#include "../utils/PlanckIntegral.hpp"
+#include "../utils/LinearInterpolation.hpp"
+#include "../utils/RandomOnFace.hpp"
+#include "../StormError.hpp"
+#include "../elementary/PointOps.hpp"
 
 namespace STORM {
+
+using namespace STORM::fallback;
 
 template<typename T, typename Grid>
 class SideTemperature : public BoundaryCondition<T, Grid>
@@ -24,6 +27,25 @@ public:
     ParticleStatus apply(Particle<T, Grid> &particle) override;
 
     std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        T nOut;
+        if(!this->getDDMCOrientedOutwardNormal(
+                faceIdx, insideCellIndex, outsidePointIndex, nOut))
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        // Left x boundary: thermal source / removal face.
+        if(nOut.x < -0.99)
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
+
+    void SetTemperature(double temp) { temperature = temp; }
 
 private:
     double temperature;
@@ -63,17 +85,14 @@ template<typename T, typename Grid>
 ParticleStatus SideTemperature<T, Grid>::apply(Particle<T, Grid> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
+    ParticleStatus status = ParticleStatus::DONE;
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
     for(const typename Grid::Face_T &face : faces)
     {
-        const T &onFace = face.vertices[0];
-        T u = face.vertices[1] - face.vertices[0];
-        T v = face.vertices[2] - face.vertices[0];
-        T normal = CrossProduct(u, v);
-        double absU = abs(u);
-        if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
+        T normal;
+        double faceScale = 0.0;
+        if(this->getInwardBoxFaceNormalIfClose(face, particle.location, normal, faceScale))
         {
-            normal /= abs(normal);
             if(std::abs(normal.x) > 0.99)
             {
                 if(std::abs(particle.location.x - ll.x) < std::abs(ur.x - particle.location.x))
@@ -81,10 +100,12 @@ ParticleStatus SideTemperature<T, Grid>::apply(Particle<T, Grid> &particle)
                     return ParticleStatus::REMOVE;
                 }
             }
-            particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
-            return ParticleStatus::REFLECT;
+            if(this->reflectParticleOnBoxFace(particle, face))
+                status = ParticleStatus::REFLECT;
         }
     }
+    if(status == ParticleStatus::REFLECT)
+        return status;
 
     std::cerr << "Particle " << particle << " is not on any boundary" << std::endl;
     exit(1);

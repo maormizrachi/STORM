@@ -2,7 +2,7 @@
 #define STORM_RIGID_BOUNDARY_HPP
 
 #include "BoundaryCondition.hpp"
-#include "monte/STORMError.hpp"
+#include "../StormError.hpp"
 
 namespace STORM {
 
@@ -17,6 +17,17 @@ public:
     ParticleStatus apply(Particle<T, Grid> &particle) override;
 
     std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        (void)faceIdx;
+        (void)insideCellIndex;
+        (void)outsidePointIndex;
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
 };
 
 template<typename T, typename Grid>
@@ -32,28 +43,18 @@ template<typename T, typename Grid>
 ParticleStatus RigidBoundary<T, Grid>::apply(Particle<T, Grid> &particle)
 {
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
+    ParticleStatus status = ParticleStatus::DONE;
     for(const typename Grid::Face_T &face : faces)
     {
-        const T &onFace = face.vertices[0];
-        T u = face.vertices[1] - face.vertices[0];
-        T v = face.vertices[2] - face.vertices[0];
-        T normal = CrossProduct(u, v);
-        double absU = abs(u);
-        if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
-        {
-            normal /= abs(normal);
-            const double signedDistance = ScalarProd(particle.location - onFace, normal);
-            particle.location -= 2 * signedDistance * normal;
-            particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
-            const T &center = this->grid.GetMeshPoint(particle.cellIndex);
-            constexpr double nudge = 1e-6;
-            particle.location = particle.location * (1 - nudge) + nudge * center;
-            return ParticleStatus::REFLECT;
-        }
+        if(this->reflectParticleOnBoxFace(particle, face))
+            status = ParticleStatus::REFLECT;
     }
+    if(status == ParticleStatus::REFLECT)
+        return status;
 
-    std::cerr << "Particle " << particle << " is not on any boundary" << std::endl;
-    exit(1);
+    STORMError eo("Particle is not on any boundary");
+    eo.addEntry("Particle", particle);
+    throw eo;
 }
 
 template<typename T, typename Grid>

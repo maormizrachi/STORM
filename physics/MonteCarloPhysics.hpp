@@ -2,12 +2,16 @@
 #define STORM_MONTE_CARLO_PHYSICS_HPP
 
 #include <memory>
+#include <string>
 #include <tuple>
-#include "monte/particle/Particle.hpp"
-#include "monte/particle/StepResult.hpp"
-#include "monte/boundary/BoundaryCondition.hpp"
+#include "../particle/Particle.hpp"
+#include "../particle/StepResult.hpp"
+#include "../boundary/BoundaryCondition.hpp"
+#include "../elementary/PointOps.hpp"
 
 namespace STORM {
+
+using namespace STORM::fallback;
 
 template<typename T, typename Grid>
 class MonteCarloPhysics
@@ -26,6 +30,14 @@ public:
     virtual StepResult<T, Grid> step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) = 0;
 
     virtual void postStep(const std::vector<MCParticle> &particles, double fullDt) = 0;
+
+    virtual size_t getRandomWalkStepCount() const { return 0; }
+    virtual size_t getDDMCStepCount() const { return 0; }
+    virtual size_t getDDMCLeakCount() const { return 0; }
+    virtual size_t getDDMCCensusCount() const { return 0; }
+    virtual size_t getDDMCUpscatterCount() const { return 0; }
+    virtual size_t getDDMCFallbackCount() const { return 0; }
+    virtual std::string getAccelerationDebugInfo(size_t, double) const { return std::string(); }
 
 protected:
     const Grid &grid;

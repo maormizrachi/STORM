@@ -2,18 +2,21 @@
 #define STORM_MONTE_CARLO_MANAGER_SERIAL_HPP
 
 #include <cassert>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
 #include <memory>
 #include <random>
 #include <chrono>
 #include <cstring>
 #include <numeric>
 #include <boost/container/flat_map.hpp>
-#include "monte/particle/Particle.hpp"
-#include "monte/physics/MonteCarloPhysics.hpp"
-#include "monte/population/PopulationControl.hpp"
-#include "monte/boundary/BoundaryCondition.hpp"
-#include "monte/manager/MonteCarloConfig.hpp"
-#include "monte/STORMError.hpp"
+#include "../particle/Particle.hpp"
+#include "../physics/MonteCarloPhysics.hpp"
+#include "../population/PopulationControl.hpp"
+#include "../boundary/BoundaryCondition.hpp"
+#include "MonteCarloConfig.hpp"
+#include "../StormError.hpp"
 
 #define SERIAL_REALLOCATION_FACTOR 2
 
@@ -71,8 +74,9 @@ public:
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const { return this->cellsStepsCounters; }
     inline std::vector<size_t> &GetCellsStepsCounters(void) { return this->cellsStepsCounters; }
     inline size_t GetStartParticleCount(void) const { return this->startParticleCount_; }
-    inline size_t GetEndParticleCount(void) const { return this->endParticleCount_; }
     inline size_t GetInitialParticleCount(void) const { return this->initialParticleCount_; }
+    inline size_t GetPreStepParticleCount(void) const { return this->preStepParticleCount_; }
+    inline size_t GetEndParticleCount(void) const { return this->endParticleCount_; }
     inline double GetPureComputeTime(void) const { return 0; }
     inline const std::vector<size_t> &GetBeginningParticleCount(void) const { return this->beginningParticleCount_; }
     inline std::vector<size_t> &GetBeginningParticleCount(void) { return this->beginningParticleCount_; }
@@ -92,6 +96,7 @@ private:
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
     size_t initialParticleCount_ = 0;
+    size_t preStepParticleCount_ = 0;
     std::vector<size_t> beginningParticleCount_;
 
     struct
@@ -310,7 +315,7 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 size_t nextCellIndex = functionality.nextCellIndex;
                 assert(nextCellIndex != particle.cellIndex);
                 assert(particle.timeLeft >= 0);
-                if(BOOST_LIKELY(nextCellIndex < this->Ncells))
+                if(__builtin_expect(nextCellIndex < this->Ncells, 1))
                 {
                     particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                     particle.cellIndex = nextCellIndex;
@@ -388,7 +393,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
         p.tracingHistoryCount = 0;
         #endif
         p.timeLeft = fullDt;
-        p.initialWeight = p.weight;
+        p.initialWeight = std::abs(p.weight);
         p.steps = 0;
     }
 
@@ -396,7 +401,13 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     this->initialParticleCount_ = initialParticlesNum;
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
+    this->preStepParticleCount_ = newParticles1.size();
     this->startParticleCount_ = initialParticlesNum + newParticles1.size();
+    std::cout << "MC particle counts before transport:"
+              << " initial=" << this->initialParticleCount_
+              << " prestep_generated=" << this->preStepParticleCount_
+              << " active_after_prestep=" << this->startParticleCount_
+              << std::endl;
 
     this->beginningParticleCount_.assign(this->Ncells, 0);
     for(size_t i = 0; i < this->particlesData.th_length; i++)
@@ -409,11 +420,32 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
 
     MonteCarloStepFinalData data;
 
+    auto start = std::chrono::high_resolution_clock::now();
+    double lastProgressPrint = 0.0;
+    size_t const totalParticlesStart = this->startParticleCount_;
+
     try
     {
         while(this->particlesData.th_length != 0)
         {
             this->HandleAll(data);
+
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed_s = std::chrono::duration<double>(now - start).count();
+            if(elapsed_s - lastProgressPrint >= 10.0)
+            {
+                lastProgressPrint = elapsed_s;
+                size_t remaining = this->particlesData.th_length;
+                double done_frac = 1.0 - static_cast<double>(remaining) / static_cast<double>(totalParticlesStart);
+                double processed = static_cast<double>(totalParticlesStart - remaining);
+                double rate = (elapsed_s > 0) ? processed / elapsed_s : 0.0;
+                double eta = (rate > 0) ? remaining / rate : 0.0;
+                std::cerr << "[Progress] " << std::fixed << std::setprecision(1)
+                          << (done_frac * 100.0) << "% done, "
+                          << elapsed_s << "s elapsed, "
+                          << "~" << eta << "s remaining"
+                          << std::endl;
+            }
         }
     }
     catch(const STORMError &eo)

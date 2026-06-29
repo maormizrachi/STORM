@@ -1,7 +1,7 @@
 #ifndef REALLOCATION_AGENT_HPP
 #define REALLOCATION_AGENT_HPP
 
-#ifdef RICH_MPI
+#ifdef STORM_WITH_MPI
 
 #include <vector>
 #include <list>
@@ -9,8 +9,10 @@
 #include <functional>
 #include <cstddef>
 #include <mpi.h>
-#include "mpi/mpi_commands.hpp"
-#include "utils/rma/RemoteMemoryAgent.hpp"
+#include <mpi_utils/mpi_commands.hpp>
+#include <rma/RemoteMemoryAgent.hpp>
+
+namespace STORM {
 
 struct ReallocationMetadata
 {
@@ -105,5 +107,7 @@ private:
     bool CheckMetadataUpdates(void);
 };
 
-#endif // RICH_MPI
+} // namespace STORM
+
+#endif // STORM_WITH_MPI
 #endif // REALLOCATION_AGENT_HPP

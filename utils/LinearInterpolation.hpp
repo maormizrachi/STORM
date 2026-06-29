@@ -5,7 +5,7 @@
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
-#include "monte/STORMError.hpp"
+#include "../StormError.hpp"
 
 namespace STORM {
 

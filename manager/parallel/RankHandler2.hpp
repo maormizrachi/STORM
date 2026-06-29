@@ -3,7 +3,7 @@
 
 #include <cassert>
 
-#ifdef RICH_MPI
+#ifdef STORM_WITH_MPI
 
 #include <algorithm>
 #include <chrono>
@@ -16,14 +16,18 @@
 #include <stdexcept>
 #include <vector>
 #include <mpi.h>
-#include "mpi/mpi_commands.hpp"
-#include "utils/rma-helpers/DistributedMutex.hpp"
-#include "monte/MonteCarloParticle.hpp"
-#include "monte/manager/ReallocationAgent.hpp"
-#include "utils/rma/RMAFactory.hpp"
+#include <mpi_utils/mpi_commands.hpp>
+#include <rma/DistributedMutex.hpp>
+#include "../../particle/Particle.hpp"
+#include "ReallocationAgent.hpp"
+#include <rma/RMAFactory.hpp>
+#include "../../StormError.hpp"
+#ifdef MEMORY_DEBUG
 #include "misc/memory_debug.hpp"
-#include "misc/universal_error.hpp"
-#include "monte/manager/MonteCarloConfig.hpp"
+#endif
+#include "../MonteCarloConfig.hpp"
+
+namespace STORM {
 
 template<typename T, typename Grid>
 class RankHandler2
@@ -349,7 +353,7 @@ size_t RankHandler2<T, Grid>::LocalSize(void) const
     uint64_t localTail = this->tail;
     if(localTail < localHead or localTail - localHead > this->buffsize)
     {
-        UniversalError eo("RankHandler2::LocalSize: invalid SPSC queue counters");
+        STORMError eo("RankHandler2::LocalSize: invalid SPSC queue counters");
         eo.addEntry("My Rank", this->rank_world);
         eo.addEntry("Peer Rank", this->peer_rank_world);
         eo.addEntry("Head", static_cast<size_t>(localHead));
@@ -404,7 +408,7 @@ void RankHandler2<T, Grid>::DetachLocalParticles(std::vector<MCParticle> &result
     uint64_t localTail = this->tail;
     if(localTail < localHead or localTail - localHead > this->buffsize)
     {
-        UniversalError eo("RankHandler2::DetachLocalParticles: invalid SPSC queue counters");
+        STORMError eo("RankHandler2::DetachLocalParticles: invalid SPSC queue counters");
         eo.addEntry("My Rank", this->rank_world);
         eo.addEntry("Peer Rank", this->peer_rank_world);
         eo.addEntry("Head", static_cast<size_t>(localHead));
@@ -477,7 +481,9 @@ void RankHandler2<T, Grid>::AppendLocalParticles(const MCParticle *particles, si
 template<typename T, typename Grid>
 void RankHandler2<T, Grid>::Reallocate(double factor)
 {
+#ifdef MEMORY_DEBUG
     memory_debug::check_system_memory("RankHandler2::Reallocate");
+#endif
 
     #ifdef TIMING
     auto reallocationStart = std::chrono::high_resolution_clock::now();
@@ -502,7 +508,7 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
     bool noParticles = (localCount == 0);
     if(newBuffSize < oldBuffSize and not noParticles)
     {
-        UniversalError eo("RankHandler2: can not shrink memory when there are particles");
+        STORMError eo("RankHandler2: can not shrink memory when there are particles");
         eo.addEntry("My Rank", this->rank_world);
         eo.addEntry("Peer Rank", this->peer_rank_world);
         eo.addEntry("Particles", localCount);
@@ -607,7 +613,9 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
         throw std::runtime_error("RankHandler2::LocalReallocate is only supported for the IBV RMA backend");
     }
 
+#ifdef MEMORY_DEBUG
     memory_debug::check_system_memory("RankHandler2::LocalReallocate");
+#endif
 
     #ifdef TIMING
     auto reallocationStart = std::chrono::high_resolution_clock::now();
@@ -736,7 +744,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
             uint64_t remoteTail = remoteCounters[TAIL_INDEX];
             if(remoteTail < remoteHead or remoteTail - remoteHead > this->peer_buffsize)
             {
-                UniversalError eo("RankHandler2::TransferParticles: remote queue counters are out of bounds");
+                STORMError eo("RankHandler2::TransferParticles: remote queue counters are out of bounds");
                 eo.addEntry("Remote Head", static_cast<size_t>(remoteHead));
                 eo.addEntry("Remote Tail", static_cast<size_t>(remoteTail));
                 eo.addEntry("Peer Buffer Size", this->peer_buffsize);
@@ -808,7 +816,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
             const MCParticle &particle = particles[i];
             if(particle.nextRank != this->peer_rank_world)
             {
-                UniversalError eo("RankHandler2::TransferParticles: particle will not be sent to the expected rank");
+                STORMError eo("RankHandler2::TransferParticles: particle will not be sent to the expected rank");
                 eo.addEntry("Particle", particle);
                 eo.addEntry("Origin", this->rank_world);
                 eo.addEntry("Expected Rank", particle.nextRank);
@@ -851,7 +859,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
         #endif // TIMING
         if(observedTail != remoteTail)
         {
-            UniversalError eo("RankHandler2::TransferParticles: producer tail changed unexpectedly");
+            STORMError eo("RankHandler2::TransferParticles: producer tail changed unexpectedly");
             eo.addEntry("Observed Tail", static_cast<size_t>(observedTail));
             eo.addEntry("Expected Tail", static_cast<size_t>(remoteTail));
             eo.addEntry("My Rank", this->rank_world);
@@ -875,5 +883,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
     return true;
 }
 
-#endif // RICH_MPI
+} // namespace STORM
+
+#endif // STORM_WITH_MPI
 #endif // MONTECARLO_RANK_HANDLER2_HPP

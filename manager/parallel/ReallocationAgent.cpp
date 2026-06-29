@@ -1,10 +1,12 @@
-#ifdef RICH_MPI
+#ifdef STORM_WITH_MPI
 
 #include "ReallocationAgent.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <stdexcept>
+
+namespace STORM {
 
 #define ASK_REALLOCATION_TAG 553
 #define ANSWER_REALLOCATION_TAG 554
@@ -350,4 +352,6 @@ bool ReallocationAgent::HasPendingAsyncReallocations(void) const
            (not this->pendingMetadataSends.empty());
 }
 
-#endif // RICH_MPI
+} // namespace STORM
+
+#endif // STORM_WITH_MPI
