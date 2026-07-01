@@ -1,0 +1,106 @@
+#ifndef STORM_RADIATION_IMC_PARAMETERS_HPP
+#define STORM_RADIATION_IMC_PARAMETERS_HPP
+
+#include <array>
+#include <cstddef>
+#include <iosfwd>
+#include <ostream>
+#include <string>
+
+namespace STORM {
+
+template<std::size_t NumGroups>
+struct RadiationIMCParameters
+{
+    std::size_t newPhotonsPerCell = 0;
+    bool withHydro = false;
+    bool diffusionPressureGradient = false;
+    bool MMC = false;
+    bool withMultigroupOpacity = false;
+    bool withRandomWalk = false;
+    double rwMinCellOpticalDepth = 25.0;
+    double rwMinParticleOpticalDepth = 5.0;
+    bool withDDMC = false;
+    double ddmcMinCellOpticalDepth = 15.0;
+    double ddmcMinParticleOpticalDepth = 5.0;
+    bool ddmcUseMultigroupPGRW = false;
+    bool noHydroFeedback = false;
+    bool withEgTimeAvg = false;
+    bool withCompton = false;
+    bool comptonUseInduced = true;
+    bool comptonAllowNZeroFallback = true;
+    bool comptonDebugParityCheck = false;
+    bool comptonCheckSignedTallies = false;
+    bool comptonDiagnostics = false;
+    bool comptonAngleDependent = true;
+    double comptonSignedTallyTolerance = 1e-10;
+    std::size_t comptonMatrixSamples = 200000;
+    std::array<double, NumGroups + 1> energyBoundaries{};
+    bool energyBoundariesProvided = false;
+
+    struct PostProcessParameters
+    {
+        bool enabled = false;
+        double sourceDt = 0.0;
+        double transportTime = 0.0;
+        bool useCellVelocities = true;
+
+        struct PolarizationParameters
+        {
+            bool enabled = false;
+            int manualScatteringsAfterAcceleration = 0;
+            double depolarizationScatterings = 0.0;
+            std::string acceleratedClosure;
+        } polarization;
+    } postProcess;
+};
+
+template<std::size_t NumGroups>
+std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroups> &parameters)
+{
+    os << "STORM IMC, with parameters:\n";
+    os << "\tnew photons per cell: " << parameters.newPhotonsPerCell << '\n';
+    os << "\twith hydro: " << parameters.withHydro << '\n';
+    os << "\tdiffusion pressure gradient: " << parameters.diffusionPressureGradient << '\n';
+    os << "\tMMC: " << parameters.MMC << '\n';
+    os << "\twith multigroup opacity: " << parameters.withMultigroupOpacity << '\n';
+    os << "\twith random walk: " << parameters.withRandomWalk << '\n';
+    os << "\twith DDMC: " << parameters.withDDMC << '\n';
+    os << "\tno hydro feedback: " << parameters.noHydroFeedback << '\n';
+    os << "\twith group time averages: " << parameters.withEgTimeAvg << '\n';
+    os << "\twith Compton: " << parameters.withCompton << '\n';
+    if(parameters.withRandomWalk)
+    {
+        os << "\tRW min cell optical depth: " << parameters.rwMinCellOpticalDepth << '\n';
+        os << "\tRW min particle optical depth: " << parameters.rwMinParticleOpticalDepth << '\n';
+    }
+    if(parameters.withDDMC)
+    {
+        os << "\tDDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << '\n';
+        os << "\tDDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << '\n';
+        os << "\tDDMC multigroup PGRW: " << parameters.ddmcUseMultigroupPGRW << '\n';
+    }
+    if(parameters.withCompton)
+    {
+        os << "\tCompton induced terms: " << parameters.comptonUseInduced << '\n';
+        os << "\tCompton n=0 fallback: " << parameters.comptonAllowNZeroFallback << '\n';
+        os << "\tCompton debug parity check: " << parameters.comptonDebugParityCheck << '\n';
+        os << "\tCompton signed tally check: " << parameters.comptonCheckSignedTallies << '\n';
+        os << "\tCompton diagnostics: " << parameters.comptonDiagnostics << '\n';
+        os << "\tCompton angle dependent: " << parameters.comptonAngleDependent << '\n';
+        os << "\tCompton signed tally tolerance: " << parameters.comptonSignedTallyTolerance << '\n';
+        os << "\tCompton matrix samples: " << parameters.comptonMatrixSamples << '\n';
+    }
+    if(parameters.postProcess.enabled)
+    {
+        os << "\tpost-process source dt: " << parameters.postProcess.sourceDt << '\n';
+        os << "\tpost-process transport time: " << parameters.postProcess.transportTime << '\n';
+        os << "\tpost-process use cell velocities: " << parameters.postProcess.useCellVelocities << '\n';
+        os << "\tpost-process polarization: " << parameters.postProcess.polarization.enabled << '\n';
+    }
+    return os;
+}
+
+} // namespace STORM
+
+#endif // STORM_RADIATION_IMC_PARAMETERS_HPP

@@ -1,0 +1,2300 @@
+#ifndef STORM_RADIATION_IMC_HPP
+#define STORM_RADIATION_IMC_HPP
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <random>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#ifdef STORM_WITH_MPI
+    #include <mpi.h>
+    #include "../utils/MpiExchangeGrid.hpp"
+#endif
+
+#include <boost/math/special_functions/pow.hpp>
+
+#include "PhysicalConstants.hpp"
+#include "StormError.hpp"
+#include "boundary/BoundaryCondition.hpp"
+#include "elementary/PointOps.hpp"
+#include "particle/Particle.hpp"
+#include "particle/StepResult.hpp"
+#include "../utils/RandomInCell.hpp"
+#include "physics/MonteCarloPhysics.hpp"
+#include "radiation/RadiationIMCParameters.hpp"
+#include "radiation/RadiationIMCTraits.hpp"
+#include "radiation/RadiationOpacityModel.hpp"
+#include "radiation/RandomWalk.hpp"
+#include "utils/PlanckIntegral.hpp"
+
+namespace STORM {
+
+namespace radiation_imc_detail {
+
+template<typename T, typename = void>
+struct has_member_ID : std::false_type {};
+
+template<typename T>
+struct has_member_ID<T, std::void_t<decltype(std::declval<const T &>().ID)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_density : std::false_type {};
+
+template<typename T>
+struct has_member_density<T, std::void_t<decltype(std::declval<const T &>().density)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_pressure : std::false_type {};
+
+template<typename T>
+struct has_member_pressure<T, std::void_t<decltype(std::declval<T &>().pressure)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_internal_energy_specific : std::false_type {};
+
+template<typename T>
+struct has_member_internal_energy_specific<T, std::void_t<decltype(std::declval<T &>().internal_energy)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_internal_energy_density : std::false_type {};
+
+template<typename T>
+struct has_member_internal_energy_density<T, std::void_t<decltype(std::declval<T &>().internalEnergy)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_total_energy : std::false_type {};
+
+template<typename T>
+struct has_member_total_energy<T, std::void_t<decltype(std::declval<T &>().energy)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_mass : std::false_type {};
+
+template<typename T>
+struct has_member_mass<T, std::void_t<decltype(std::declval<const T &>().mass)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_radiation_energy : std::false_type {};
+
+template<typename T>
+struct has_member_radiation_energy<T, std::void_t<decltype(std::declval<T &>().Erad)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_group_energy_mutable : std::false_type {};
+
+template<typename T>
+struct has_member_group_energy_mutable<T, std::void_t<decltype(std::declval<T &>().Eg)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_velocity : std::false_type {};
+
+template<typename T>
+struct has_member_velocity<T, std::void_t<decltype(std::declval<const T &>().velocity)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_momentum : std::false_type {};
+
+template<typename T>
+struct has_member_momentum<T, std::void_t<decltype(std::declval<T &>().momentum)>> : std::true_type {};
+
+template<typename T, typename = void>
+struct has_member_temperature : std::false_type {};
+
+template<typename T>
+struct has_member_temperature<T, std::void_t<decltype(std::declval<const T &>().temperature)>> : std::true_type {};
+
+template<typename CellT>
+std::size_t cellID(const CellT &cell)
+{
+    if constexpr(has_member_ID<CellT>::value)
+    {
+        return cell.ID;
+    }
+    else
+    {
+        (void) cell;
+        return std::numeric_limits<std::size_t>::max();
+    }
+}
+
+template<typename ExtensivesT>
+void addTotalEnergyIfPresent(ExtensivesT &extensives, double energy)
+{
+    if constexpr(has_member_total_energy<ExtensivesT>::value)
+    {
+        extensives.energy += energy;
+    }
+    else
+    {
+        (void) extensives;
+        (void) energy;
+    }
+}
+
+template<typename ExtensivesT>
+void clearRadiationEnergyIfPresent(ExtensivesT &extensives)
+{
+    if constexpr(has_member_radiation_energy<ExtensivesT>::value)
+    {
+        extensives.Erad = 0.0;
+    }
+    else
+    {
+        (void) extensives;
+    }
+}
+
+template<typename ExtensivesT>
+void addRadiationEnergyIfPresent(ExtensivesT &extensives, double energy)
+{
+    if constexpr(has_member_radiation_energy<ExtensivesT>::value)
+    {
+        extensives.Erad += energy;
+    }
+    else
+    {
+        (void) extensives;
+        (void) energy;
+    }
+}
+
+template<typename ExtensivesT>
+double radiationEnergyIfPresent(const ExtensivesT &extensives)
+{
+    if constexpr(has_member_radiation_energy<ExtensivesT>::value)
+    {
+        return extensives.Erad;
+    }
+    else
+    {
+        (void) extensives;
+        return 0.0;
+    }
+}
+
+template<typename ExtensivesT>
+void clearGroupEnergyIfPresent(ExtensivesT &extensives)
+{
+    if constexpr(has_member_group_energy_mutable<ExtensivesT>::value)
+    {
+        std::fill(extensives.Eg.begin(), extensives.Eg.end(), 0.0);
+    }
+    else
+    {
+        (void) extensives;
+    }
+}
+
+template<typename CellT>
+void setCellRadiationEnergyIfPresent(CellT &cell, double value)
+{
+    if constexpr(has_member_radiation_energy<CellT>::value)
+    {
+        cell.Erad = value;
+    }
+    else
+    {
+        (void) cell;
+        (void) value;
+    }
+}
+
+template<typename CellT>
+void setCellGroupEnergyIfPresent(CellT &cell, std::size_t group, double value)
+{
+    if constexpr(has_member_group_energy_mutable<CellT>::value)
+    {
+        cell.Eg[group] = value;
+    }
+    else
+    {
+        (void) cell;
+        (void) group;
+        (void) value;
+    }
+}
+
+template<typename PointT, typename ParticleT, typename CellT>
+double computeDopplerShift(const ParticleT &particle, const CellT &cell)
+{
+    if constexpr(has_member_velocity<CellT>::value)
+    {
+        double v2 = ScalarProd(cell.velocity, cell.velocity);
+        if(v2 < 1e-30)
+        {
+            return 1.0;
+        }
+        double gamma = 1.0 / std::sqrt(1.0 - v2 * constants::inv_clight2);
+        return gamma * (1.0 - ScalarProd(cell.velocity, particle.velocity) * constants::inv_clight2);
+    }
+    else
+    {
+        (void) particle;
+        (void) cell;
+    }
+    return 1.0;
+}
+
+template<typename PointT, typename ParticleT, typename CellT>
+void lorentzTransformToComoving(ParticleT &particle, const CellT &cell)
+{
+    if constexpr(has_member_velocity<CellT>::value)
+    {
+        double beta2 = ScalarProd(cell.velocity, cell.velocity) * constants::inv_clight2;
+        if(beta2 < 1e-20)
+        {
+            return;
+        }
+        double gamma = 1.0 / std::sqrt(1.0 - beta2);
+        double vDotDir = ScalarProd(cell.velocity, particle.velocity);
+        double speed = fastabs(particle.velocity);
+        if(speed <= 0.0)
+        {
+            return;
+        }
+        PointT dir = particle.velocity / speed;
+        double vDotDirNorm = ScalarProd(cell.velocity, dir);
+        double D = 1.0 - vDotDirNorm / constants::clight;
+        particle.frequency *= D;
+        particle.weight *= D;
+        PointT newDir = dir - cell.velocity / constants::clight
+            + (gamma - 1.0) * vDotDirNorm / (beta2 * constants::clight2) * cell.velocity;
+        double newDirMag = fastabs(newDir);
+        if(newDirMag > 0.0)
+        {
+            particle.velocity = newDir * (constants::clight / newDirMag);
+        }
+    }
+    else
+    {
+        (void) particle;
+        (void) cell;
+    }
+}
+
+template<typename PointT, typename ParticleT, typename CellT>
+void lorentzTransformToLab(ParticleT &particle, const CellT &cell)
+{
+    if constexpr(has_member_velocity<CellT>::value)
+    {
+        double v2 = ScalarProd(cell.velocity, cell.velocity);
+        if(v2 < 1e-30)
+        {
+            return;
+        }
+        double gamma = 1.0 / std::sqrt(1.0 - constants::inv_clight2 * v2);
+        PointT negV = cell.velocity * (-1.0);
+        double dopplerShift = gamma * (1.0 - ScalarProd(negV, particle.velocity) * constants::inv_clight2);
+        particle.frequency *= dopplerShift;
+        particle.weight *= dopplerShift;
+        double vDotP = ScalarProd(particle.velocity, negV);
+        particle.velocity = particle.velocity + negV * ((gamma - 1.0) * vDotP / v2 - gamma);
+        double newSpeed = fastabs(particle.velocity);
+        if(newSpeed > 0.0)
+        {
+            particle.velocity = particle.velocity * (constants::clight / newSpeed);
+        }
+    }
+    else
+    {
+        (void) particle;
+        (void) cell;
+    }
+}
+
+} // namespace radiation_imc_detail
+
+template<typename PointT, typename GridT>
+struct CellCenterPositionSampler
+{
+    PointT operator()(const GridT &grid,
+                      std::size_t cellIndex,
+                      std::mt19937_64 &rng,
+                      std::uniform_real_distribution<double> &dist) const
+    {
+        (void) rng;
+        (void) dist;
+        return grid.GetMeshPoint(cellIndex);
+    }
+};
+
+template<typename PointT,
+         typename GridT,
+         typename CellT,
+         typename ExtensivesT,
+         typename EOST,
+         std::size_t NumGroups,
+         typename TraitsT = DirectRadiationIMCTraits<PointT, CellT, ExtensivesT, NumGroups>,
+         typename PositionSamplerT = RandomInCellPositionSampler<PointT, GridT>>
+class RadiationIMC : public MonteCarloPhysics<PointT, GridT>
+{
+public:
+    static_assert(NumGroups > 0, "RadiationIMC requires at least one frequency group");
+
+    using Base = MonteCarloPhysics<PointT, GridT>;
+    using MCParticle = Particle<PointT, GridT>;
+    using Functionality = StepResult<PointT, GridT>;
+    using BoundaryCond = BoundaryCondition<PointT, GridT>;
+    using Parameters = RadiationIMCParameters<NumGroups>;
+    using OpacityModel = RadiationOpacityModel<PointT, GridT, CellT, NumGroups>;
+    using GroupArray = std::array<double, NumGroups>;
+    using GroupBoundaries = std::array<double, NumGroups + 1>;
+
+    struct SourceAllocationSummary
+    {
+        bool adaptiveEnabled = false;
+        std::size_t totalPhotons = 0;
+        std::size_t sourceCells = 0;
+        std::size_t boostedCells = 0;
+        std::size_t learnedCells = 0;
+        std::size_t learnedBoostedCells = 0;
+        std::size_t learnedPhotons = 0;
+        std::size_t learnedExtraPhotons = 0;
+        std::size_t minPhotons = 0;
+        std::size_t maxPhotons = 0;
+        std::size_t learnedMinPhotons = 0;
+        std::size_t learnedMaxPhotons = 0;
+        double adaptiveScoreSum = 0.0;
+    };
+
+    struct GroupSamplingDiagnostics
+    {
+        std::size_t totalSampled = 0;
+        std::size_t cellsWithGroupScores = 0;
+        double weightCorrectionMin = 1.0;
+        double weightCorrectionMax = 1.0;
+        double weightCorrectionSum = 0.0;
+        std::size_t weightCorrectionCount = 0;
+        std::size_t weightCorrectionCapped = 0;
+        std::size_t weightCorrectionFallback = 0;
+        std::size_t invalidPdfFallback = 0;
+        std::size_t invalidPdfFallbackPackets = 0;
+        double sampledEnergy = 0.0;
+        double cappedEnergy = 0.0;
+        double cappedEnergyFraction = 0.0;
+        bool estimatorPotentiallyBiased = false;
+    };
+
+    struct ComptonCellData {};
+
+    struct DDMCFaceLeak
+    {
+        std::size_t faceIndex = std::numeric_limits<std::size_t>::max();
+        std::size_t nextCellIndex = std::numeric_limits<std::size_t>::max();
+        double rate = 0.0;
+    };
+
+    struct DDMCCellData
+    {
+        bool eligible = false;
+        double sigmaA = 0.0;
+        double sigmaT = 0.0;
+        double diffusionCoefficient = 0.0;
+        double gamma = 1.0;
+        double totalLeakRate = 0.0;
+        std::size_t groupCutoff = 0;
+        std::vector<DDMCFaceLeak> faceLeaks;
+    };
+
+    RadiationIMC(const GridT &grid,
+                 const std::shared_ptr<BoundaryCond> &boundary,
+                 std::vector<CellT> &cells,
+                 std::vector<ExtensivesT> &extensives,
+                 std::shared_ptr<EOST> eos,
+                 std::shared_ptr<OpacityModel> opacity,
+                 Parameters parameters,
+                 TraitsT traits = TraitsT(),
+                 PositionSamplerT positionSampler = PositionSamplerT(),
+                 std::uint64_t seed = 42);
+
+    std::vector<MCParticle> preStep(double fullDt) override;
+    Functionality step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) override;
+    void postStep(const std::vector<MCParticle> &particles, double fullDt) override;
+
+    MCParticle generateSingleParticle(std::size_t cellIndex, const CellT &cell);
+    std::vector<MCParticle> generateInitialParticles(std::size_t particlesPerCell);
+    void adjustExistingParticles(std::vector<MCParticle> &particles, double fullDt);
+
+    const std::vector<double> &getFactorFleck() const { return this->factorFleck_; }
+    const std::vector<double> &getPlanckOpacities() const { return this->planckOpacities_; }
+    const std::vector<double> &getEradTimeAvg() const { return this->Erad_time_avg_; }
+    const GroupBoundaries &getEnergyBoundaries() const { return this->energyBoundaries_; }
+    const Parameters &getParameters() const { return this->parameters_; }
+    const SourceAllocationSummary &getLastSourceAllocationSummary() const { return this->lastSourceAllocationSummary_; }
+    const std::vector<std::size_t> &getLastSourcePhotonsPerCell() const { return this->lastSourcePhotonsPerCell_; }
+    GroupSamplingDiagnostics getLastGroupSamplingDiagnostics() const { return this->lastGroupSamplingDiagnostics_; }
+    const std::vector<ComptonCellData> &getComptonData() const { return this->comptonData_; }
+    const GroupArray &getComptonGroupCenters() const { return this->comptonGroupCenters_; }
+    const GroupArray &getComptonGroupWidths() const { return this->comptonGroupWidths_; }
+
+    std::size_t getRandomWalkStepCount() const override { return this->rwStepCount_; }
+    std::size_t getDDMCStepCount() const override { return this->ddmcStepCount_; }
+    std::size_t getDDMCLeakCount() const override { return this->ddmcLeakCount_; }
+
+    void setNewPhotonsPerCell(std::size_t n);
+    void setAdaptiveSourceCellScores(std::unordered_map<std::size_t, double> scores,
+                                     double strength,
+                                     double maxFactor,
+                                     double learnedReserveFrac,
+                                     double learnedMinFactor,
+                                     double observerBudgetMultiplier);
+    void clearAdaptiveSourceCellScores();
+    void setAdaptiveSourceCellGroupScores(std::unordered_map<std::size_t, GroupArray> scores,
+                                          double strength,
+                                          double pdfFloor,
+                                          double maxBias,
+                                          double maxWeightCorrection);
+    void clearAdaptiveSourceCellGroupScores();
+    void setSourceEmissionControl(bool useLearnedScores,
+                                  bool includeUniformBase,
+                                  std::size_t baseMultiplier,
+                                  std::size_t learnedBoostFactor = 20,
+                                  std::size_t learnedExtraBudget = 0);
+    void clearSourceEmissionControl();
+
+private:
+    enum class Event
+    {
+        Face,
+        Scatter,
+        Census
+    };
+
+    std::vector<MCParticle> generateParticles(double fullDt);
+    void validateGridSizedState() const;
+    void validateEnergyBoundaries() const;
+    void rejectUnsupportedParameters() const;
+    void rejectUnsupportedParameter(const std::string &name) const;
+    void setInitialWeightFromWeight(MCParticle &particle) const;
+    double randomUnitOpen();
+    double density(std::size_t cellIndex) const;
+    double specificInternalEnergy(std::size_t cellIndex) const;
+    double totalRadiationEnergy(std::size_t cellIndex) const;
+    void depositMaterialEnergy(std::size_t cellIndex, double energy);
+    void synchronizeMaterialCell(std::size_t cellIndex);
+    void throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where) const;
+
+    void precomputeRandomWalkData();
+    bool tryRandomWalkStep(MCParticle &particle, Functionality &functionality);
+    double computeMinDistanceToFaces(std::size_t cellIndex, const PointT &location) const;
+    double computeCellSurfaceArea(std::size_t cellIndex) const;
+
+    void precomputeDDMCData();
+    bool tryDDMCStep(MCParticle &particle, Functionality &functionality);
+
+    void clampFrequencyToBounds(double &frequency) const;
+
+    std::vector<CellT> &cells_;
+    std::vector<ExtensivesT> &extensives_;
+    std::shared_ptr<EOST> eos_;
+    std::shared_ptr<OpacityModel> opacity_;
+    Parameters parameters_;
+    TraitsT traits_;
+    PositionSamplerT positionSampler_;
+    GroupBoundaries energyBoundaries_{};
+    std::vector<double> factorFleck_;
+    std::vector<double> planckOpacities_;
+    std::vector<double> Erad_time_avg_;
+    std::vector<GroupArray> Eg_time_avg_;
+    std::vector<std::size_t> lastSourcePhotonsPerCell_;
+    SourceAllocationSummary lastSourceAllocationSummary_;
+    GroupSamplingDiagnostics lastGroupSamplingDiagnostics_;
+    std::vector<ComptonCellData> comptonData_;
+    GroupArray comptonGroupCenters_{};
+    GroupArray comptonGroupWidths_{};
+    std::mt19937_64 rng_;
+    std::uniform_real_distribution<double> dist_;
+
+    std::unique_ptr<RandomWalk> randomWalk_;
+    std::vector<bool> rwCellEligible_;
+    std::vector<double> rwCellTotalOpacity_;
+    std::vector<PGRWCellData> rwCellData_;
+    std::size_t rwStepCount_ = 0;
+
+    std::vector<DDMCCellData> ddmcCellData_;
+    std::size_t ddmcStepCount_ = 0;
+    std::size_t ddmcLeakCount_ = 0;
+    std::size_t ddmcCensusCount_ = 0;
+    std::size_t ddmcUpscatterCount_ = 0;
+    std::size_t ddmcFallbackCount_ = 0;
+};
+
+// ============================================================
+// Constructor
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::RadiationIMC(
+    const GridT &grid,
+    const std::shared_ptr<BoundaryCond> &boundary,
+    std::vector<CellT> &cells,
+    std::vector<ExtensivesT> &extensives,
+    std::shared_ptr<EOST> eos,
+    std::shared_ptr<OpacityModel> opacity,
+    Parameters parameters,
+    TraitsT traits,
+    PositionSamplerT positionSampler,
+    std::uint64_t seed):
+    Base(grid, boundary),
+    cells_(cells),
+    extensives_(extensives),
+    eos_(std::move(eos)),
+    opacity_(std::move(opacity)),
+    parameters_(std::move(parameters)),
+    traits_(std::move(traits)),
+    positionSampler_(std::move(positionSampler)),
+    rng_(seed),
+    dist_(0.0, 1.0)
+{
+    if(this->parameters_.newPhotonsPerCell == 0)
+    {
+        StormError eo("RadiationIMC requires newPhotonsPerCell > 0");
+        throw eo;
+    }
+    if(!this->eos_)
+    {
+        StormError eo("RadiationIMC requires a non-null EOS");
+        throw eo;
+    }
+    if(!this->opacity_)
+    {
+        StormError eo("RadiationIMC requires a non-null opacity model");
+        throw eo;
+    }
+
+    this->validateGridSizedState();
+    this->rejectUnsupportedParameters();
+
+    if(this->parameters_.energyBoundariesProvided)
+    {
+        this->energyBoundaries_ = this->parameters_.energyBoundaries;
+        this->validateEnergyBoundaries();
+    }
+    else if(!this->cells_.empty())
+    {
+        this->energyBoundaries_ = this->traits_.energyBoundaries(this->cells_.front());
+    }
+    else
+    {
+        for(std::size_t g = 0; g < NumGroups + 1; ++g)
+        {
+            this->energyBoundaries_[g] = static_cast<double>(g);
+        }
+    }
+
+    if(this->parameters_.withRandomWalk)
+    {
+        this->randomWalk_ = std::make_unique<RandomWalk>();
+    }
+
+#ifdef STORM_WITH_MPI
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    this->rng_.seed(seed + static_cast<std::uint64_t>(rank) * 104729ULL);
+#endif
+    this->opacity_->reseed(seed + 1ULL);
+
+    const std::size_t Ncells = this->grid.GetPointNo();
+    this->Erad_time_avg_.assign(Ncells, 0.0);
+}
+
+// ============================================================
+// Validation helpers
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::validateGridSizedState() const
+{
+    const std::size_t Ncells = this->grid.GetPointNo();
+    if(this->cells_.size() < Ncells)
+    {
+        StormError eo("RadiationIMC cells vector is smaller than the grid cell count");
+        eo.addEntry("Grid cells", Ncells);
+        eo.addEntry("Cells size", this->cells_.size());
+        throw eo;
+    }
+    if(this->extensives_.size() < Ncells)
+    {
+        StormError eo("RadiationIMC extensives vector is smaller than the grid cell count");
+        eo.addEntry("Grid cells", Ncells);
+        eo.addEntry("Extensives size", this->extensives_.size());
+        throw eo;
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::validateEnergyBoundaries() const
+{
+    for(std::size_t g = 0; g < NumGroups; ++g)
+    {
+        if(this->energyBoundaries_[g + 1] <= this->energyBoundaries_[g])
+        {
+            StormError eo("RadiationIMC energy boundaries are not strictly increasing");
+            eo.addEntry("Group", g);
+            throw eo;
+        }
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::rejectUnsupportedParameter(const std::string &name) const
+{
+    StormError eo("RadiationIMC option is planned but not implemented in the initial STORM port");
+    eo.addEntry("Unsupported option", name);
+    throw eo;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::rejectUnsupportedParameters() const
+{
+    if(this->parameters_.withCompton) this->rejectUnsupportedParameter("withCompton");
+    if(this->parameters_.postProcess.enabled) this->rejectUnsupportedParameter("postProcess.enabled");
+    if(this->parameters_.postProcess.polarization.enabled) this->rejectUnsupportedParameter("postProcess.polarization.enabled");
+}
+
+// ============================================================
+// Small utilities
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::randomUnitOpen()
+{
+    double value = this->dist_(this->rng_);
+    if(value <= 0.0)
+    {
+        return std::numeric_limits<double>::min();
+    }
+    if(value >= 1.0)
+    {
+        return std::nextafter(1.0, 0.0);
+    }
+    return value;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setInitialWeightFromWeight(MCParticle &particle) const
+{
+    particle.initialWeight = std::abs(particle.weight);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::density(std::size_t cellIndex) const
+{
+    if constexpr(radiation_imc_detail::has_member_density<CellT>::value)
+    {
+        return this->cells_[cellIndex].density;
+    }
+    else
+    {
+        static_assert(radiation_imc_detail::has_member_mass<ExtensivesT>::value,
+                      "RadiationIMC requires CellT::density or ExtensivesT::mass");
+        return this->extensives_[cellIndex].mass / this->grid.GetVolume(cellIndex);
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::specificInternalEnergy(std::size_t cellIndex) const
+{
+    static_assert(radiation_imc_detail::has_member_mass<ExtensivesT>::value,
+                  "RadiationIMC requires ExtensivesT::mass for specific internal energy");
+    return this->extensives_[cellIndex].internal_energy / this->extensives_[cellIndex].mass;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::totalRadiationEnergy(std::size_t cellIndex) const
+{
+    const double extensiveRadiation = radiation_imc_detail::radiationEnergyIfPresent(this->extensives_[cellIndex]);
+    if(extensiveRadiation > 0.0)
+    {
+        return extensiveRadiation;
+    }
+    if constexpr(radiation_imc_detail::has_member_radiation_energy<CellT>::value &&
+                 radiation_imc_detail::has_member_mass<ExtensivesT>::value)
+    {
+        return this->cells_[cellIndex].Erad * this->extensives_[cellIndex].mass;
+    }
+    else
+    {
+        return 0.0;
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::throwIfNegativeInternalEnergy(
+    std::size_t cellIndex,
+    const std::string &where) const
+{
+    if(this->extensives_[cellIndex].internal_energy >= 0.0)
+    {
+        return;
+    }
+
+    StormError eo("Negative material internal energy in RadiationIMC");
+    eo.addEntry("Where", where);
+    eo.addEntry("Cell index", cellIndex);
+    eo.addEntry("Cell ID", radiation_imc_detail::cellID(this->cells_[cellIndex]));
+    eo.addEntry("Internal energy", this->extensives_[cellIndex].internal_energy);
+    if constexpr(radiation_imc_detail::has_member_mass<ExtensivesT>::value)
+    {
+        eo.addEntry("Mass", this->extensives_[cellIndex].mass);
+    }
+    eo.addEntry("Density", this->density(cellIndex));
+    eo.addEntry("Temperature", this->cells_[cellIndex].temperature);
+    throw eo;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::depositMaterialEnergy(std::size_t cellIndex, double energy)
+{
+    if(this->parameters_.noHydroFeedback)
+    {
+        return;
+    }
+    this->extensives_[cellIndex].internal_energy += energy;
+    this->throwIfNegativeInternalEnergy(cellIndex, "depositMaterialEnergy");
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::synchronizeMaterialCell(std::size_t cellIndex)
+{
+    CellT &cell = this->cells_[cellIndex];
+    const double volume = this->grid.GetVolume(cellIndex);
+    const double specificEnergy = this->specificInternalEnergy(cellIndex);
+
+    if constexpr(radiation_imc_detail::has_member_internal_energy_specific<CellT>::value)
+    {
+        cell.internal_energy = specificEnergy;
+    }
+    else if constexpr(radiation_imc_detail::has_member_internal_energy_density<CellT>::value)
+    {
+        cell.internalEnergy = this->extensives_[cellIndex].internal_energy / volume;
+    }
+
+    const auto &tracers = this->traits_.tracers(cell);
+    const auto &tracerNames = this->traits_.tracerNames(cell);
+    cell.temperature = this->eos_->de2T(this->density(cellIndex), specificEnergy, tracers, tracerNames);
+    if constexpr(radiation_imc_detail::has_member_pressure<CellT>::value)
+    {
+        cell.pressure = this->eos_->de2p(this->density(cellIndex), specificEnergy, tracers, tracerNames);
+    }
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value && radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+    {
+        if(this->parameters_.withHydro)
+        {
+            cell.velocity = this->extensives_[cellIndex].momentum / this->extensives_[cellIndex].mass;
+            if constexpr(radiation_imc_detail::has_member_total_energy<ExtensivesT>::value)
+            {
+                this->extensives_[cellIndex].energy = this->extensives_[cellIndex].internal_energy
+                    + 0.5 * ScalarProd(this->extensives_[cellIndex].momentum, this->extensives_[cellIndex].momentum)
+                    / this->extensives_[cellIndex].mass;
+            }
+        }
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clampFrequencyToBounds(double &frequency) const
+{
+    frequency = std::clamp(frequency, this->energyBoundaries_[0], this->energyBoundaries_[NumGroups]);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setNewPhotonsPerCell(std::size_t n)
+{
+    this->parameters_.newPhotonsPerCell = n;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setAdaptiveSourceCellScores(
+    std::unordered_map<std::size_t, double> scores, double strength, double maxFactor,
+    double learnedReserveFrac, double learnedMinFactor, double observerBudgetMultiplier)
+{
+    (void) scores; (void) strength; (void) maxFactor;
+    (void) learnedReserveFrac; (void) learnedMinFactor; (void) observerBudgetMultiplier;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clearAdaptiveSourceCellScores() {}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setAdaptiveSourceCellGroupScores(
+    std::unordered_map<std::size_t, GroupArray> scores, double strength, double pdfFloor, double maxBias, double maxWeightCorrection)
+{
+    (void) scores; (void) strength; (void) pdfFloor; (void) maxBias; (void) maxWeightCorrection;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clearAdaptiveSourceCellGroupScores() {}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setSourceEmissionControl(
+    bool useLearnedScores, bool includeUniformBase, std::size_t baseMultiplier, std::size_t learnedBoostFactor, std::size_t learnedExtraBudget)
+{
+    (void) useLearnedScores; (void) includeUniformBase; (void) baseMultiplier;
+    (void) learnedBoostFactor; (void) learnedExtraBudget;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clearSourceEmissionControl() {}
+
+// ============================================================
+// Random Walk helpers
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::computeMinDistanceToFaces(
+    std::size_t cellIndex, const PointT &location) const
+{
+    const auto &normals = this->gridData.normalsOfCells[cellIndex];
+    const auto &facePoints = this->gridData.pointsOnFaces[cellIndex];
+    double Ro = std::numeric_limits<double>::max();
+    for(std::size_t f = 0; f < normals.size(); ++f)
+    {
+        double d = ScalarProd(location - facePoints[f], normals[f]);
+        Ro = std::min(Ro, d);
+    }
+    return (Ro > 0.0) ? Ro : 0.0;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::computeCellSurfaceArea(std::size_t cellIndex) const
+{
+    double surfaceArea = 0.0;
+    for(std::size_t faceIdx : this->grid.GetCellFaces(cellIndex))
+    {
+        surfaceArea += this->grid.GetArea(faceIdx);
+    }
+    return surfaceArea;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::precomputeRandomWalkData()
+{
+    const std::size_t Ncells = this->grid.GetPointNo();
+    this->rwCellEligible_.assign(Ncells, false);
+    this->rwCellTotalOpacity_.assign(Ncells, 0.0);
+    if(this->parameters_.withMultigroupOpacity)
+    {
+        this->rwCellData_.resize(Ncells);
+    }
+
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        const CellT &cell = this->cells_[i];
+        double scatOp = this->opacity_->CalcScatteringOpacity(cell);
+        double sigmaT_gray = this->planckOpacities_[i] + scatOp;
+        this->rwCellTotalOpacity_[i] = sigmaT_gray;
+
+        double surfaceArea = this->computeCellSurfaceArea(i);
+        double volume = this->grid.GetVolume(i);
+        double meanChordLength = (surfaceArea > 0.0) ? 4.0 * volume / surfaceArea : 0.0;
+
+        if(!this->parameters_.withMultigroupOpacity)
+        {
+            this->rwCellEligible_[i] = (sigmaT_gray * meanChordLength >= this->parameters_.rwMinCellOpticalDepth);
+        }
+        else
+        {
+            GroupArray energyCenters = this->opacity_->getEnergyCenters(this->energyBoundaries_);
+            double kT = constants::k_boltz * cell.temperature;
+
+            double totalSigABgAll = 0.0;
+            double totalBgDiff = 0.0, sumBgSigADiff = 0.0, sumBgSigTDiff = 0.0, sumBgOverSigTDiff = 0.0;
+            std::size_t cutoff = 0;
+            bool foundNonDiffusive = false;
+
+            for(std::size_t g = 0; g < NumGroups; ++g)
+            {
+                double a = this->energyBoundaries_[g] / kT;
+                double b = this->energyBoundaries_[g + 1] / kT;
+                double Bg = (a > 0.0 && b > a) ? planck_integral::PlanckIntegral(a, b) : 1.0 / static_cast<double>(NumGroups);
+                double sigA_g = this->opacity_->CalcAbsorptionOpacity(cell, energyCenters[g]);
+                double sigT_g = sigA_g + scatOp;
+
+                totalSigABgAll += sigA_g * Bg;
+
+                if(!foundNonDiffusive && sigT_g * meanChordLength >= this->parameters_.rwMinCellOpticalDepth)
+                {
+                    cutoff = g + 1;
+                    totalBgDiff += Bg;
+                    sumBgSigADiff += Bg * sigA_g;
+                    sumBgSigTDiff += Bg * sigT_g;
+                    if(sigT_g > 0.0)
+                    {
+                        sumBgOverSigTDiff += Bg / sigT_g;
+                    }
+                }
+                else
+                {
+                    foundNonDiffusive = true;
+                }
+            }
+
+            PGRWCellData &data = this->rwCellData_[i];
+            if(cutoff > 0 && totalBgDiff > 0.0)
+            {
+                data.groupCutoff = cutoff;
+                data.sigmaA_bar = sumBgSigADiff / totalBgDiff;
+                data.sigmaT_bar = sumBgSigTDiff / totalBgDiff;
+                data.D = (constants::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff;
+                data.gamma = (totalSigABgAll > 0.0) ? sumBgSigADiff / totalSigABgAll : 1.0;
+                this->rwCellTotalOpacity_[i] = data.sigmaT_bar;
+                this->rwCellEligible_[i] = true;
+            }
+            else
+            {
+                data = PGRWCellData{};
+                this->rwCellEligible_[i] = false;
+            }
+        }
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tryRandomWalkStep(
+    MCParticle &particle, Functionality &functionality)
+{
+    std::size_t cellIndex = particle.cellIndex;
+    CellT &cell = this->cells_[cellIndex];
+
+    double Ro = this->computeMinDistanceToFaces(cellIndex, particle.location);
+
+    double sigmaT, sigma_a_eff, D_phys, gamma_rw;
+    bool isPGRW = this->parameters_.withMultigroupOpacity;
+    std::size_t groupCutoff = 0;
+
+    if(isPGRW)
+    {
+        const PGRWCellData &rwd = this->rwCellData_[cellIndex];
+        sigmaT = rwd.sigmaT_bar;
+        sigma_a_eff = rwd.sigmaA_bar;
+        D_phys = rwd.D;
+        gamma_rw = rwd.gamma;
+        groupCutoff = rwd.groupCutoff;
+    }
+    else
+    {
+        sigmaT = this->rwCellTotalOpacity_[cellIndex];
+        sigma_a_eff = this->planckOpacities_[cellIndex];
+        D_phys = (sigmaT > 0.0) ? constants::clight / (3.0 * sigmaT) : 0.0;
+        gamma_rw = 1.0;
+    }
+
+    bool doRW = (Ro > 0.0 && sigmaT > 0.0 && D_phys > 0.0
+                 && Ro * sigmaT >= this->parameters_.rwMinParticleOpticalDepth);
+
+    if(doRW && isPGRW)
+    {
+        double cutoffEnergy = this->energyBoundaries_[groupCutoff];
+        double coFreq = particle.frequency;
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            {
+                double dopplerShift = radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
+                coFreq *= dopplerShift;
+            }
+        }
+        this->clampFrequencyToBounds(coFreq);
+        if(coFreq >= cutoffEnergy)
+        {
+            doRW = false;
+        }
+    }
+
+    if(!doRW)
+    {
+        return false;
+    }
+
+    PointT oldVelocity = particle.velocity;
+    double oldWeight = particle.weight;
+    double f = this->factorFleck_[cellIndex];
+
+    double tauLeak = this->randomWalk_->sampleLeakTime(this->randomUnitOpen());
+    double tLeak = tauLeak * Ro * Ro / D_phys;
+
+    double tCensus = particle.timeLeft;
+
+    double tUpscatter = std::numeric_limits<double>::max();
+    if(isPGRW && gamma_rw < 1.0 && sigma_a_eff > 0.0 && f > 0.0)
+    {
+        double xiUp = this->randomUnitOpen();
+        tUpscatter = -std::log(xiUp) / (constants::clight * (1.0 - f) * sigma_a_eff * (1.0 - gamma_rw));
+    }
+
+    enum { RW_LEAK, RW_CENSUS, RW_UPSCATTER };
+    int rwEvent;
+    double dt;
+    if(tLeak <= tCensus && tLeak <= tUpscatter)
+    {
+        rwEvent = RW_LEAK;
+        dt = tLeak;
+    }
+    else if(tCensus <= tUpscatter)
+    {
+        rwEvent = RW_CENSUS;
+        dt = tCensus;
+    }
+    else
+    {
+        rwEvent = RW_UPSCATTER;
+        dt = tUpscatter;
+    }
+
+    double rwAbsRate = sigma_a_eff * f * constants::clight;
+    double rwExp = std::expm1(-dt * rwAbsRate);
+    if(!this->parameters_.noHydroFeedback)
+    {
+        this->extensives_[cellIndex].internal_energy += -rwExp * particle.weight;
+    }
+    if(rwAbsRate > 0.0)
+    {
+        this->Erad_time_avg_[cellIndex] += particle.weight * rwExp * (-1.0 / rwAbsRate);
+        if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
+        {
+            std::size_t g = this->opacity_->findGroup(particle.frequency, this->energyBoundaries_);
+            if(g < NumGroups)
+            {
+                this->Eg_time_avg_[cellIndex][g] += particle.weight * rwExp * (-1.0 / rwAbsRate);
+            }
+        }
+    }
+    particle.weight *= 1.0 + rwExp;
+
+    particle.timeLeft -= dt;
+
+    if(std::abs(particle.weight) < particle.initialWeight * 1e-4)
+    {
+        functionality.change = ParticleStatus::REMOVE;
+        if(!this->parameters_.noHydroFeedback)
+        {
+            this->extensives_[cellIndex].internal_energy += particle.weight;
+        }
+        return true;
+    }
+
+    constexpr double RW_PI = 3.14159265358979323846;
+    double cosTheta = 2.0 * this->randomUnitOpen() - 1.0;
+    double sinTheta = std::sqrt(std::max(0.0, 1.0 - cosTheta * cosTheta));
+    double phi = 2.0 * RW_PI * this->randomUnitOpen();
+    PointT posDir(sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta);
+
+    double displacement;
+    if(rwEvent == RW_LEAK)
+    {
+        displacement = Ro;
+    }
+    else
+    {
+        double tauPos = D_phys * dt / (Ro * Ro);
+        displacement = Ro * this->randomWalk_->sampleRadius(tauPos, this->randomUnitOpen());
+    }
+
+    if(displacement > Ro * (1.0 + 1e-12))
+    {
+        displacement = Ro;
+    }
+
+    PointT rwCenter = particle.location;
+    particle.location = rwCenter + displacement * posDir;
+
+    static constexpr double nudge = 1e-10;
+    particle.location = particle.location * (1.0 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
+
+    const auto &normals = this->gridData.normalsOfCells[cellIndex];
+    const auto &facePoints = this->gridData.pointsOnFaces[cellIndex];
+    for(std::size_t fi = 0; fi < normals.size(); ++fi)
+    {
+        double d = ScalarProd(particle.location - facePoints[fi], normals[fi]);
+        if(d < 0.0)
+        {
+            displacement *= 0.99;
+            particle.location = rwCenter + displacement * posDir;
+            fi = static_cast<std::size_t>(-1);
+        }
+    }
+
+    particle.velocity = this->opacity_->getRandomVelocity(cell, this->rng_, this->dist_);
+
+    if(rwEvent == RW_UPSCATTER && isPGRW)
+    {
+        GroupArray cumOp = this->opacity_->GetCumulativeOpacity(cell, this->energyBoundaries_);
+        double cdfAtCutoff = cumOp[groupCutoff - 1];
+        double cdfTotal = cumOp[NumGroups - 1];
+        if(cdfTotal > cdfAtCutoff)
+        {
+            double lo = cdfAtCutoff / cdfTotal;
+            double xi = this->randomUnitOpen();
+            particle.frequency = this->opacity_->GetThermalEnergy(cell, lo + xi * (1.0 - lo), this->energyBoundaries_);
+        }
+        else
+        {
+            particle.frequency = std::nextafter(
+                this->energyBoundaries_[groupCutoff],
+                std::numeric_limits<double>::max());
+        }
+        this->clampFrequencyToBounds(particle.frequency);
+    }
+
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        if(this->parameters_.withHydro && !this->parameters_.MMC)
+        {
+            radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+            if(this->parameters_.withMultigroupOpacity)
+            {
+                this->clampFrequencyToBounds(particle.frequency);
+            }
+            if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+            {
+                if(!this->parameters_.diffusionPressureGradient && !this->parameters_.noHydroFeedback)
+                {
+                    this->extensives_[cellIndex].momentum += (oldWeight * oldVelocity - particle.weight * particle.velocity) * constants::inv_clight2;
+                }
+            }
+        }
+    }
+
+    if(rwEvent == RW_CENSUS)
+    {
+        functionality.change = ParticleStatus::DONE;
+    }
+    return true;
+}
+
+// ============================================================
+// DDMC helpers
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::precomputeDDMCData()
+{
+    const std::size_t Ncells = this->grid.GetPointNo();
+    this->ddmcCellData_.assign(Ncells, DDMCCellData{});
+
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        DDMCCellData &data = this->ddmcCellData_[i];
+        const CellT &cell = this->cells_[i];
+        double scatOp = this->opacity_->CalcScatteringOpacity(cell);
+        double volume = this->grid.GetVolume(i);
+        double surfaceArea = this->computeCellSurfaceArea(i);
+        if(volume <= 0.0 || surfaceArea <= 0.0)
+        {
+            continue;
+        }
+        double meanChordLength = 4.0 * volume / surfaceArea;
+
+        if(this->parameters_.ddmcUseMultigroupPGRW && this->parameters_.withMultigroupOpacity)
+        {
+            GroupArray energyCenters = this->opacity_->getEnergyCenters(this->energyBoundaries_);
+            double kT = constants::k_boltz * cell.temperature;
+            if(kT <= 0.0)
+            {
+                continue;
+            }
+            double totalBgDiff = 0.0, sumBgSigADiff = 0.0, sumBgSigTDiff = 0.0, sumBgOverSigTDiff = 0.0;
+            std::size_t cutoff = 0;
+            bool foundNonDiffusive = false;
+            for(std::size_t g = 0; g < NumGroups; ++g)
+            {
+                double sigA_g = this->opacity_->CalcAbsorptionOpacity(cell, energyCenters[g]);
+                double sigT_g = sigA_g + scatOp;
+                double Bg = 1.0 / static_cast<double>(NumGroups);
+                if(!foundNonDiffusive && sigT_g * meanChordLength >= this->parameters_.ddmcMinCellOpticalDepth)
+                {
+                    cutoff = g + 1;
+                    totalBgDiff += Bg;
+                    sumBgSigADiff += Bg * sigA_g;
+                    sumBgSigTDiff += Bg * sigT_g;
+                    if(sigT_g > 0.0)
+                    {
+                        sumBgOverSigTDiff += Bg / sigT_g;
+                    }
+                }
+                else
+                {
+                    foundNonDiffusive = true;
+                }
+            }
+            if(cutoff > 0 && totalBgDiff > 0.0)
+            {
+                data.groupCutoff = cutoff;
+                data.sigmaA = sumBgSigADiff / totalBgDiff;
+                data.sigmaT = sumBgSigTDiff / totalBgDiff;
+                data.diffusionCoefficient = (constants::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff;
+                data.gamma = 1.0;
+                data.eligible = (data.sigmaT > 0.0 && data.diffusionCoefficient > 0.0);
+            }
+        }
+        else
+        {
+            data.sigmaA = this->planckOpacities_[i];
+            data.sigmaT = data.sigmaA + scatOp;
+            data.diffusionCoefficient = (data.sigmaT > 0.0) ? constants::clight / (3.0 * data.sigmaT) : 0.0;
+            data.gamma = 1.0;
+            data.eligible = (data.sigmaT * meanChordLength >= this->parameters_.ddmcMinCellOpticalDepth
+                             && data.diffusionCoefficient > 0.0);
+        }
+    }
+
+    PointT cellCenter;
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        DDMCCellData &data = this->ddmcCellData_[i];
+        if(!data.eligible)
+        {
+            continue;
+        }
+        double volume = this->grid.GetVolume(i);
+        cellCenter = this->grid.GetMeshPoint(i);
+        for(std::size_t faceIdx : this->grid.GetCellFaces(i))
+        {
+            const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
+            std::size_t nextCellIndex = (neighbors.first == i) ? neighbors.second : neighbors.first;
+            if(this->grid.IsPointOutsideBox(nextCellIndex))
+            {
+                continue;
+            }
+            PointT normal = this->grid.Normal(faceIdx);
+            double normalMag = fastabs(normal);
+            if(normalMag <= 0.0)
+            {
+                continue;
+            }
+            normal = normal / normalMag;
+            PointT faceCenter = this->grid.FaceCM(faceIdx);
+            double faceDistance = std::abs(ScalarProd(faceCenter - cellCenter, normal));
+            if(faceDistance <= 0.0)
+            {
+                faceDistance = 0.5 * std::abs(ScalarProd(this->grid.GetMeshPoint(nextCellIndex) - cellCenter, normal));
+            }
+            if(faceDistance <= 0.0)
+            {
+                continue;
+            }
+            double diffusionFace = data.diffusionCoefficient;
+            if(nextCellIndex < Ncells && this->ddmcCellData_[nextCellIndex].diffusionCoefficient > 0.0)
+            {
+                double D1 = data.diffusionCoefficient;
+                double D2 = this->ddmcCellData_[nextCellIndex].diffusionCoefficient;
+                diffusionFace = (D1 > 0.0 && D2 > 0.0) ? (2.0 * D1 * D2 / (D1 + D2)) : std::max(D1, D2);
+            }
+            double rate = diffusionFace * this->grid.GetArea(faceIdx) / (volume * faceDistance);
+            if(rate > 0.0 && std::isfinite(rate))
+            {
+                DDMCFaceLeak faceLeak;
+                faceLeak.faceIndex = faceIdx;
+                faceLeak.nextCellIndex = nextCellIndex;
+                faceLeak.rate = rate;
+                data.faceLeaks.push_back(faceLeak);
+                data.totalLeakRate += rate;
+            }
+        }
+        if(data.totalLeakRate <= 0.0)
+        {
+            data.eligible = false;
+            data.faceLeaks.clear();
+        }
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tryDDMCStep(
+    MCParticle &particle, Functionality &functionality)
+{
+    std::size_t cellIndex = particle.cellIndex;
+    if(cellIndex >= this->ddmcCellData_.size())
+    {
+        return false;
+    }
+    const DDMCCellData &data = this->ddmcCellData_[cellIndex];
+    if(!data.eligible || data.totalLeakRate <= 0.0 || data.faceLeaks.empty())
+    {
+        return false;
+    }
+
+    double Ro = this->computeMinDistanceToFaces(cellIndex, particle.location);
+    if(Ro * data.sigmaT < this->parameters_.ddmcMinParticleOpticalDepth)
+    {
+        ++this->ddmcFallbackCount_;
+        return false;
+    }
+
+    if(this->parameters_.ddmcUseMultigroupPGRW && this->parameters_.withMultigroupOpacity)
+    {
+        if(data.groupCutoff == 0 || data.groupCutoff > NumGroups)
+        {
+            ++this->ddmcFallbackCount_;
+            return false;
+        }
+        double coFreq = particle.frequency;
+        this->clampFrequencyToBounds(coFreq);
+        if(coFreq >= this->energyBoundaries_[data.groupCutoff])
+        {
+            ++this->ddmcFallbackCount_;
+            return false;
+        }
+    }
+
+    double f = this->factorFleck_[cellIndex];
+    double upscatterRate = 0.0;
+    if(this->parameters_.ddmcUseMultigroupPGRW && data.gamma < 1.0 && data.sigmaA > 0.0 && f > 0.0)
+    {
+        upscatterRate = constants::clight * (1.0 - f) * data.sigmaA * (1.0 - data.gamma);
+    }
+    double eventRate = data.totalLeakRate + upscatterRate;
+    if(eventRate <= 0.0)
+    {
+        ++this->ddmcFallbackCount_;
+        return false;
+    }
+
+    double tEvent = -std::log(this->randomUnitOpen()) / eventRate;
+    double tCensus = particle.timeLeft;
+    double dt = std::min(tEvent, tCensus);
+    bool censusEvent = (tCensus <= tEvent);
+
+    double absRate = data.sigmaA * f * constants::clight;
+    double oldWeight = particle.weight;
+    double expFactor = std::expm1(-dt * absRate);
+
+    if(!this->parameters_.noHydroFeedback)
+    {
+        this->extensives_[cellIndex].internal_energy += -expFactor * oldWeight;
+    }
+
+    double integratedForTally = (absRate > 0.0)
+        ? oldWeight * expFactor * (-1.0 / absRate)
+        : oldWeight * dt;
+    this->Erad_time_avg_[cellIndex] += integratedForTally;
+
+    if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
+    {
+        std::size_t g = this->opacity_->findGroup(particle.frequency, this->energyBoundaries_);
+        if(g < NumGroups)
+        {
+            this->Eg_time_avg_[cellIndex][g] += integratedForTally;
+        }
+    }
+
+    particle.weight *= 1.0 + expFactor;
+    particle.timeLeft -= dt;
+
+    if(std::abs(particle.weight) < particle.initialWeight * 1e-3)
+    {
+        functionality.change = ParticleStatus::REMOVE;
+        if(!this->parameters_.noHydroFeedback)
+        {
+            this->extensives_[cellIndex].internal_energy += particle.weight;
+        }
+        ++this->ddmcStepCount_;
+        return true;
+    }
+
+    ++this->ddmcStepCount_;
+
+    if(censusEvent)
+    {
+        functionality.change = ParticleStatus::DONE;
+        ++this->ddmcCensusCount_;
+        return true;
+    }
+
+    double eventPick = this->randomUnitOpen() * eventRate;
+    if(eventPick <= data.totalLeakRate)
+    {
+        double facePick = this->randomUnitOpen() * data.totalLeakRate;
+        const DDMCFaceLeak *chosen = nullptr;
+        for(const DDMCFaceLeak &fl : data.faceLeaks)
+        {
+            facePick -= fl.rate;
+            if(facePick <= 0.0)
+            {
+                chosen = &fl;
+                break;
+            }
+        }
+        if(!chosen && !data.faceLeaks.empty())
+        {
+            chosen = &data.faceLeaks.back();
+        }
+        if(!chosen)
+        {
+            ++this->ddmcFallbackCount_;
+            functionality.change = ParticleStatus::DONE;
+            return true;
+        }
+
+        PointT leakFaceCenter = this->grid.FaceCM(chosen->faceIndex);
+        PointT nOut = this->grid.Normal(chosen->faceIndex);
+        double nOutMag = fastabs(nOut);
+        if(nOutMag <= 0.0)
+        {
+            ++this->ddmcFallbackCount_;
+            functionality.change = ParticleStatus::DONE;
+            return true;
+        }
+        nOut = nOut / nOutMag;
+
+        PointT towardNeighbor = this->grid.GetMeshPoint(chosen->nextCellIndex) - this->grid.GetMeshPoint(cellIndex);
+        if(ScalarProd(nOut, towardNeighbor) < 0.0)
+        {
+            nOut = nOut * (-1.0);
+        }
+
+        constexpr double DDMC_PI = 3.14159265358979323846;
+        double xiMu = std::min(1.0, this->randomUnitOpen());
+        double mu = std::sqrt(xiMu);
+        double phiLeak = 2.0 * DDMC_PI * this->randomUnitOpen();
+        double sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+
+        PointT helper = (std::abs(nOut.x) < 0.9)
+            ? PointT(1.0, 0.0, 0.0)
+            : PointT(0.0, 1.0, 0.0);
+        PointT e1 = helper - ScalarProd(helper, nOut) * nOut;
+        double e1Mag = fastabs(e1);
+        if(e1Mag > 0.0)
+        {
+            e1 = e1 / e1Mag;
+        }
+        PointT e2 = CrossProduct(nOut, e1);
+        double e2Mag = fastabs(e2);
+        if(e2Mag > 0.0)
+        {
+            e2 = e2 / e2Mag;
+        }
+
+        PointT dir = mu * nOut + sinTheta * std::cos(phiLeak) * e1 + sinTheta * std::sin(phiLeak) * e2;
+        double dirMag = fastabs(dir);
+        if(dirMag > 0.0)
+        {
+            dir = dir / dirMag;
+        }
+
+        particle.location = leakFaceCenter;
+        particle.velocity = dir * constants::clight;
+
+        functionality.change = ParticleStatus::CELL_MOVE;
+        functionality.nextCellIndex = chosen->nextCellIndex;
+        ++this->ddmcLeakCount_;
+    }
+    else
+    {
+        if(!this->parameters_.ddmcUseMultigroupPGRW)
+        {
+            functionality.change = ParticleStatus::DONE;
+            ++this->ddmcCensusCount_;
+            return true;
+        }
+        double lo = static_cast<double>(data.groupCutoff) / static_cast<double>(NumGroups);
+        double xi = this->randomUnitOpen();
+        CellT &cell = this->cells_[cellIndex];
+        particle.frequency = this->opacity_->GetThermalEnergy(cell, lo + xi * (1.0 - lo), this->energyBoundaries_);
+        this->clampFrequencyToBounds(particle.frequency);
+        particle.velocity = this->opacity_->getRandomVelocity(cell, this->rng_, this->dist_);
+        ++this->ddmcUpscatterCount_;
+    }
+    return true;
+}
+
+// ============================================================
+// preStep
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::preStep(double fullDt)
+{
+    if(fullDt < 0.0)
+    {
+        StormError eo("RadiationIMC::preStep received a negative timestep");
+        eo.addEntry("fullDt", fullDt);
+        throw eo;
+    }
+
+    this->validateGridSizedState();
+    const std::size_t Ncells = this->grid.GetPointNo();
+    this->planckOpacities_.assign(Ncells, 0.0);
+    this->factorFleck_.assign(Ncells, 1.0);
+    this->Erad_time_avg_.assign(Ncells, 0.0);
+    if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
+    {
+        GroupArray zeros{};
+        this->Eg_time_avg_.assign(Ncells, zeros);
+    }
+
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        CellT &cell = this->cells_[i];
+        const double temperature = cell.temperature;
+        if(temperature < 0.0 || !std::isfinite(temperature))
+        {
+            StormError eo("RadiationIMC::preStep found an invalid cell temperature");
+            eo.addEntry("Cell index", i);
+            eo.addEntry("Temperature", temperature);
+            throw eo;
+        }
+
+        const double planckOpacity = this->opacity_->CalcPlanckOpacity(cell);
+        if(planckOpacity < 0.0 || !std::isfinite(planckOpacity))
+        {
+            StormError eo("RadiationIMC::preStep found an invalid Planck opacity");
+            eo.addEntry("Cell index", i);
+            eo.addEntry("Planck opacity", planckOpacity);
+            throw eo;
+        }
+        this->planckOpacities_[i] = planckOpacity;
+
+        double gamma = 1.0;
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            {
+                double beta2 = ScalarProd(cell.velocity, cell.velocity) * constants::inv_clight2;
+                if(beta2 > 0.0 && beta2 < 1.0)
+                {
+                    gamma = 1.0 / std::sqrt(1.0 - beta2);
+                }
+            }
+        }
+
+        const auto &tracers = this->traits_.tracers(cell);
+        const auto &tracerNames = this->traits_.tracerNames(cell);
+        const double cv = this->eos_->dT2cv(this->density(i), temperature, tracers, tracerNames);
+        if(cv > 0.0 && temperature > 0.0 && fullDt > 0.0)
+        {
+            const double denom = 1.0
+                + 4.0 * constants::arad * boost::math::pow<3>(temperature)
+                    * planckOpacity * constants::clight * fullDt * gamma / cv;
+            if(denom > 0.0 && std::isfinite(denom))
+            {
+                this->factorFleck_[i] = 1.0 / denom;
+            }
+            else
+            {
+                StormError eo("RadiationIMC::preStep found an invalid Fleck denominator");
+                eo.addEntry("Cell index", i);
+                eo.addEntry("Denominator", denom);
+                eo.addEntry("cv", cv);
+                eo.addEntry("Temperature", temperature);
+                eo.addEntry("Planck opacity", planckOpacity);
+                throw eo;
+            }
+        }
+        else
+        {
+            this->factorFleck_[i] = 1.0;
+        }
+    }
+
+    if(this->parameters_.withRandomWalk || this->parameters_.withDDMC)
+    {
+        this->updateGridData();
+    }
+    if(this->parameters_.withRandomWalk)
+    {
+        this->precomputeRandomWalkData();
+        this->rwStepCount_ = 0;
+    }
+    if(this->parameters_.withDDMC)
+    {
+        this->precomputeDDMCData();
+        this->ddmcStepCount_ = 0;
+        this->ddmcLeakCount_ = 0;
+        this->ddmcCensusCount_ = 0;
+        this->ddmcUpscatterCount_ = 0;
+        this->ddmcFallbackCount_ = 0;
+    }
+
+    std::vector<MCParticle> newParticles = this->generateParticles(fullDt);
+    if(this->boundary)
+    {
+        std::vector<MCParticle> boundaryParticles = this->boundary->generateNewBoundaryParticles(fullDt);
+        for(MCParticle &particle : boundaryParticles)
+        {
+            this->setInitialWeightFromWeight(particle);
+        }
+        newParticles.insert(newParticles.end(), boundaryParticles.begin(), boundaryParticles.end());
+    }
+    return newParticles;
+}
+
+// ============================================================
+// step
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::Functionality
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::step(
+    MCParticle &particle,
+    std::vector<MCParticle> &particlesToAdd)
+{
+    (void) particlesToAdd;
+    Functionality functionality;
+
+    const std::size_t cellIndex = particle.cellIndex;
+    if(cellIndex >= this->grid.GetPointNo())
+    {
+        StormError eo("RadiationIMC::step received a particle with an invalid cell index");
+        eo.addEntry("Cell index", cellIndex);
+        eo.addEntry("Grid cells", this->grid.GetPointNo());
+        throw eo;
+    }
+
+    CellT &cell = this->cells_[cellIndex];
+
+    double dopplerShift = 1.0;
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        if(this->parameters_.withHydro && !this->parameters_.MMC)
+        {
+            dopplerShift = radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
+        }
+    }
+
+    if(this->parameters_.withRandomWalk && this->randomWalk_ && this->rwCellEligible_[cellIndex])
+    {
+        if(this->tryRandomWalkStep(particle, functionality))
+        {
+            ++this->rwStepCount_;
+            return functionality;
+        }
+    }
+
+    if(this->parameters_.withDDMC && cellIndex < this->ddmcCellData_.size() && this->ddmcCellData_[cellIndex].eligible)
+    {
+        if(this->tryDDMCStep(particle, functionality))
+        {
+            return functionality;
+        }
+    }
+
+    auto [faceIntersect, timeIntersect, nextCellIndex] = this->getIntersectionDetails(particle);
+    (void) faceIntersect;
+    if(timeIntersect < 0.0)
+    {
+        StormError eo("RadiationIMC::step received a negative face-intersection time");
+        eo.addEntry("timeIntersect", timeIntersect);
+        throw eo;
+    }
+
+    double absorptionOpacity;
+    if(this->parameters_.withMultigroupOpacity)
+    {
+        double shiftedFrequency = particle.frequency * dopplerShift;
+        this->clampFrequencyToBounds(shiftedFrequency);
+        absorptionOpacity = this->opacity_->CalcAbsorptionOpacity(cell, shiftedFrequency);
+    }
+    else
+    {
+        absorptionOpacity = this->planckOpacities_[cellIndex];
+    }
+
+    const double scatteringOpacity = this->opacity_->CalcScatteringOpacity(cell);
+    const double fleck = this->factorFleck_[cellIndex];
+    const double particleSpeed = fastabs(particle.velocity);
+    if(particleSpeed <= 0.0 || !std::isfinite(particleSpeed))
+    {
+        StormError eo("RadiationIMC::step received a particle with invalid speed");
+        eo.addEntry("Speed", particleSpeed);
+        throw eo;
+    }
+
+    const double effectiveAbsorptionOpacity = (1.0 - fleck) * absorptionOpacity;
+    const double eventOpacity = scatteringOpacity + effectiveAbsorptionOpacity;
+    double timeScatter = std::numeric_limits<double>::infinity();
+    if(eventOpacity > 0.0)
+    {
+        timeScatter = -std::log(this->randomUnitOpen()) / (eventOpacity * particleSpeed * dopplerShift);
+    }
+
+    const double timeLeft = particle.timeLeft;
+    double dt = timeLeft;
+    Event event = Event::Census;
+    if(timeIntersect <= dt && timeIntersect <= timeScatter)
+    {
+        dt = timeIntersect;
+        event = Event::Face;
+    }
+    else if(timeScatter < dt)
+    {
+        dt = timeScatter;
+        event = Event::Scatter;
+    }
+
+    if(dt < 0.0 || !std::isfinite(dt))
+    {
+        StormError eo("RadiationIMC::step selected an invalid event time");
+        eo.addEntry("dt", dt);
+        eo.addEntry("timeIntersect", timeIntersect);
+        eo.addEntry("timeScatter", timeScatter);
+        eo.addEntry("timeLeft", timeLeft);
+        throw eo;
+    }
+
+    PointT oldVelocity = particle.velocity;
+    double oldWeight = particle.weight;
+    particle.location += particle.velocity * dt;
+    particle.timeLeft -= dt;
+
+    const double weightEvolutionOpacity = absorptionOpacity * fleck;
+    const double weightEvolutionRate = weightEvolutionOpacity * constants::clight;
+    double tmp = -dt * weightEvolutionRate;
+    double expFactor1 = std::expm1(tmp * dopplerShift);
+    double expFactor2 = std::expm1(tmp);
+    double integratedForTally = oldWeight * dt;
+    if(std::abs(weightEvolutionRate * dt) >= 1e-12)
+    {
+        integratedForTally = oldWeight * expFactor2 * (-1.0 / weightEvolutionRate);
+    }
+
+    if(!this->parameters_.noHydroFeedback)
+    {
+        double materialDeposit = -expFactor2 * oldWeight;
+        this->extensives_[cellIndex].internal_energy += materialDeposit;
+        if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+        {
+            if(this->parameters_.withHydro && !this->parameters_.diffusionPressureGradient)
+            {
+                this->extensives_[cellIndex].momentum += (-expFactor1) * oldWeight * particle.velocity * constants::inv_clight2;
+            }
+        }
+    }
+    particle.weight = oldWeight * (1.0 + expFactor1);
+
+    this->Erad_time_avg_[cellIndex] += integratedForTally;
+    if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
+    {
+        std::size_t g = this->opacity_->findGroup(particle.frequency, this->energyBoundaries_);
+        if(g < NumGroups)
+        {
+            this->Eg_time_avg_[cellIndex][g] += integratedForTally;
+        }
+    }
+
+    if(std::abs(particle.weight) < 1e-3 * particle.initialWeight && particle.initialWeight > 0.0)
+    {
+        if(!this->parameters_.noHydroFeedback)
+        {
+            this->extensives_[cellIndex].internal_energy += particle.weight;
+        }
+        functionality.change = ParticleStatus::REMOVE;
+        return functionality;
+    }
+
+    switch(event)
+    {
+        case Event::Face:
+            functionality.change = ParticleStatus::CELL_MOVE;
+            functionality.nextCellIndex = nextCellIndex;
+            break;
+        case Event::Scatter:
+        {
+            double eventRandom = this->randomUnitOpen() * eventOpacity;
+            bool isEffectiveScatter = (eventRandom >= scatteringOpacity);
+
+            particle.velocity = this->opacity_->getNewScatterVelocity(cell,
+                                                                      particle.velocity,
+                                                                      particle.frequency,
+                                                                      this->rng_,
+                                                                      this->dist_);
+
+            if(this->parameters_.withMultigroupOpacity && isEffectiveScatter)
+            {
+                double reemitRandom = this->randomUnitOpen();
+                particle.frequency = this->opacity_->GetThermalEnergy(cell, reemitRandom, this->energyBoundaries_);
+                this->clampFrequencyToBounds(particle.frequency);
+            }
+            else if(this->parameters_.withMultigroupOpacity)
+            {
+                particle.frequency *= dopplerShift;
+                this->clampFrequencyToBounds(particle.frequency);
+            }
+
+            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            {
+                double weightBefore = particle.weight;
+                particle.weight *= dopplerShift;
+                radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+                if(this->parameters_.withMultigroupOpacity)
+                {
+                    this->clampFrequencyToBounds(particle.frequency);
+                }
+                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                {
+                    if(!this->parameters_.diffusionPressureGradient && !this->parameters_.noHydroFeedback)
+                    {
+                        this->extensives_[cellIndex].momentum += (weightBefore * oldVelocity - particle.weight * particle.velocity) * constants::inv_clight2;
+                    }
+                }
+            }
+
+            functionality.change = ParticleStatus::NO_CELL_MOVE;
+            break;
+        }
+        case Event::Census:
+            functionality.change = ParticleStatus::DONE;
+            break;
+    }
+
+    return functionality;
+}
+
+// ============================================================
+// postStep
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::postStep(
+    const std::vector<MCParticle> &particles,
+    double fullDt)
+{
+    if(fullDt <= 0.0)
+    {
+        StormError eo("RadiationIMC::postStep requires a positive timestep");
+        eo.addEntry("fullDt", fullDt);
+        throw eo;
+    }
+
+    const std::size_t Ncells = this->grid.GetPointNo();
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        const double volume = this->grid.GetVolume(i);
+        if(volume <= 0.0)
+        {
+            StormError eo("RadiationIMC::postStep found a nonpositive cell volume");
+            eo.addEntry("Cell index", i);
+            eo.addEntry("Volume", volume);
+            throw eo;
+        }
+        this->Erad_time_avg_[i] /= (fullDt * volume);
+        if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
+        {
+            double norm = fullDt * volume;
+            for(std::size_t g = 0; g < NumGroups; ++g)
+            {
+                this->Eg_time_avg_[i][g] /= norm;
+            }
+        }
+    }
+
+    if(!this->parameters_.noHydroFeedback)
+    {
+        if(this->parameters_.diffusionPressureGradient && this->parameters_.withHydro)
+        {
+            if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+            {
+#ifdef STORM_WITH_MPI
+                STORM::MPI_exchange_data(this->grid, this->Erad_time_avg_, true);
+#endif
+                std::vector<double> Erad_time_avg_grad(Ncells, 0.0);
+                for(std::size_t i = 0; i < Ncells; ++i)
+                {
+                    const PointT &point = this->grid.GetMeshPoint(i);
+                    std::size_t neighbor_right = std::numeric_limits<std::size_t>::max();
+                    std::size_t neighbor_left = std::numeric_limits<std::size_t>::max();
+                    for(std::size_t faceIdx : this->grid.GetCellFaces(i))
+                    {
+                        const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
+                        std::size_t neighborIdx = (neighbors.first == i) ? neighbors.second : neighbors.first;
+                        PointT diff = this->grid.GetMeshPoint(neighborIdx) - point;
+                        double dist = fastabs(diff);
+                        if(dist > 0.0)
+                        {
+                            double nx = diff.x / dist;
+                            if(nx > 0.99)
+                            {
+                                neighbor_right = neighborIdx;
+                            }
+                            else if(nx < -0.99)
+                            {
+                                neighbor_left = neighborIdx;
+                            }
+                        }
+                    }
+                    if(neighbor_right == std::numeric_limits<std::size_t>::max() ||
+                       neighbor_left == std::numeric_limits<std::size_t>::max())
+                    {
+                        continue;
+                    }
+                    const PointT &neighbor_right_point = this->grid.GetMeshPoint(neighbor_right);
+                    const PointT &neighbor_left_point = this->grid.GetMeshPoint(neighbor_left);
+                    double grad;
+                    if(this->grid.IsPointOutsideBox(neighbor_left))
+                    {
+                        grad = (this->Erad_time_avg_[neighbor_right] - this->Erad_time_avg_[i]) / (neighbor_right_point.x - point.x);
+                    }
+                    else if(this->grid.IsPointOutsideBox(neighbor_right))
+                    {
+                        grad = (this->Erad_time_avg_[i] - this->Erad_time_avg_[neighbor_left]) / (point.x - neighbor_left_point.x);
+                    }
+                    else
+                    {
+                        grad = (this->Erad_time_avg_[neighbor_right] - this->Erad_time_avg_[neighbor_left]) / (neighbor_right_point.x - neighbor_left_point.x);
+                    }
+                    Erad_time_avg_grad[i] = grad;
+                }
+                for(std::size_t i = 0; i < Ncells; ++i)
+                {
+                    this->extensives_[i].momentum.x -= fullDt * this->grid.GetVolume(i) * Erad_time_avg_grad[i] / 3.0;
+                }
+            }
+        }
+
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            this->throwIfNegativeInternalEnergy(i, "postStep");
+            this->synchronizeMaterialCell(i);
+        }
+    }
+
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        radiation_imc_detail::clearRadiationEnergyIfPresent(this->extensives_[i]);
+        radiation_imc_detail::clearGroupEnergyIfPresent(this->extensives_[i]);
+    }
+
+    for(const MCParticle &particle : particles)
+    {
+        if(particle.cellIndex >= Ncells)
+        {
+            StormError eo("RadiationIMC::postStep received a particle with an invalid cell index");
+            eo.addEntry("Cell index", particle.cellIndex);
+            eo.addEntry("Grid cells", Ncells);
+            throw eo;
+        }
+        radiation_imc_detail::addRadiationEnergyIfPresent(this->extensives_[particle.cellIndex], particle.weight);
+        if(this->parameters_.withMultigroupOpacity)
+        {
+            if constexpr(radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
+            {
+                std::size_t g = this->opacity_->findGroup(particle.frequency, this->energyBoundaries_);
+                if(g < NumGroups)
+                {
+                    this->extensives_[particle.cellIndex].Eg[g] += particle.weight;
+                }
+            }
+        }
+    }
+
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        const double mass = this->extensives_[i].mass;
+        const double radiationPerMass = (mass > 0.0)
+            ? radiation_imc_detail::radiationEnergyIfPresent(this->extensives_[i]) / mass
+            : 0.0;
+        radiation_imc_detail::setCellRadiationEnergyIfPresent(this->cells_[i], radiationPerMass);
+        if constexpr(radiation_imc_detail::has_member_group_energy_mutable<CellT>::value)
+        {
+            for(std::size_t g = 0; g < NumGroups; ++g)
+            {
+                double groupVal = (mass > 0.0 && radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
+                    ? this->traits_.extensiveGroupEnergy(this->extensives_[i], g) / mass
+                    : 0.0;
+                radiation_imc_detail::setCellGroupEnergyIfPresent(this->cells_[i], g, groupVal);
+            }
+        }
+    }
+}
+
+// ============================================================
+// generateParticles
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateParticles(double fullDt)
+{
+    std::vector<MCParticle> newParticles;
+    const std::size_t Ncells = this->grid.GetPointNo();
+    std::vector<double> energyToCreate(Ncells, 0.0);
+    this->lastSourcePhotonsPerCell_.assign(Ncells, 0);
+    this->lastSourceAllocationSummary_ = SourceAllocationSummary{};
+    this->lastGroupSamplingDiagnostics_ = GroupSamplingDiagnostics{};
+
+    double localTotalEnergy = 0.0;
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        const CellT &cell = this->cells_[i];
+        const double volume = this->grid.GetVolume(i);
+        const double energy = this->factorFleck_[i]
+            * volume
+            * constants::arad
+            * boost::math::pow<4>(cell.temperature)
+            * this->planckOpacities_[i]
+            * fullDt
+            * constants::clight;
+        energyToCreate[i] = energy;
+        localTotalEnergy += energy;
+    }
+
+    double globalTotalEnergy = localTotalEnergy;
+    std::size_t globalTotalCells = Ncells;
+#ifdef STORM_WITH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+
+    std::size_t totalParticles = globalTotalCells * this->parameters_.newPhotonsPerCell * 10;
+    std::vector<std::size_t> nPhotonsVec(Ncells);
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        std::size_t proportionalShare = (globalTotalEnergy > 0)
+            ? static_cast<std::size_t>(energyToCreate[i] / globalTotalEnergy * totalParticles)
+            : this->parameters_.newPhotonsPerCell;
+        nPhotonsVec[i] = std::max(this->parameters_.newPhotonsPerCell,
+                                  std::min(proportionalShare, this->parameters_.newPhotonsPerCell * 20));
+    }
+
+    newParticles.reserve(Ncells * this->parameters_.newPhotonsPerCell * 10);
+
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        const double energy = energyToCreate[i];
+        if(energy <= 0.0)
+        {
+            continue;
+        }
+
+        const std::size_t nPhotons = nPhotonsVec[i];
+        this->lastSourcePhotonsPerCell_[i] = nPhotons;
+        SourceAllocationSummary &summary = this->lastSourceAllocationSummary_;
+        ++summary.sourceCells;
+        summary.totalPhotons += nPhotons;
+        summary.minPhotons = (summary.minPhotons == 0) ? nPhotons : std::min(summary.minPhotons, nPhotons);
+        summary.maxPhotons = std::max(summary.maxPhotons, nPhotons);
+        if(nPhotons > this->parameters_.newPhotonsPerCell)
+        {
+            ++summary.boostedCells;
+        }
+
+        this->depositMaterialEnergy(i, -energy);
+
+        double gamma = 1.0;
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            {
+                double beta2 = ScalarProd(this->cells_[i].velocity, this->cells_[i].velocity) * constants::inv_clight2;
+                if(beta2 > 0.0 && beta2 < 1.0)
+                {
+                    gamma = 1.0 / std::sqrt(1.0 - beta2);
+                }
+            }
+        }
+
+        if constexpr(radiation_imc_detail::has_member_total_energy<ExtensivesT>::value)
+        {
+            if(!this->parameters_.noHydroFeedback)
+            {
+                this->extensives_[i].energy -= energy * gamma;
+            }
+        }
+        if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+        {
+            if(this->parameters_.withHydro && !this->parameters_.diffusionPressureGradient && !this->parameters_.noHydroFeedback)
+            {
+                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+                {
+                    this->extensives_[i].momentum -= energy * this->cells_[i].velocity * constants::inv_clight2 * gamma;
+                }
+            }
+        }
+
+        const double energyPerPhoton = energy * gamma / static_cast<double>(nPhotons);
+
+        for(std::size_t j = 0; j < nPhotons; ++j)
+        {
+            MCParticle particle = this->generateSingleParticle(i, this->cells_[i]);
+            particle.timeLeft = fullDt * this->randomUnitOpen();
+
+            if(this->parameters_.withMultigroupOpacity)
+            {
+                double rnd = this->randomUnitOpen();
+                double freqCo = this->opacity_->GetThermalEnergy(this->cells_[i], rnd, this->energyBoundaries_);
+                if(this->parameters_.withHydro && !this->parameters_.MMC)
+                {
+                    double D = radiation_imc_detail::computeDopplerShift<PointT>(particle, this->cells_[i]);
+                    particle.frequency = freqCo / D;
+                    particle.weight = energy / (static_cast<double>(nPhotons) * D);
+                }
+                else
+                {
+                    particle.frequency = freqCo;
+                    particle.weight = energyPerPhoton;
+                }
+                this->clampFrequencyToBounds(particle.frequency);
+            }
+            else if(this->parameters_.withHydro && !this->parameters_.MMC)
+            {
+                double D = radiation_imc_detail::computeDopplerShift<PointT>(particle, this->cells_[i]);
+                particle.weight = energy / (static_cast<double>(nPhotons) * D);
+            }
+            else
+            {
+                particle.weight = energyPerPhoton;
+            }
+            this->setInitialWeightFromWeight(particle);
+            newParticles.push_back(particle);
+        }
+    }
+
+    return newParticles;
+}
+
+// ============================================================
+// generateSingleParticle
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateSingleParticle(
+    std::size_t cellIndex,
+    const CellT &cell)
+{
+    MCParticle particle;
+    particle.id = std::numeric_limits<std::size_t>::max();
+    particle.cellIndex = cellIndex;
+    particle.cellID = radiation_imc_detail::cellID(cell);
+    particle.sourceCellID = particle.cellID;
+    particle.frequency = 0.0;
+    particle.location = this->positionSampler_(this->grid, cellIndex, this->rng_, this->dist_);
+    particle.velocity = this->opacity_->getRandomVelocity(cell, this->rng_, this->dist_);
+
+    if(this->parameters_.withHydro && !this->parameters_.MMC)
+    {
+        radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+    }
+
+    particle.timeLeft = 0.0;
+    particle.steps = 0;
+    return particle;
+}
+
+// ============================================================
+// generateInitialParticles
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateInitialParticles(std::size_t particlesPerCell)
+{
+    if(particlesPerCell == 0)
+    {
+        return {};
+    }
+
+    std::vector<MCParticle> result;
+    const std::size_t Ncells = this->grid.GetPointNo();
+    result.reserve(Ncells * particlesPerCell);
+
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        const double totalErad = this->totalRadiationEnergy(i);
+        if(totalErad <= 0.0)
+        {
+            continue;
+        }
+        const double weightPerPhoton = totalErad / static_cast<double>(particlesPerCell);
+        for(std::size_t j = 0; j < particlesPerCell; ++j)
+        {
+            MCParticle particle = this->generateSingleParticle(i, this->cells_[i]);
+            particle.weight = weightPerPhoton;
+            if(this->parameters_.withMultigroupOpacity)
+            {
+                double rnd = this->randomUnitOpen();
+                particle.frequency = this->opacity_->GetThermalEnergy(this->cells_[i], rnd, this->energyBoundaries_);
+                this->clampFrequencyToBounds(particle.frequency);
+            }
+            this->setInitialWeightFromWeight(particle);
+            result.push_back(particle);
+        }
+    }
+    return result;
+}
+
+// ============================================================
+// adjustExistingParticles (MMC)
+// ============================================================
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::adjustExistingParticles(
+    std::vector<MCParticle> &particles,
+    double fullDt)
+{
+    if(!this->parameters_.MMC)
+    {
+        return;
+    }
+
+    const std::size_t Ncells = this->grid.GetPointNo();
+    std::vector<double> divV(Ncells, 0.0);
+
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            PointT r_i = this->grid.GetMeshPoint(i);
+            for(std::size_t faceIdx : this->grid.GetCellFaces(i))
+            {
+                const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
+                std::size_t neighborIdx = (neighbors.first == i) ? neighbors.second : neighbors.first;
+                PointT neighborPoint;
+                PointT neighborVelocity;
+                if(neighborIdx < Ncells && !this->grid.IsPointOutsideBox(neighborIdx))
+                {
+                    neighborPoint = this->grid.GetMeshPoint(neighborIdx);
+                    neighborVelocity = this->cells_[neighborIdx].velocity;
+                }
+                else
+                {
+                    neighborPoint = this->grid.FaceCM(faceIdx);
+                    neighborVelocity = this->cells_[i].velocity;
+                }
+                PointT diff = r_i - neighborPoint;
+                double distMag = fastabs(diff);
+                if(distMag <= 0.0)
+                {
+                    continue;
+                }
+                PointT r_ij = diff / distMag;
+                double A_ij = this->grid.GetArea(faceIdx);
+                divV[i] -= 0.5 * ScalarProd(this->cells_[i].velocity + neighborVelocity, r_ij) * A_ij;
+            }
+            divV[i] /= this->grid.GetVolume(i);
+        }
+
+        auto it = particles.begin();
+        while(it != particles.end())
+        {
+            MCParticle &p = *it;
+            std::size_t ci = p.cellIndex;
+            if(ci < Ncells)
+            {
+                p.location += this->cells_[ci].velocity * fullDt;
+                p.weight += -p.weight * fullDt * divV[ci] / 3.0;
+            }
+            ++it;
+        }
+    }
+    else
+    {
+        (void) particles;
+        (void) fullDt;
+    }
+}
+
+} // namespace STORM
+
+#endif // STORM_RADIATION_IMC_HPP
