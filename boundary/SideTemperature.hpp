@@ -8,7 +8,7 @@
 #include <array>
 #include "BoundaryCondition.hpp"
 #include "../PhysicalConstants.hpp"
-#include "../utils/PlanckIntegral.hpp"
+#include <planck_integral/planck_integral.hpp>
 #include "../utils/LinearInterpolation.hpp"
 #include "../utils/RandomOnFace.hpp"
 #include "../StormError.hpp"
@@ -69,7 +69,7 @@ SideTemperature<T, Grid>::SideTemperature(const Grid &grid, double temperature, 
         {
             double const a = this->energyBoundaries[g - 1] / kT;
             double const b = this->energyBoundaries[g] / kT;
-            this->cumulativePlanckFunction[g] = planck_integral::PlanckIntegral(a, b);
+            this->cumulativePlanckFunction[g] = planck_integral::planck_integral(a, b);
             this->cumulativePlanckFunction[g] += this->cumulativePlanckFunction[g - 1];
         }
         if(std::abs(this->cumulativePlanckFunction.back() - 1.0) > 1e-8)

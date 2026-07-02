@@ -13,7 +13,7 @@
 #endif
 #include "BoundaryCondition.hpp"
 #include "PhysicalConstants.hpp"
-#include "utils/PlanckIntegral.hpp"
+#include <planck_integral/planck_integral.hpp>
 #include "utils/LinearInterpolation.hpp"
 #include "utils/RandomOnFace.hpp"
 #include "utils/LorentzTransformation.hpp"
@@ -102,7 +102,7 @@ void MovingSideTemperature<T, Grid>::RecomputePlanckCDF()
         double const a = this->energyBoundaries_[g - 1] / kT;
         double const b = this->energyBoundaries_[g] / kT;
         this->cumulativePlanckFunction_[g] = this->cumulativePlanckFunction_[g - 1]
-                                           + planck_integral::PlanckIntegral(a, b);
+                                           + planck_integral::planck_integral(a, b);
     }
     double const total = this->cumulativePlanckFunction_.back();
     if(!(total > 0.0) || !std::isfinite(total))

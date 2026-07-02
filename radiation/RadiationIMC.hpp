@@ -34,7 +34,7 @@
 #include "radiation/RadiationIMCTraits.hpp"
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/RandomWalk.hpp"
-#include "utils/PlanckIntegral.hpp"
+#include <planck_integral/planck_integral.hpp>
 
 namespace STORM {
 
@@ -427,6 +427,9 @@ public:
     const std::vector<double> &getFactorFleck() const { return this->factorFleck_; }
     const std::vector<double> &getPlanckOpacities() const { return this->planckOpacities_; }
     const std::vector<double> &getEradTimeAvg() const { return this->Erad_time_avg_; }
+    std::vector<double> &getEradTimeAvg() { return this->Erad_time_avg_; }
+    const std::vector<GroupArray> &getEgTimeAvg() const { return this->Eg_time_avg_; }
+    std::vector<GroupArray> &getEgTimeAvg() { return this->Eg_time_avg_; }
     const GroupBoundaries &getEnergyBoundaries() const { return this->energyBoundaries_; }
     const Parameters &getParameters() const { return this->parameters_; }
     const SourceAllocationSummary &getLastSourceAllocationSummary() const { return this->lastSourceAllocationSummary_; }
@@ -916,7 +919,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             {
                 double a = this->energyBoundaries_[g] / kT;
                 double b = this->energyBoundaries_[g + 1] / kT;
-                double Bg = (a > 0.0 && b > a) ? planck_integral::PlanckIntegral(a, b) : 1.0 / static_cast<double>(NumGroups);
+                double Bg = (a > 0.0 && b > a) ? planck_integral::planck_integral(a, b) : 1.0 / static_cast<double>(NumGroups);
                 double sigA_g = this->opacity_->CalcAbsorptionOpacity(cell, energyCenters[g]);
                 double sigT_g = sigA_g + scatOp;
 

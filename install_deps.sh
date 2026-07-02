@@ -50,6 +50,12 @@ clone_if_missing "MadCart" "git@github.com:maormizrachi/MadCart.git"
 # EasyRMA (Remote Memory Agent — RMA-based one-sided MPI communication, needed for MPI builds)
 clone_if_missing "rma" "git@github.com:maormizrachi/EasyRMA.git"
 
+# Planck integral (Clark 1987 method for dimensionless Planck function integrals)
+clone_if_missing "planck_integral" "https://github.com/menahemkrief/planck_integral.git"
+
+# Physical constants (CGS units, required by planck_integral)
+clone_if_missing "units" "https://github.com/menahemkrief/units.git"
+
 echo ""
 echo "=== Done ==="
 echo ""

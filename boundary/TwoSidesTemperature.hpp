@@ -7,7 +7,7 @@
 #include <vector>
 #include "BoundaryCondition.hpp"
 #include "PhysicalConstants.hpp"
-#include "utils/PlanckIntegral.hpp"
+#include <planck_integral/planck_integral.hpp>
 #include "utils/LinearInterpolation.hpp"
 #include "utils/RandomOnFace.hpp"
 #include "StormError.hpp"
@@ -73,9 +73,9 @@ TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, double tempe
             double const bLeft = this->energyBoundaries[g] / kTLeft;
             double const aRight = this->energyBoundaries[g - 1] / kTRight;
             double const bRight = this->energyBoundaries[g] / kTRight;
-            this->cumulativePlanckFunctionLeft[g] = planck_integral::PlanckIntegral(aLeft, bLeft);
+            this->cumulativePlanckFunctionLeft[g] = planck_integral::planck_integral(aLeft, bLeft);
             this->cumulativePlanckFunctionLeft[g] += this->cumulativePlanckFunctionLeft[g - 1];
-            this->cumulativePlanckFunctionRight[g] = planck_integral::PlanckIntegral(aRight, bRight);
+            this->cumulativePlanckFunctionRight[g] = planck_integral::planck_integral(aRight, bRight);
             this->cumulativePlanckFunctionRight[g] += this->cumulativePlanckFunctionRight[g - 1];
         }
         if(std::abs(this->cumulativePlanckFunctionLeft.back() - 1.0) > 1e-8)

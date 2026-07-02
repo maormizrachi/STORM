@@ -30,7 +30,7 @@ STORM/
 ├── physics/                    Physics interface + NoPhysics
 ├── radiation/                  SimpleRadiationPhysics, OpacityModel, RadiationCell
 ├── boundary/                   Boundary conditions (rigid, temperature)
-├── utils/                      RandomOnFace, PlanckIntegral, LinearInterpolation
+├── utils/                      RandomOnFace, LinearInterpolation
 ├── population/                 Population control (comb, no-op)
 ├── manager/                    Serial + MPI managers
 ├── examples/                   Standalone examples (serial_cartesian, hohlraum)
@@ -63,6 +63,8 @@ The `install_deps.sh` script clones into `deps/` (the default `STORM_DEPS_DIR`):
 - **[spatial_ds](https://github.com/maormizrachi/spatial_ds)** — Spatial data structures (OctTree, KDTree)
 - **[MeshDecomposer3D](https://github.com/maormizrachi/MeshDecomposer3D)** — Domain decomposition, Hilbert ordering
 - **[EasyRMA](https://github.com/maormizrachi/EasyRMA)** — One-sided MPI communication (MPI builds only)
+- **[planck_integral](https://github.com/menahemkrief/planck_integral)** — Planck function integrals (Clark 1987)
+- **[units](https://github.com/menahemkrief/units)** — Physical constants in CGS (required by planck_integral)
 
 To use a custom deps location: `cmake .. -DSTORM_DEPS_DIR=/path/to/deps`
 

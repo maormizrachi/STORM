@@ -23,7 +23,7 @@ public:
 
     virtual ~MonteCarloPhysics() = default;
 
-    void updateGridData(void);
+    virtual void updateGridData(void);
 
     virtual std::vector<MCParticle> preStep(double fullDt) = 0;
 

@@ -67,7 +67,7 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 if(STORM_WITH_MPI)
-  target_compile_definitions(storm PUBLIC STORM_WITH_MPI)
+  target_compile_definitions(storm PUBLIC STORM_WITH_MPI SPATIAL_DS_WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
 endif()
 
