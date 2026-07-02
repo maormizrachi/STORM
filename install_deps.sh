@@ -22,9 +22,13 @@ clone_if_missing() {
     else
         echo "[clone] $name -> $target"
         if [ -n "$branch" ]; then
-            git clone --depth 1 -b "$branch" "$url" "$target"
+            git clone --depth 1 --recursive -b "$branch" "$url" "$target"
         else
-            git clone --depth 1 "$url" "$target"
+            git clone --depth 1 --recursive "$url" "$target"
+        fi
+        if [ -f "$target/.gitmodules" ]; then
+            echo "[submodules] initializing submodules for $name"
+            git -C "$target" submodule update --init --recursive
         fi
     fi
 }

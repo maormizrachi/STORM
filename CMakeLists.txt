@@ -19,12 +19,20 @@ option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # ---------- External dependencies directory ----------
+# STORM root first so its headers take priority over identically-named deps headers
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}")
 if(NOT DEFINED STORM_DEPS_DIR)
   set(STORM_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps")
 endif()
 if(IS_DIRECTORY "${STORM_DEPS_DIR}")
   get_filename_component(_deps "${STORM_DEPS_DIR}" ABSOLUTE)
   include_directories("${_deps}")
+  if(IS_DIRECTORY "${_deps}/MadVoro")
+    include_directories("${_deps}/MadVoro")
+  endif()
+  if(IS_DIRECTORY "${_deps}/MadVoro/range/finders")
+    include_directories("${_deps}/MadVoro/range/finders")
+  endif()
 endif()
 
 # ---------- Required dependencies ----------
@@ -49,6 +57,9 @@ if(STORM_WITH_MPI)
     utils/RankSync.cpp
     manager/parallel/ReallocationAgent.cpp
   )
+  if(EXISTS "${_deps}/mpi_utils/AmountManager.cpp")
+    list(APPEND STORM_SOURCES "${_deps}/mpi_utils/AmountManager.cpp")
+  endif()
 endif()
 
 if(STORM_SOURCES)
@@ -67,7 +78,7 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 if(STORM_WITH_MPI)
-  target_compile_definitions(storm PUBLIC STORM_WITH_MPI SPATIAL_DS_WITH_MPI)
+  target_compile_definitions(storm PUBLIC STORM_WITH_MPI MADVORO_WITH_MPI RICH_MPI SPATIAL_DS_WITH_MPI __WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
 endif()
 

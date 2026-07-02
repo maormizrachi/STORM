@@ -13,6 +13,20 @@ struct Vector3D
     Vector3D(double v) : x(v), y(v), z(v) {}
     Vector3D(double x, double y, double z) : x(x), y(y), z(z) {}
 
+    double &operator[](size_t i) { return (&x)[i]; }
+    double operator[](size_t i) const { return (&x)[i]; }
+
+    friend bool operator==(const Vector3D &a, const Vector3D &b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
+    friend Vector3D operator+(const Vector3D &a, const Vector3D &b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+    friend Vector3D operator-(const Vector3D &a, const Vector3D &b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+    friend Vector3D operator*(const Vector3D &v, double s) { return {v.x * s, v.y * s, v.z * s}; }
+    friend Vector3D operator*(double s, const Vector3D &v) { return {v.x * s, v.y * s, v.z * s}; }
+    friend Vector3D operator/(const Vector3D &v, double s) { return {v.x / s, v.y / s, v.z / s}; }
+    friend Vector3D &operator+=(Vector3D &a, const Vector3D &b) { a.x += b.x; a.y += b.y; a.z += b.z; return a; }
+    friend Vector3D &operator-=(Vector3D &a, const Vector3D &b) { a.x -= b.x; a.y -= b.y; a.z -= b.z; return a; }
+    friend Vector3D &operator*=(Vector3D &v, double s) { v.x *= s; v.y *= s; v.z *= s; return v; }
+    friend Vector3D &operator/=(Vector3D &v, double s) { v.x /= s; v.y /= s; v.z /= s; return v; }
+
     friend inline std::ostream &operator<<(std::ostream &os, const Vector3D &v)
     {
         return os << "(" << v.x << ", " << v.y << ", " << v.z << ")";

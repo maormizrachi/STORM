@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <numeric>
+#include <mpi.h>
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>
 #include "examples/Vector3D.hpp"
@@ -12,39 +14,19 @@
 #include "radiation/SimpleRadiationPhysics.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
-#include "manager/MonteCarloManagerSerial.hpp"
+#include "manager/parallel/TwoSidedMonteCarloManager.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
 
 /*
- * 2D Cylindrical Hohlraum benchmark from:
- *   McClarren & Urbatsch (2009), as presented in
- *   Steinberg & Heizler (2021), arXiv:2108.13453, Section 4.2.
+ * Parallel (MPI) 2D Cylindrical Hohlraum benchmark.
  *
- * Matches the setup in RICH/runs/Elad_paper_hohlraum.
- *
- * Domain (3D):  x in [0, 1.4],  y in [-0.65, 0.65],  z in [-0.65, 0.65] cm
- * Symmetry axis is x; r = sqrt(y^2 + z^2).
- *
- * Material regions (absorbing):
- *   Left wall:     x in [0.10, 0.15], r <= 0.45
- *   Capsule:       x in [0.55, 0.95], r <= 0.45
- *   Right end cap: x in [1.35, 1.40], r <= 0.65
- *   Outer wall:    x in [0.10, 1.40], r in [0.60, 0.65]
- *
- * Material:   sigma_a = 300 * (T/keV)^{-3} cm^{-1},  Cv = 3e15 erg/keV/cm^3
- * Vacuum:     sigma_a ~ 0,  Cv = 1e15 erg/keV/cm^3 (negligible)
- *
- * BC:  x=0 (left, r < 0.65) blackbody at T_drive = 1 keV;  all others vacuum
- * Init: T = 300 K
- * dt = 1e-11 s
+ * Same physics as examples/hohlraum (matching RICH/runs/Elad_paper_hohlraum)
+ * but uses MadVoro's parallel Voronoi construction and STORM's
+ * TwoSidedMonteCarloManager for distributed particle transport.
  *
  * Usage:
- *   ./hohlraum [N_base] [new_per_cell] [min_per_cell]
- *
- * N_base:        total number of Voronoi mesh generator points (default 2000)
- * new_per_cell:  new photon packets per cell per step (default 5)
- * min_per_cell:  target photon packets per cell after population control (default 15)
+ *   mpirun -np <N> ./hohlraum_parallel [N_base] [new_per_cell] [min_per_cell]
  */
 
 static bool IsMaterial(double x, double r)
@@ -93,34 +75,8 @@ static std::vector<Vector3D> RandRectangular(size_t pointNum, Vector3D ll, Vecto
     return res;
 }
 
-int main(int argc, char *argv[])
+static std::vector<Vector3D> GenerateAllPoints(size_t N_base, Vector3D lower, Vector3D upper)
 {
-    using Grid = MadVoro::Voronoi3D<Vector3D>;
-
-    size_t N_base = 2000;
-    size_t newPhotonsPerCell = 5;
-    size_t minPhotonsPerCell = 15;
-
-    if(argc >= 2)
-    {
-        N_base = std::stoul(argv[1]);
-    }
-    if(argc >= 3)
-    {
-        newPhotonsPerCell = std::stoul(argv[2]);
-    }
-    if(argc >= 4)
-    {
-        minPhotonsPerCell = std::stoul(argv[3]);
-    }
-
-    const double Lx = 1.4;
-    const double Ly = 0.65;
-    const double Lz = 0.65;
-    const double pad = 2 * 0.03;
-    Vector3D lower(0, -(Ly + pad), -(Lz + pad));
-    Vector3D upper(Lx + pad, Ly + pad, Lz + pad);
-
     boost::mt19937_64 gen(42);
     std::vector<Vector3D> points = RandRectangular(N_base, lower, upper, gen);
 
@@ -151,12 +107,58 @@ int main(int argc, char *argv[])
     extra = RandCylinder(Np, 0, 0.65, 1.40 - dx / 2, 1.40 + dx, gen);
     points.insert(points.end(), extra.begin(), extra.end());
 
+    return points;
+}
+
+int main(int argc, char *argv[])
+{
+    MPI_Init(&argc, &argv);
+
+    int rank, nprocs;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+
+    using Grid = MadVoro::Voronoi3D<Vector3D>;
+
+    size_t N_base = 2000;
+    size_t newPhotonsPerCell = 5;
+    size_t minPhotonsPerCell = 15;
+
+    if(argc >= 2)
+    {
+        N_base = std::stoul(argv[1]);
+    }
+    if(argc >= 3)
+    {
+        newPhotonsPerCell = std::stoul(argv[2]);
+    }
+    if(argc >= 4)
+    {
+        minPhotonsPerCell = std::stoul(argv[3]);
+    }
+
+    const double Lx = 1.4;
+    const double Ly = 0.65;
+    const double Lz = 0.65;
+    const double pad = 2 * 0.03;
+    Vector3D lower(0, -(Ly + pad), -(Lz + pad));
+    Vector3D upper(Lx + pad, Ly + pad, Lz + pad);
+
+    std::vector<Vector3D> allPoints = GenerateAllPoints(N_base, lower, upper);
+
     Grid grid(lower, upper);
-    grid.Build(points);
+    std::vector<Vector3D> localPoints = grid.BuildParallel(allPoints);
 
     size_t Ncells = grid.GetPointNo();
-    std::cout << "Hohlraum Voronoi grid: " << Ncells << " cells"
-              << " (N_base=" << N_base << ", total points=" << points.size() << ")" << std::endl;
+    size_t globalCells = 0;
+    size_t localCellsSz = Ncells;
+    MPI_Reduce(&localCellsSz, &globalCells, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    if(rank == 0)
+    {
+        std::cout << "Hohlraum parallel Voronoi grid: " << globalCells << " cells across " << nprocs << " ranks"
+                  << " (N_base=" << N_base << ", total points=" << allPoints.size() << ")" << std::endl;
+    }
 
     std::vector<STORM::RadiationCell> cells(Ncells);
     std::vector<int> materialFlags(Ncells, 0);
@@ -165,19 +167,25 @@ int main(int argc, char *argv[])
     double cv_material = 3e15 / STORM::constants::kev_kelvin;
     double cv_vacuum = 1e15 / STORM::constants::kev_kelvin;
 
-    size_t nMaterial = 0;
+    size_t nMaterialLocal = 0;
     for(size_t i = 0; i < Ncells; i++)
     {
         Vector3D center = grid.GetCellCM(i);
         double r = std::sqrt(center.y * center.y + center.z * center.z);
         bool isMat = IsMaterial(center.x, r);
         materialFlags[i] = isMat ? 1 : 0;
-        nMaterial += isMat ? 1 : 0;
+        nMaterialLocal += isMat ? 1 : 0;
         cells[i].temperature = T_init;
         cells[i].cv = isMat ? cv_material : cv_vacuum;
         cells[i].internalEnergy = cells[i].cv * cells[i].temperature;
     }
-    std::cout << "Material cells: " << nMaterial << ", vacuum cells: " << (Ncells - nMaterial) << std::endl;
+
+    size_t nMaterialGlobal = 0;
+    MPI_Reduce(&nMaterialLocal, &nMaterialGlobal, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    if(rank == 0)
+    {
+        std::cout << "Material cells: " << nMaterialGlobal << ", vacuum cells: " << (globalCells - nMaterialGlobal) << std::endl;
+    }
 
     double T_drive = 1.0 * STORM::constants::kev_kelvin;
     constexpr size_t boundaryPhotonsPerCell = 1000;
@@ -187,17 +195,20 @@ int main(int argc, char *argv[])
     std::shared_ptr<STORM::SimpleRadiationPhysics<Vector3D, Grid>> physics = std::make_shared<STORM::SimpleRadiationPhysics<Vector3D, Grid>>(grid, boundary, cells, opacityModel, newPhotonsPerCell);
     std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl = std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, minPhotonsPerCell, 6.0);
 
-    STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
+    STORM::TwoSidedMonteCarloManager<Vector3D, Grid> manager(grid, physics, popControl, boundary, MPI_COMM_WORLD);
 
     std::vector<STORM::Particle<Vector3D, Grid>> particles;
 
     double dt = 1e-11;
     size_t Nsteps = 100;
 
-    std::cout << "Running " << Nsteps << " steps with dt = " << dt << " s" << std::endl;
-    std::cout << "Drive temperature: " << T_drive << " K (" << T_drive / STORM::constants::kev_kelvin << " keV)" << std::endl;
-    std::cout << "Photons: new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << ", min_per_cell=" << minPhotonsPerCell << std::endl;
-    std::cout << std::endl;
+    if(rank == 0)
+    {
+        std::cout << "Running " << Nsteps << " steps with dt = " << dt << " s" << std::endl;
+        std::cout << "Drive temperature: " << T_drive << " K (" << T_drive / STORM::constants::kev_kelvin << " keV)" << std::endl;
+        std::cout << "Photons: new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << ", min_per_cell=" << minPhotonsPerCell << std::endl;
+        std::cout << std::endl;
+    }
 
     for(size_t step = 0; step < Nsteps; step++)
     {
@@ -205,40 +216,39 @@ int main(int argc, char *argv[])
 
         if(step % 10 == 0 or step == Nsteps - 1)
         {
-            double maxT = 0;
-            double avgT = 0;
+            double localMaxT = 0;
+            double localSumT = 0;
             for(size_t i = 0; i < Ncells; i++)
             {
-                avgT += cells[i].temperature;
-                if(cells[i].temperature > maxT)
+                localSumT += cells[i].temperature;
+                if(cells[i].temperature > localMaxT)
                 {
-                    maxT = cells[i].temperature;
+                    localMaxT = cells[i].temperature;
                 }
             }
-            avgT /= Ncells;
-            std::cout << "Step " << step << ": " << particles.size() << " particles, "
-                      << "max T = " << maxT / STORM::constants::kev_kelvin << " keV, "
-                      << "avg T = " << avgT / STORM::constants::kev_kelvin << " keV" << std::endl;
+            double globalMaxT = 0;
+            double globalSumT = 0;
+            size_t localParticles = particles.size();
+            size_t globalParticles = 0;
+            MPI_Reduce(&localMaxT, &globalMaxT, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&localSumT, &globalSumT, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&localParticles, &globalParticles, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+
+            if(rank == 0)
+            {
+                double avgT = globalSumT / globalCells;
+                std::cout << "Step " << step << ": " << globalParticles << " particles, "
+                          << "max T = " << globalMaxT / STORM::constants::kev_kelvin << " keV, "
+                          << "avg T = " << avgT / STORM::constants::kev_kelvin << " keV" << std::endl;
+            }
         }
     }
 
-    std::cout << "\nFinal temperature profile along x-axis (r~0):" << std::endl;
-    double rTolerance = 0.05;
-    std::vector<std::pair<double, double>> profile;
-    for(size_t i = 0; i < Ncells; i++)
+    if(rank == 0)
     {
-        Vector3D center = grid.GetCellCM(i);
-        double r = std::sqrt(center.y * center.y + center.z * center.z);
-        if(r < rTolerance)
-        {
-            profile.push_back({center.x, cells[i].temperature});
-        }
-    }
-    std::sort(profile.begin(), profile.end());
-    for(const std::pair<double, double> &entry : profile)
-    {
-        std::cout << "  x = " << entry.first * 10 << " mm: T = " << entry.second / STORM::constants::kev_kelvin << " keV" << std::endl;
+        std::cout << "\nDone." << std::endl;
     }
 
+    MPI_Finalize();
     return 0;
 }
