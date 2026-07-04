@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.14)
 project(STORM
   VERSION 1.0.0
-  LANGUAGES CXX
+  LANGUAGES CXX C
   DESCRIPTION "Scalable Three-dimensional Optimized RDMA Monte Carlo"
 )
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+  endif()
   set(CMAKE_CXX_STANDARD 17 CACHE STRING "")
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_CXX_EXTENSIONS OFF)
@@ -13,6 +16,8 @@ endif()
 
 # ---------- Options ----------
 option(STORM_WITH_MPI   "Build with MPI support"  OFF)
+option(STORM_WITH_IBV   "Build with IBV (InfiniBand Verbs) for RDMA transport (requires MPI)" OFF)
+option(STORM_WITH_VTK   "Build with VTK support for mesh output (requires MadVoro VTK headers)" OFF)
 option(STORM_WITH_HDF5  "Build with HDF5 support" OFF)
 option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
 
@@ -44,6 +49,22 @@ if(STORM_WITH_MPI)
   find_package(MPI 2.0 REQUIRED COMPONENTS CXX)
 endif()
 
+if(STORM_WITH_IBV)
+  if(NOT STORM_WITH_MPI)
+    message(FATAL_ERROR "STORM_WITH_IBV requires STORM_WITH_MPI=ON")
+  endif()
+  find_library(IBVERBS_LIBRARY ibverbs REQUIRED)
+endif()
+
+if(STORM_WITH_VTK)
+  find_package(VTK 9.3.0 REQUIRED
+    COMPONENTS CommonCore CommonColor FiltersGeneral FiltersSources IOXML InteractionStyle
+  )
+  if(STORM_WITH_MPI)
+    find_package(VTK REQUIRED COMPONENTS IOParallelXML ParallelMPI)
+  endif()
+endif()
+
 if(STORM_WITH_HDF5)
   set(HDF5_PREFER_PARALLEL ${STORM_WITH_MPI})
   find_package(HDF5 1.8.0 REQUIRED COMPONENTS CXX HL)
@@ -59,6 +80,12 @@ if(STORM_WITH_MPI)
   )
   if(EXISTS "${_deps}/mpi_utils/AmountManager.cpp")
     list(APPEND STORM_SOURCES "${_deps}/mpi_utils/AmountManager.cpp")
+  endif()
+  if(EXISTS "${_deps}/rma/DistributedMutex.cpp")
+    list(APPEND STORM_SOURCES "${_deps}/rma/DistributedMutex.cpp")
+  endif()
+  if(STORM_WITH_IBV AND EXISTS "${_deps}/rma/IBVContext.cpp")
+    list(APPEND STORM_SOURCES "${_deps}/rma/IBVContext.cpp")
   endif()
 endif()
 
@@ -80,6 +107,16 @@ endif()
 if(STORM_WITH_MPI)
   target_compile_definitions(storm PUBLIC STORM_WITH_MPI MADVORO_WITH_MPI RICH_MPI SPATIAL_DS_WITH_MPI __WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
+endif()
+
+if(STORM_WITH_IBV)
+  target_compile_definitions(storm PUBLIC __WITH_IBV)
+  target_link_libraries(storm PUBLIC ${IBVERBS_LIBRARY})
+endif()
+
+if(STORM_WITH_VTK)
+  target_compile_definitions(storm PUBLIC MADVORO_WITH_VTK)
+  target_link_libraries(storm PUBLIC ${VTK_LIBRARIES})
 endif()
 
 if(STORM_WITH_HDF5)
