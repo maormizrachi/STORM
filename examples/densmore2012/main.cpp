@@ -11,7 +11,7 @@
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
 #include "PhysicalConstants.hpp"
-#include "radiation/SimpleRadiationPhysics.hpp"
+#include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
 #include "manager/MonteCarloManagerSerial.hpp"
@@ -43,6 +43,29 @@
  */
 
 using Grid = MadCart::CartesianMesh3D<Vector3D>;
+
+class DensmoreEOS
+{
+public:
+    DensmoreEOS(double cvPerVolume, double density)
+        : cvPerMass_(cvPerVolume / density)
+    {}
+
+    double dT2cv(double /*density*/, double /*temperature*/,
+                 const std::vector<double> &, const std::vector<std::string> &) const
+    {
+        return cvPerMass_;
+    }
+
+    double de2T(double /*density*/, double specificEnergy,
+                const std::vector<double> &, const std::vector<std::string> &) const
+    {
+        return (cvPerMass_ > 0.0) ? specificEnergy / cvPerMass_ : 0.0;
+    }
+
+private:
+    double cvPerMass_;
+};
 
 struct RefPoint
 {
@@ -77,6 +100,9 @@ static std::vector<RefPoint> LoadCSV(const std::string &path)
 
 int main(int argc, char *argv[])
 {
+    using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
+                                    DensmoreEOS, 1>;
+
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 256;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 50;
     size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
@@ -88,7 +114,8 @@ int main(int argc, char *argv[])
     double xStep = 2.0;
     double T_init = eV_K;
     double T_boundary = keV_K;
-    double cv = 1e15 / keV_K;
+    double density = 1.0;
+    double cvPerVolume = 1e15 / keV_K;
     double tf = 1e-9;
     double dt = 5e-12;
     size_t iterations = static_cast<size_t>(tf / dt);
@@ -106,23 +133,33 @@ int main(int argc, char *argv[])
     std::cout << "dt=" << dt << " s, t_final=" << tf << " s, iterations=" << iterations << std::endl;
 
     std::vector<STORM::RadiationCell> cells(Ncells);
+    std::vector<STORM::SimpleExtensives> extensives(Ncells);
     std::vector<int> regionFlags(Ncells, 0);
 
     for(size_t i = 0; i < Ncells; i++)
     {
         double x = grid.GetCellCM(i).x;
+        double volume = grid.GetVolume(i);
         regionFlags[i] = (x < xStep) ? 1 : 0;
         cells[i].temperature = T_init;
-        cells[i].cv = cv;
-        cells[i].internalEnergy = cv * T_init;
+        cells[i].internalEnergy = cvPerVolume * T_init * volume;
+        extensives[i].mass = density * volume;
+        extensives[i].internal_energy = cells[i].internalEnergy;
     }
 
-    std::shared_ptr<STORM::examples::DensmoreOpacity> opacityModel =
-        std::make_shared<STORM::examples::DensmoreOpacity>(regionFlags);
+    STORM::RadiationIMCParameters<1> imcParams;
+    imcParams.newPhotonsPerCell = newPhotonsPerCell;
+    imcParams.withRandomWalk = true;
+    imcParams.energyBoundaries = {0.0, 1e30};
+    imcParams.energyBoundariesProvided = true;
+
+    std::shared_ptr<DensmoreEOS> eos = std::make_shared<DensmoreEOS>(cvPerVolume, density);
+    std::shared_ptr<STORM::examples::DensmoreOpacity<Vector3D, Grid>> opacityModel =
+        std::make_shared<STORM::examples::DensmoreOpacity<Vector3D, Grid>>(regionFlags, cells);
     std::shared_ptr<STORM::examples::MarshakBoundary<Vector3D, Grid>> boundary =
         std::make_shared<STORM::examples::MarshakBoundary<Vector3D, Grid>>(grid, T_boundary, boundaryPhotonsPerCell);
-    std::shared_ptr<STORM::SimpleRadiationPhysics<Vector3D, Grid>> physics =
-        std::make_shared<STORM::SimpleRadiationPhysics<Vector3D, Grid>>(grid, boundary, cells, opacityModel, newPhotonsPerCell);
+    std::shared_ptr<IMC> physics =
+        std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
     std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl =
         std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, 200, 5.0);
 

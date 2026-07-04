@@ -14,7 +14,7 @@
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
 #include "PhysicalConstants.hpp"
-#include "radiation/SimpleRadiationPhysics.hpp"
+#include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
 #include "manager/MonteCarloManagerSerial.hpp"
@@ -148,6 +148,29 @@ inline double BathTemperature(const ProblemParams &p, double t)
     return p.T_bath_coeff * std::pow(t_ns, p.T_bath_exponent) * constants::kev_kelvin;
 }
 
+class MarshakEOS
+{
+public:
+    MarshakEOS(const ProblemParams &params) : params_(params) {}
+
+    double dT2cv(double density, double temperature,
+                 const std::vector<double> &, const std::vector<std::string> &) const
+    {
+        double cvPerVolume = EOS_cv(params_, temperature, density);
+        return cvPerVolume / density;
+    }
+
+    double de2T(double density, double specificEnergy,
+                const std::vector<double> &, const std::vector<std::string> &) const
+    {
+        double energyPerVolume = specificEnergy * density;
+        return EOS_T_from_E(params_, energyPerVolume, density);
+    }
+
+private:
+    ProblemParams params_;
+};
+
 struct ReferencePoint
 {
     double x, Tgas, Trad;
@@ -207,6 +230,9 @@ inline double ComputeL1(const std::vector<double> &simX, const std::vector<doubl
 
 inline int RunMarshakWave(int problem, int argc, char *argv[])
 {
+    using IMC = RadiationIMC<Vector3D, MarshakGrid, RadiationCell, SimpleExtensives,
+                             MarshakEOS, 1>;
+
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 128;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 5;
     size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
@@ -227,26 +253,36 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     std::cout << "Marshak wave problem " << problem << ": " << Ncells << " cells, domain [0, " << xMax << "] cm" << std::endl;
 
     std::vector<RadiationCell> cells(Ncells);
+    std::vector<SimpleExtensives> extensives(Ncells);
     std::vector<double> densities(Ncells);
 
     for(size_t i = 0; i < Ncells; i++)
     {
         double x = grid.GetCellCM(i).x;
+        double volume = grid.GetVolume(i);
         double rho = ComputeDensity(problem, x);
         densities[i] = rho;
         cells[i].temperature = T_init;
-        cells[i].internalEnergy = EOS_E_from_T(params, T_init, rho);
-        cells[i].cv = EOS_cv(params, T_init, rho);
+        cells[i].internalEnergy = EOS_E_from_T(params, T_init, rho) * volume;
+        extensives[i].mass = rho * volume;
+        extensives[i].internal_energy = cells[i].internalEnergy;
     }
 
     double T_bath_init = BathTemperature(params, params.initialDt);
 
-    std::shared_ptr<MarshakOpacity> opacityModel =
-        std::make_shared<MarshakOpacity>(params.kappaP0, params.kappaR0, params.alpha, params.betaRho, densities);
+    RadiationIMCParameters<1> imcParams;
+    imcParams.newPhotonsPerCell = newPhotonsPerCell;
+    imcParams.withRandomWalk = true;
+    imcParams.energyBoundaries = {0.0, 1e30};
+    imcParams.energyBoundariesProvided = true;
+
+    std::shared_ptr<MarshakEOS> eos = std::make_shared<MarshakEOS>(params);
+    std::shared_ptr<MarshakOpacity<Vector3D, MarshakGrid>> opacityModel =
+        std::make_shared<MarshakOpacity<Vector3D, MarshakGrid>>(params.kappaP0, params.kappaR0, params.alpha, params.betaRho, densities, cells);
     std::shared_ptr<MarshakBoundary<Vector3D, MarshakGrid>> boundary =
         std::make_shared<MarshakBoundary<Vector3D, MarshakGrid>>(grid, T_bath_init, boundaryPhotonsPerCell);
-    std::shared_ptr<SimpleRadiationPhysics<Vector3D, MarshakGrid>> physics =
-        std::make_shared<SimpleRadiationPhysics<Vector3D, MarshakGrid>>(grid, boundary, cells, opacityModel, newPhotonsPerCell);
+    std::shared_ptr<IMC> physics =
+        std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
     std::shared_ptr<CombPopulationControl<Vector3D, MarshakGrid>> popControl =
         std::make_shared<CombPopulationControl<Vector3D, MarshakGrid>>(grid, 15, 6.0);
 
@@ -269,15 +305,6 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
 
         dt = std::min(dt, params.tf - simTime);
         particles = manager.step(std::move(particles), dt);
-
-        for(size_t i = 0; i < Ncells; i++)
-        {
-            double E = cells[i].internalEnergy;
-            double rho = densities[i];
-            double T = EOS_T_from_E(params, E, rho);
-            cells[i].temperature = T;
-            cells[i].cv = EOS_cv(params, T, rho);
-        }
 
         simTime += dt;
         cycle++;

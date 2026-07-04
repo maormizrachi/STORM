@@ -9,12 +9,13 @@
 #include "examples/Vector3D.hpp"
 #include "MadVoro/Voronoi3D.hpp"
 #include "PhysicalConstants.hpp"
-#include "radiation/SimpleRadiationPhysics.hpp"
+#include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
 #include "manager/MonteCarloManagerSerial.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
+#include "HohlraumIMC.hpp"
 
 /*
  * 2D Cylindrical Hohlraum benchmark from:
@@ -96,6 +97,8 @@ static std::vector<Vector3D> RandRectangular(size_t pointNum, Vector3D ll, Vecto
 int main(int argc, char *argv[])
 {
     using Grid = MadVoro::Voronoi3D<Vector3D>;
+    using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
+                                    STORM::examples::HohlraumEOS, 1>;
 
     size_t N_base = 2000;
     size_t newPhotonsPerCell = 5;
@@ -158,12 +161,15 @@ int main(int argc, char *argv[])
     std::cout << "Hohlraum Voronoi grid: " << Ncells << " cells"
               << " (N_base=" << N_base << ", total points=" << points.size() << ")" << std::endl;
 
-    std::vector<STORM::RadiationCell> cells(Ncells);
-    std::vector<int> materialFlags(Ncells, 0);
-
     double T_init = 300.0;
-    double cv_material = 3e15 / STORM::constants::kev_kelvin;
-    double cv_vacuum = 1e15 / STORM::constants::kev_kelvin;
+    double densityMaterial = 10.0;
+    double densityVacuum = 0.01;
+    double cvPerVolumeMaterial = 3e15 / STORM::constants::kev_kelvin;
+    double cvPerVolumeVacuum = 1e15 / STORM::constants::kev_kelvin;
+
+    std::vector<STORM::RadiationCell> cells(Ncells);
+    std::vector<STORM::SimpleExtensives> extensives(Ncells);
+    std::vector<int> materialFlags(Ncells, 0);
 
     size_t nMaterial = 0;
     for(size_t i = 0; i < Ncells; i++)
@@ -173,19 +179,38 @@ int main(int argc, char *argv[])
         bool isMat = IsMaterial(center.x, r);
         materialFlags[i] = isMat ? 1 : 0;
         nMaterial += isMat ? 1 : 0;
+
+        double volume = grid.GetVolume(i);
+        double density = isMat ? densityMaterial : densityVacuum;
+        double cvPerVolume = isMat ? cvPerVolumeMaterial : cvPerVolumeVacuum;
+
         cells[i].temperature = T_init;
-        cells[i].cv = isMat ? cv_material : cv_vacuum;
-        cells[i].internalEnergy = cells[i].cv * cells[i].temperature;
+        cells[i].internalEnergy = cvPerVolume * T_init * volume;
+
+        extensives[i].mass = density * volume;
+        extensives[i].internal_energy = cells[i].internalEnergy;
     }
     std::cout << "Material cells: " << nMaterial << ", vacuum cells: " << (Ncells - nMaterial) << std::endl;
 
     double T_drive = 1.0 * STORM::constants::kev_kelvin;
     constexpr size_t boundaryPhotonsPerCell = 1000;
 
-    std::shared_ptr<STORM::examples::HohlraumOpacity> opacityModel = std::make_shared<STORM::examples::HohlraumOpacity>(materialFlags);
-    std::shared_ptr<STORM::examples::HohlraumBoundary<Vector3D, Grid>> boundary = std::make_shared<STORM::examples::HohlraumBoundary<Vector3D, Grid>>(grid, T_drive, boundaryPhotonsPerCell);
-    std::shared_ptr<STORM::SimpleRadiationPhysics<Vector3D, Grid>> physics = std::make_shared<STORM::SimpleRadiationPhysics<Vector3D, Grid>>(grid, boundary, cells, opacityModel, newPhotonsPerCell);
-    std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl = std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, minPhotonsPerCell, 6.0);
+    STORM::RadiationIMCParameters<1> params;
+    params.newPhotonsPerCell = newPhotonsPerCell;
+    params.withRandomWalk = true;
+    params.energyBoundaries = {0.0, 1e30};
+    params.energyBoundariesProvided = true;
+
+    std::shared_ptr<STORM::examples::HohlraumEOS> eos =
+        std::make_shared<STORM::examples::HohlraumEOS>(cvPerVolumeMaterial, cvPerVolumeVacuum, densityMaterial, densityVacuum);
+    std::shared_ptr<STORM::examples::HohlraumOpacity<Vector3D, Grid>> opacityModel =
+        std::make_shared<STORM::examples::HohlraumOpacity<Vector3D, Grid>>(materialFlags, cells);
+    std::shared_ptr<STORM::examples::HohlraumBoundary<Vector3D, Grid>> boundary =
+        std::make_shared<STORM::examples::HohlraumBoundary<Vector3D, Grid>>(grid, T_drive, boundaryPhotonsPerCell);
+    std::shared_ptr<IMC> physics =
+        std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, params);
+    std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl =
+        std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, minPhotonsPerCell, 6.0);
 
     STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 

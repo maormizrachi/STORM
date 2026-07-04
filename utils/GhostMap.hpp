@@ -26,7 +26,7 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const 
     cachedBuildGeneration = grid.GetBuildGeneration();
     ranks_ghost_map.clear();
     const std::vector<int> &dupProcs = grid.GetDuplicatedProcs();
-    std::vector<std::vector<size_t>> incoming = MPI_exchange_data(dupProcs, grid.GetDuplicatedPoints());
+    std::vector<std::vector<size_t>> incoming = ::MPI_exchange_data(dupProcs, grid.GetDuplicatedPoints());
     const std::vector<std::vector<size_t>> &ghosts = grid.GetGhostIndeces();
     for(size_t i = 0; i < incoming.size(); i++)
     {

@@ -117,41 +117,7 @@ public:
     }
 
     double requestedFactor;
-    #ifdef TIMING
-    double reallocationTime;
-    size_t reallocationsThisStep;
-    size_t reallocationsTotal;
-    size_t peakBufferUsage;
-    size_t transferCallsThisStep;
-    size_t contiguousParticlePutsThisStep;
-    size_t contiguousParticlesThisStep;
-    size_t scatterParticlePutsThisStep;
-    size_t scatterParticlesThisStep;
-    size_t transferCallsWithContiguousAllocationThisStep;
-    size_t transferCallsWithoutContiguousAllocationThisStep;
-    size_t transferReallocationRequestsThisStep;
-    size_t transferCallsWithReallocationThisStep;
-    size_t remoteLockCallsThisStep;
-    double transferTotalTimeThisStep;
-    double transferLockWaitTimeThisStep;
-    double transferReallocationWaitTimeThisStep;
-    double transferAvailReserveTimeThisStep;
-    double transferAvailIndexGetTimeThisStep;
-    double transferParticlePutTimeThisStep;
-    double transferTHLengthGetTimeThisStep;
-    double transferTHPutTimeThisStep;
-    double transferTHLengthPublishTimeThisStep;
-    double transferAVLengthFlushTimeThisStep;
-    double transferUnlockTimeThisStep;
-    #endif // TIMING
     size_t minimalBuffSize;
-    #ifdef TIMING
-    double constructionRmaTime;
-    double constructionMutexTime;
-    double constructionResetTime;
-    double constructionPeerInfoTime;
-    double constructionTotalTime;
-    #endif // TIMING
 
 private:
     std::unique_ptr<RemoteMemoryAgent<MCParticle>> particles_agent;
@@ -173,19 +139,6 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
     group_world(MPI_GROUP_NULL), group_internal(MPI_GROUP_NULL),
     minimalBuffSize(minimalBuffSize)
 {
-    #ifdef TIMING
-    auto constructorStart = std::chrono::high_resolution_clock::now();
-    auto secondsSince = [](const std::chrono::high_resolution_clock::time_point &start)
-    {
-        return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count();
-    };
-
-    this->constructionRmaTime = 0;
-    this->constructionMutexTime = 0;
-    this->constructionResetTime = 0;
-    this->constructionPeerInfoTime = 0;
-    this->constructionTotalTime = 0;
-    #endif // TIMING
 
     assert(private_comm != MPI_COMM_NULL);
 
@@ -198,84 +151,31 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
     assert(this->rank_internal == 0 or this->rank_internal == 1);
 
     this->requestedFactor = 1;
-    #ifdef TIMING
-    this->reallocationTime = 0;
-    this->reallocationsThisStep = 0;
-    this->reallocationsTotal = 0;
-    this->peakBufferUsage = 0;
-    this->transferCallsThisStep = 0;
-    this->contiguousParticlePutsThisStep = 0;
-    this->contiguousParticlesThisStep = 0;
-    this->scatterParticlePutsThisStep = 0;
-    this->scatterParticlesThisStep = 0;
-    this->transferCallsWithContiguousAllocationThisStep = 0;
-    this->transferCallsWithoutContiguousAllocationThisStep = 0;
-    this->transferReallocationRequestsThisStep = 0;
-    this->transferCallsWithReallocationThisStep = 0;
-    this->remoteLockCallsThisStep = 0;
-    this->transferTotalTimeThisStep = 0;
-    this->transferLockWaitTimeThisStep = 0;
-    this->transferReallocationWaitTimeThisStep = 0;
-    this->transferAvailReserveTimeThisStep = 0;
-    this->transferAvailIndexGetTimeThisStep = 0;
-    this->transferParticlePutTimeThisStep = 0;
-    this->transferTHLengthGetTimeThisStep = 0;
-    this->transferTHPutTimeThisStep = 0;
-    this->transferTHLengthPublishTimeThisStep = 0;
-    this->transferAVLengthFlushTimeThisStep = 0;
-    this->transferUnlockTimeThisStep = 0;
-    #endif // TIMING
 
     if(this->size_internal > 1)
     {
         this->other_rank = 1 - this->rank_internal;
 
-        #ifdef TIMING
-        auto sectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
         this->particles_agent = RMAFactory::Create<MCParticle>(this->rdma_type, this->buffsize, this->comm);
         this->lengths_agent = RMAFactory::CreateOver<uint64_t>(this->rdma_type, this->queue_storage, 2, this->comm);
-        #ifdef TIMING
-        this->constructionRmaTime = secondsSince(sectionStart);
-        #endif // TIMING
 
         this->particles = this->particles_agent->GetLocalPointer();
 
-        #ifdef TIMING
-        sectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
         std::shared_ptr<DistributedMutex> rank0Mutex = std::make_shared<DistributedMutex>(comm, 0, this->rdma_type);
         std::shared_ptr<DistributedMutex> rank1Mutex = std::make_shared<DistributedMutex>(comm, 1, this->rdma_type);
         this->localListMutex = (this->rank_internal == 0)? rank0Mutex : rank1Mutex;
         this->remoteListMutex = (this->rank_internal == 0)? rank1Mutex : rank0Mutex;
-        #ifdef TIMING
-        this->constructionMutexTime = secondsSince(sectionStart);
-
-        sectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
         this->Reset();
         MPI_Barrier(this->comm);
-        #ifdef TIMING
-        this->constructionResetTime = secondsSince(sectionStart);
-        #endif // TIMING
     }
     else
     {
         this->other_rank = 0;
-        #ifdef TIMING
-        auto sectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
         this->particles = new MCParticle[this->buffsize];
         this->head = 0;
         this->tail = 0;
-        #ifdef TIMING
-        this->constructionRmaTime = secondsSince(sectionStart);
-        #endif // TIMING
     }
 
-    #ifdef TIMING
-    auto peerInfoStart = std::chrono::high_resolution_clock::now();
-    #endif // TIMING
     if(this->size_internal > 1)
     {
         MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0,
@@ -295,10 +195,6 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
     }
 
     MPI_Barrier(this->comm);
-    #ifdef TIMING
-    this->constructionPeerInfoTime = secondsSince(peerInfoStart);
-    this->constructionTotalTime = secondsSince(constructorStart);
-    #endif // TIMING
 }
 
 template<typename T, typename Grid>
@@ -485,11 +381,6 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
     memory_debug::check_system_memory("RankHandler2::Reallocate");
 #endif
 
-    #ifdef TIMING
-    auto reallocationStart = std::chrono::high_resolution_clock::now();
-    this->reallocationsThisStep++;
-    this->reallocationsTotal++;
-    #endif // TIMING
 
     if(this->size_internal > 1)
     {
@@ -586,10 +477,6 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
     }
 
     this->requestedFactor = 1;
-    #ifdef TIMING
-    this->reallocationTime += std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - reallocationStart).count();
-    #endif // TIMING
 }
 
 template<typename T, typename Grid>
@@ -617,11 +504,6 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
     memory_debug::check_system_memory("RankHandler2::LocalReallocate");
 #endif
 
-    #ifdef TIMING
-    auto reallocationStart = std::chrono::high_resolution_clock::now();
-    this->reallocationsThisStep++;
-    this->reallocationsTotal++;
-    #endif // TIMING
 
     this->LockSelfBuffer();
     bool locked = true;
@@ -660,10 +542,6 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
         this->UnlockSelfBuffer();
         locked = false;
 
-        #ifdef TIMING
-        this->reallocationTime += std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now() - reallocationStart).count();
-        #endif // TIMING
 
         ReallocationMetadata metadata;
         metadata.particles = particlesInfo;
@@ -725,14 +603,6 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
         return true;
     }
 
-    #ifdef TIMING
-    this->transferCallsThisStep++;
-    auto transferTotalStart = std::chrono::high_resolution_clock::now();
-    auto secondsSince = [](const std::chrono::high_resolution_clock::time_point &start)
-    {
-        return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count();
-    };
-    #endif // TIMING
 
     if(this->size_internal > 1)
     {
@@ -754,15 +624,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
             }
         };
 
-        #ifdef TIMING
-        auto transferSectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
         getRemoteCounters();
-        #ifdef TIMING
-        this->transferAvailReserveTimeThisStep += secondsSince(transferSectionStart);
-        auto reallocationStart = std::chrono::high_resolution_clock::now();
-        size_t reallocationRequestsForThisTransfer = 0;
-        #endif // TIMING
 
         while(static_cast<size_t>(remoteCounters[TAIL_INDEX] - remoteCounters[HEAD_INDEX]) + Np > this->peer_buffsize)
         {
@@ -772,43 +634,19 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
             this->requestedFactor = static_cast<double>(requiredSize) /
                                     static_cast<double>(denominator) * 1.5;
 
-            #ifdef TIMING
-            this->transferReallocationRequestsThisStep++;
-            reallocationRequestsForThisTransfer++;
-            #endif // TIMING
 
             if(this->UsesAsyncReallocation())
             {
                 this->reallocationAgent->RequestReallocationAsync(this->peer_rank_world, this->requestedFactor);
                 this->requestedFactor = 1;
-                #ifdef TIMING
-                this->transferCallsWithReallocationThisStep++;
-                this->transferTotalTimeThisStep += secondsSince(transferTotalStart);
-                #endif // TIMING
                 return false;
             }
 
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
 
-            #ifdef TIMING
-            transferSectionStart = std::chrono::high_resolution_clock::now();
-            #endif // TIMING
             getRemoteCounters();
-            #ifdef TIMING
-            this->transferAvailReserveTimeThisStep += secondsSince(transferSectionStart);
-            #endif // TIMING
         }
 
-        #ifdef TIMING
-        if(reallocationRequestsForThisTransfer > 0)
-        {
-            double reallocationSeconds = std::chrono::duration<double>(
-                std::chrono::high_resolution_clock::now() - reallocationStart).count();
-            this->reallocationTime += reallocationSeconds;
-            this->transferReallocationWaitTimeThisStep += reallocationSeconds;
-            this->transferCallsWithReallocationThisStep++;
-        }
-        #endif // TIMING
 
         #ifdef STORM_DEBUG
         for(size_t i = 0; i < Np; i++)
@@ -834,29 +672,14 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
         uint64_t remoteTail = remoteCounters[TAIL_INDEX];
         size_t start = static_cast<size_t>(remoteTail % this->peer_buffsize);
         size_t first = std::min(Np, this->peer_buffsize - start);
-        #ifdef TIMING
-        transferSectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
         this->particles_agent->Put(particles, first, this->other_rank, start, is_mpi and first == Np, source_lkey);
         if(first < Np)
         {
             this->particles_agent->Put(particles + first, Np - first, this->other_rank, 0, is_mpi, source_lkey);
         }
-        #ifdef TIMING
-        this->transferParticlePutTimeThisStep += secondsSince(transferSectionStart);
-        this->contiguousParticlePutsThisStep += (first < Np)? 2 : 1;
-        this->contiguousParticlesThisStep += Np;
-        this->transferCallsWithContiguousAllocationThisStep++;
-        #endif // TIMING
 
         uint64_t tailIncrement = static_cast<uint64_t>(Np);
-        #ifdef TIMING
-        transferSectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
         uint64_t observedTail = this->lengths_agent->FetchAndAdd(tailIncrement, this->other_rank, TAIL_INDEX, true);
-        #ifdef TIMING
-        this->transferTHLengthPublishTimeThisStep += secondsSince(transferSectionStart);
-        #endif // TIMING
         if(observedTail != remoteTail)
         {
             STORMError eo("RankHandler2::TransferParticles: producer tail changed unexpectedly");
@@ -870,16 +693,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
     else
     {
         this->AppendLocalParticles(particles, Np);
-        #ifdef TIMING
-        this->contiguousParticlePutsThisStep++;
-        this->contiguousParticlesThisStep += Np;
-        this->transferCallsWithContiguousAllocationThisStep++;
-        this->peakBufferUsage = std::max(this->peakBufferUsage, this->LocalSize());
-        #endif // TIMING
     }
-    #ifdef TIMING
-    this->transferTotalTimeThisStep += secondsSince(transferTotalStart);
-    #endif // TIMING
     return true;
 }
 

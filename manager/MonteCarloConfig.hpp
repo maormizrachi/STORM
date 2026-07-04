@@ -78,26 +78,6 @@ public:
         return cfg;
     }
 
-    #ifdef TIMING
-    struct StepStats
-    {
-        double totalReallocationTime  = 0;
-        size_t totalReallocations     = 0;
-        size_t numHandlers            = 0;
-        size_t totalIterations        = 0;
-        size_t totalTransfers         = 0;
-        double mainLoopTime           = 0;
-        size_t peakBufferUsage        = 0;
-        size_t totalSendFlushCalls    = 0;
-        size_t totalSendFlushedParticles = 0;
-        size_t totalSendIdleDrainFlushCalls = 0;
-        size_t totalSendIdleDrainFlushedParticles = 0;
-        double avgFlushTransferFraction = 0;
-        size_t maxPendingSendBufferParticles = 0;
-    };
-
-    void Adapt(const StepStats &stats, int rank);
-    #endif // TIMING
 };
 
 } // namespace STORM

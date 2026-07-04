@@ -79,6 +79,21 @@ std::vector<Particle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewBoundaryPar
             }
         }
     }
+    for(auto &p : newParticles)
+    {
+        if(this->grid.IsPointOutsideBox(p.location))
+        {
+            const T original = p.location;
+            const T direction = this->grid.GetMeshPoint(p.cellIndex) - original;
+            double t = 1e-6;
+            while(this->grid.IsPointOutsideBox(p.location) and t < 1.0)
+            {
+                p.location = original + t * direction;
+                t *= 2;
+            }
+        }
+    }
+
     return newParticles;
 }
 

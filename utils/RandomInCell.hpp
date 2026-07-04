@@ -34,7 +34,7 @@ struct RandomInCellPositionSampler
                 PointT a = verts[fv[0]] - center;
                 PointT b = verts[fv[i]] - center;
                 PointT c = verts[fv[i + 1]] - center;
-                double vol = std::abs(ScalarProd(a, CrossProduct(b, c)));
+                double vol = std::abs(STORM::fallback::ScalarProd(a, STORM::fallback::CrossProduct(b, c)));
                 totalVolume += vol;
                 cumVolumes.push_back(totalVolume);
                 tris.push_back({fv[0], fv[i], fv[i + 1]});

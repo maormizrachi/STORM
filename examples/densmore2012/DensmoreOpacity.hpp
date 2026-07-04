@@ -2,8 +2,10 @@
 #define STORM_DENSMORE_OPACITY_HPP
 
 #include <cmath>
+#include <cstddef>
 #include <vector>
-#include "radiation/OpacityModel.hpp"
+#include "radiation/RadiationOpacityModel.hpp"
+#include "radiation/RadiationCell.hpp"
 #include "PhysicalConstants.hpp"
 
 namespace STORM {
@@ -23,11 +25,13 @@ namespace examples {
  *
  * where B_g = integral of Planck function over group g.
  */
-class DensmoreOpacity : public OpacityModel
+template<typename PointT, typename GridT>
+class DensmoreOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
 {
 public:
-    DensmoreOpacity(const std::vector<int> &regionFlags, size_t Ngroups = 30)
-        : regionFlags_(regionFlags), Ngroups_(Ngroups)
+    DensmoreOpacity(const std::vector<int> &regionFlags, const std::vector<RadiationCell> &cells,
+                    size_t Ngroups = 30)
+        : regionFlags_(regionFlags), cells_(&cells), Ngroups_(Ngroups)
     {
         double Emin = constants::kev * 1e-4;
         double Emax = constants::kev * 1e2;
@@ -44,10 +48,11 @@ public:
         sigma0_right_ = 1000.0 * std::pow(constants::kev, 3.5);
     }
 
-    double PlanckOpacity(size_t cellIndex, double temperature) const override
+    double CalcPlanckOpacity(const RadiationCell &cell) override
     {
-        double sigma0 = regionFlags_[cellIndex] ? sigma0_left_ : sigma0_right_;
-        double kT = constants::k_boltz * std::max(temperature, 1.0);
+        std::size_t idx = cellIndex(cell);
+        double sigma0 = regionFlags_[idx] ? sigma0_left_ : sigma0_right_;
+        double kT = constants::k_boltz * std::max(cell.temperature, 1.0);
         double sqrtKT = std::sqrt(kT);
 
         double weightedSum = 0;
@@ -64,12 +69,17 @@ public:
         return (totalWeight > 0) ? weightedSum / totalWeight : 1e-20;
     }
 
-    double ScatteringOpacity(size_t /*cellIndex*/, double /*temperature*/) const override
+    double CalcScatteringOpacity(const RadiationCell &) override
     {
         return 0;
     }
 
 private:
+    std::size_t cellIndex(const RadiationCell &cell) const
+    {
+        return static_cast<std::size_t>(&cell - cells_->data());
+    }
+
     static double PlanckIntegral(double a, double b)
     {
         size_t N = 64;
@@ -90,6 +100,7 @@ private:
     }
 
     const std::vector<int> &regionFlags_;
+    const std::vector<RadiationCell> *cells_;
     size_t Ngroups_;
     double sigma0_left_, sigma0_right_;
     std::vector<double> groupBoundaries_;
