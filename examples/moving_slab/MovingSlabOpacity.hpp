@@ -1,17 +1,16 @@
 #ifndef STORM_MOVING_SLAB_OPACITY_HPP
 #define STORM_MOVING_SLAB_OPACITY_HPP
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cmath>
 #include <vector>
 #include "radiation/RadiationOpacityModel.hpp"
-#include "radiation/RadiationCell.hpp"
+#include "utils/LinearInterpolation.hpp"
+#include <planck_integral/planck_integral.hpp>
+#include <units/units.hpp>
 
-/*
- * 124-group opacity table for the moving slab benchmark
- * (McClarren & Gentile 2021).  Each row gives [nu_min, nu_max] in keV
- * and the mass absorption coefficient kappa in cm^2/g.
- */
 namespace STORM {
 namespace examples {
 
@@ -83,20 +82,17 @@ static const OpacityRow OPACITY_TABLE_124[124] = {
 };
 constexpr size_t N_OPACITY_GROUPS = 124;
 
-/*
- * Gray Planck-mean opacity for the moving slab benchmark.
- *
- * Computes kappa_P = sum_g(sigma_g * B_g) / sum_g(B_g) at each cell's
- * temperature using the 124-group table above.  Vacuum cells (density <
- * 0.5 * rho_slab) return a near-zero opacity so photons free-stream.
- */
-template<typename PointT, typename GridT>
-class MovingSlabOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
+template<typename PointT, typename GridT, typename CellT>
+class MovingSlabOpacity : public RadiationOpacityModel<PointT, GridT, CellT, N_OPACITY_GROUPS>
 {
 public:
-    MovingSlabOpacity(double rhoSlab, const std::vector<double> &densities,
-                      const std::vector<RadiationCell> &cells)
-        : rhoSlab_(rhoSlab), densities_(densities), cells_(&cells)
+    using Base = RadiationOpacityModel<PointT, GridT, CellT, N_OPACITY_GROUPS>;
+    using GroupArray = typename Base::GroupArray;
+    using GroupBoundaries = typename Base::GroupBoundaries;
+    using GroupCdf = std::array<double, N_OPACITY_GROUPS + 1>;
+
+    MovingSlabOpacity(double rhoSlab, const std::vector<CellT> &cells)
+        : rhoSlab_(rhoSlab), cells_(&cells)
     {
         for(size_t g = 0; g < N_OPACITY_GROUPS; ++g)
         {
@@ -104,21 +100,19 @@ public:
         }
     }
 
-    double CalcPlanckOpacity(const RadiationCell &cell) override
+    double CalcPlanckOpacity(const CellT &cell) override
     {
-        std::size_t idx = cellIndex(cell);
-        if(densities_[idx] < 0.5 * rhoSlab_)
+        if(cell.density < 0.5 * rhoSlab_)
         {
-            return 1e-30;
+            return 1e-12;
         }
-
         double numerator = 0.0;
         double denominator = 0.0;
         for(size_t g = 0; g < N_OPACITY_GROUPS; ++g)
         {
-            double Elo = OPACITY_TABLE_124[g].nu_min * KEV_ERG;
-            double Ehi = OPACITY_TABLE_124[g].nu_max * KEV_ERG;
-            double Bg = PlanckGroupIntegral(Elo, Ehi, cell.temperature);
+            double Elo = OPACITY_TABLE_124[g].nu_min * units::kev;
+            double Ehi = OPACITY_TABLE_124[g].nu_max * units::kev;
+            double Bg = planck_integral::planck_energy_density_group_integral(Elo, Ehi, cell.temperature);
             numerator += sigmaG_[g] * Bg;
             denominator += Bg;
         }
@@ -129,66 +123,124 @@ public:
         return numerator / denominator;
     }
 
-    double CalcScatteringOpacity(const RadiationCell &) override
+    double CalcAbsorptionOpacity(const CellT &cell, double energy) override
     {
-        return 0.0;
+        if(cell.density < 0.5 * rhoSlab_)
+        {
+            return 1e-12;
+        }
+        size_t g = findGroupByEnergy(energy);
+        if(g >= N_OPACITY_GROUPS)
+        {
+            return 1e-100;
+        }
+        return sigmaG_[g];
+    }
+
+    double CalcScatteringOpacity(const CellT &) override { return 0.0; }
+    double CalcScatteringOpacity(const CellT &, double) override { return 0.0; }
+
+    double GetThermalEnergy(const CellT &cell, double random,
+                            const GroupBoundaries &boundaries) const override
+    {
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        double total = cumulative[N_OPACITY_GROUPS];
+        if(!(total > 0.0) || !std::isfinite(total))
+        {
+            return Base::GetThermalEnergy(cell, random, boundaries);
+        }
+        double r = clampUnitOpen(random);
+        return LinearInterpolation(cumulative, boundaries, r * total);
+    }
+
+    double SampleThermalEnergyInGroup(const CellT &cell, std::size_t group, double random,
+                                       const GroupBoundaries &boundaries) const override
+    {
+        group = std::min<std::size_t>(group, N_OPACITY_GROUPS - 1);
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        double c0 = cumulative[group];
+        double c1 = cumulative[group + 1];
+        if(c1 <= c0 || !std::isfinite(c1 - c0))
+        {
+            return 0.5 * (boundaries[group] + boundaries[group + 1]);
+        }
+        double r = clampUnitOpen(random);
+        return LinearInterpolation(cumulative, boundaries, c0 + r * (c1 - c0));
+    }
+
+    GroupArray GetThermalGroupPdf(const CellT &cell, const GroupBoundaries &boundaries) const override
+    {
+        GroupArray pdf{};
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        double total = cumulative[N_OPACITY_GROUPS];
+        if(!(total > 0.0) || !std::isfinite(total))
+        {
+            return pdf;
+        }
+        for(std::size_t g = 0; g < N_OPACITY_GROUPS; ++g)
+        {
+            double weight = cumulative[g + 1] - cumulative[g];
+            pdf[g] = (weight > 0.0 && std::isfinite(weight)) ? weight / total : 0.0;
+        }
+        return pdf;
+    }
+
+    GroupArray GetCumulativeOpacity(const CellT &cell, const GroupBoundaries &boundaries) const override
+    {
+        GroupArray cumulativeUpper{};
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        for(std::size_t g = 0; g < N_OPACITY_GROUPS; ++g)
+        {
+            cumulativeUpper[g] = cumulative[g + 1];
+        }
+        return cumulativeUpper;
+    }
+
+    GroupArray getEnergyCenters(const GroupBoundaries &boundaries) const override
+    {
+        GroupArray centers{};
+        for(std::size_t g = 0; g < N_OPACITY_GROUPS; ++g)
+        {
+            centers[g] = 0.5 * (boundaries[g] + boundaries[g + 1]);
+        }
+        return centers;
     }
 
 private:
-    std::size_t cellIndex(const RadiationCell &cell) const
+    static double clampUnitOpen(double random)
     {
-        return static_cast<std::size_t>(&cell - cells_->data());
+        double upper = std::nextafter(1.0, 0.0);
+        return std::isfinite(random) ? std::clamp(random, 0.0, upper) : 0.5;
+    }
+
+    size_t findGroupByEnergy(double energy) const
+    {
+        for(size_t g = 0; g < N_OPACITY_GROUPS; ++g)
+        {
+            if(energy < OPACITY_TABLE_124[g].nu_max * units::kev)
+            {
+                return g;
+            }
+        }
+        return N_OPACITY_GROUPS - 1;
+    }
+
+    GroupCdf computeCumulativePlanck(const CellT &cell, const GroupBoundaries &boundaries) const
+    {
+        GroupCdf cdf{};
+        cdf[0] = 0.0;
+        for(std::size_t g = 0; g < N_OPACITY_GROUPS; ++g)
+        {
+            double Bg = planck_integral::planck_energy_density_group_integral(
+                boundaries[g], boundaries[g + 1], cell.temperature);
+            cdf[g + 1] = cdf[g] + Bg;
+        }
+        return cdf;
     }
 
     double rhoSlab_;
-    std::vector<double> densities_;
-    const std::vector<RadiationCell> *cells_;
+    const std::vector<CellT> *cells_;
     double sigmaG_[N_OPACITY_GROUPS];
-
-    static constexpr double KEV_ERG = 1.602176634e-9;
-    static constexpr double K_BOLTZ = 1.380649e-16;
-    static constexpr double HPLANCK = 6.62607015e-27;
-    static constexpr double CLIGHT  = 2.99792458e10;
-
-    static double PlanckGroupIntegral(double Elo, double Ehi, double T_kelvin)
-    {
-        double kT = K_BOLTZ * T_kelvin;
-        if(kT <= 0)
-        {
-            return 0.0;
-        }
-        return PlanckPrimitive(Ehi / kT) - PlanckPrimitive(Elo / kT);
-    }
-
-    static double PlanckPrimitive(double x)
-    {
-        if(x <= 0)
-        {
-            return 0.0;
-        }
-        double prefactor = 8.0 * M_PI / (HPLANCK * CLIGHT * HPLANCK * CLIGHT * HPLANCK * CLIGHT);
-        prefactor *= K_BOLTZ * K_BOLTZ * K_BOLTZ * K_BOLTZ;
-
-        if(x < 2.0)
-        {
-            double x2 = x * x;
-            double x3 = x2 * x;
-            return prefactor * x3 * (1.0 / 3.0 + x * (-1.0 / 8.0 + x * (1.0 / 60.0
-                + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 272160.0
-                + x2 * (-1.0 / 13305600.0 + x2 / 622702080.0))))));
-        }
-
-        double sum = 0.0;
-        for(int n = 1; n <= 5; ++n)
-        {
-            double emx = std::exp(-n * x);
-            double inv_n = 1.0 / n;
-            sum += emx * (x * x * x * inv_n + 3.0 * x * x * inv_n * inv_n
-                + 6.0 * x * inv_n * inv_n * inv_n
-                + 6.0 * inv_n * inv_n * inv_n * inv_n);
-        }
-        return prefactor * sum;
-    }
 };
 
 } // namespace examples

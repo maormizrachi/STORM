@@ -36,6 +36,7 @@
 #include "radiation/RandomWalk.hpp"
 #include <planck_integral/planck_integral.hpp>
 #include "../utils/LinearInterpolation.hpp"
+#include "../mesh_movement/MeshMovement.hpp"
 
 namespace STORM {
 
@@ -2652,6 +2653,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         (void) particles;
         (void) fullDt;
     }
+
+    UpdateNewCells<PointT>(this->grid, particles);
 }
 
 } // namespace STORM

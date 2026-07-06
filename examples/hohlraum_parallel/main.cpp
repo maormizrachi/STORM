@@ -23,6 +23,7 @@
 #include "HohlraumBoundary.hpp"
 #include "HohlraumIMC.hpp"
 #include "utils/MpiExchangeGrid.hpp"
+#include "mesh_movement/VoronoiMeshMovement.hpp"
 #ifdef MADVORO_WITH_VTK
 #include "MadVoro/io/vtk/write_vtu_3d.hpp"
 #endif
@@ -174,7 +175,7 @@ static bool Rebalance(Grid &grid,
     STORM::MPI_exchange_data(grid, extensives, false);
     STORM::MPI_exchange_data(grid, materialFlags, false);
 
-    particles.clear();
+    STORM::UpdateNewCellsAfterExchange<Vector3D>(grid, particles);
 
     MPI_Barrier(MPI_COMM_WORLD);
     double elapsed = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - startTime).count();

@@ -33,7 +33,9 @@ target_include_directories(densmore2012 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/dens
 target_compile_definitions(densmore2012 PRIVATE STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/densmore2012")
 set_target_properties(densmore2012 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/densmore2012")
 
-add_executable(moving_slab moving_slab/main.cpp)
-target_link_libraries(moving_slab PRIVATE storm)
-target_include_directories(moving_slab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/moving_slab)
-set_target_properties(moving_slab PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/moving_slab")
+if(STORM_WITH_MPI)
+  add_executable(moving_slab moving_slab/main.cpp ${MADVORO_EXCEPTION_SOURCES})
+  target_link_libraries(moving_slab PRIVATE storm)
+  target_include_directories(moving_slab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/moving_slab)
+  set_target_properties(moving_slab PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/moving_slab")
+endif()

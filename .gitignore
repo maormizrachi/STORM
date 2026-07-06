@@ -12,3 +12,5 @@ examples/marshak_wave_4/marshak_wave_4
 examples/densmore2012/densmore2012
 examples/moving_slab/moving_slab
 examples/*/output
+*.out
+*.err

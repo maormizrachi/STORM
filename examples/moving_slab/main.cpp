@@ -1,53 +1,69 @@
 /*
- * Moving slab benchmark — gray IMC adaptation
+ * Moving slab benchmark -- 124-group IMC with DDMC
  *
- * Based on the McClarren & Gentile (2021) moving radiating slab problem
+ * McClarren & Gentile (2021) moving radiating slab problem, adapted
  * from RICH (regression_tests/cases/moving_slab_mc).
  *
  * A uniform slab of material (rho = 0.1 g/cm^3, T = 1 keV, L = 0.4 cm)
- * radiates into vacuum.  In RICH this slab moves at v = 0.5994 cm/ns with
- * 124-group frequency-dependent transport and Doppler shifts.
- *
- * STORM adaptation (gray, static slab):
- *   - The 124-group opacity table is collapsed to a single gray Planck-mean.
- *   - The slab is placed at its t=t_O/2 midpoint position so the observer
- *     distance is representative of the time-averaged geometry.
- *   - No Doppler effects.  This means the output is the frequency-integrated
- *     radiation energy density profile — not the Doppler-shifted spectrum.
- *   - Very large cv prevents the slab from cooling (mimics noHydroFeedback).
- *
- * The benchmark verifies: photon emission from a hot slab, free-streaming
- * through vacuum, transparent + reflecting boundary conditions, and gray
- * IMC energy conservation.
+ * moves at v = 0.5994 cm/ns and radiates into vacuum.  124-group
+ * frequency-dependent transport with Doppler shifts, DDMC acceleration.
  *
  * Usage:
- *   ./moving_slab [Nx] [new_per_cell]
- *
- *   Nx:           total x-cells (default 80)
- *   new_per_cell: volume emission photons per cell per step (default 100)
+ *   mpirun -np N ./moving_slab [newPhotonsPerCell]
  */
 
-#include <iostream>
+#include <array>
+#include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <vector>
-#include <memory>
-#include <cmath>
-#include <cstdlib>
-#include <string>
+#include <iostream>
 #include <numeric>
+#include <vector>
+#include <string>
 #include <algorithm>
+
+#include <mpi.h>
 #include "examples/Vector3D.hpp"
-#include "MadCart/CartesianMesh3D.hpp"
+#include "MadVoro/Voronoi3D.hpp"
 #include "PhysicalConstants.hpp"
+#include <units/units.hpp>
+#include <planck_integral/planck_integral.hpp>
+#include <mpi_utils/mpi_collectives.hpp>
+
 #include "radiation/RadiationIMC.hpp"
-#include "radiation/RadiationCell.hpp"
-#include "population/CombPopulationControl.hpp"
-#include "manager/MonteCarloManagerSerial.hpp"
+#include "radiation/RadiationIMCParameters.hpp"
+#include "population/NoPopulationControl.hpp"
+#include "manager/parallel/MonteCarloManagerLegacy.hpp"
+#include "utils/MpiExchangeGrid.hpp"
+#include "mesh_movement/VoronoiMeshMovement.hpp"
 #include "MovingSlabOpacity.hpp"
 #include "MovingSlabBoundary.hpp"
 
-using Grid = MadCart::CartesianMesh3D<Vector3D>;
+// ============================================================
+// Cell and extensives types with multigroup + velocity support
+// ============================================================
+
+constexpr size_t G = 124;
+
+struct MovingSlabCell
+{
+    size_t ID = 0;
+    double temperature = 0;
+    double internalEnergy = 0;
+    double Erad = 0;
+    double density = 0;
+    Vector3D velocity;
+    std::array<double, G> Eg{};
+};
+
+struct MovingSlabExtensives
+{
+    double internal_energy = 0;
+    double mass = 0;
+    double Erad = 0;
+    std::array<double, G> Eg{};
+};
 
 class MovingSlabEOS
 {
@@ -66,8 +82,8 @@ public:
     double de2T(double density, double specificEnergy,
                 const std::vector<double> &tracers, const std::vector<std::string> &tracerNames) const
     {
-        double cvPerMass = dT2cv(density, 0.0, tracers, tracerNames);
-        return (cvPerMass > 0.0) ? specificEnergy / cvPerMass : 0.0;
+        double cv = dT2cv(density, 0.0, tracers, tracerNames);
+        return (cv > 0.0) ? specificEnergy / cv : 0.0;
     }
 
 private:
@@ -76,96 +92,388 @@ private:
     double rhoSlab_;
 };
 
+// ============================================================
+// Mesh point generation (matches RICH's layout)
+// ============================================================
+
+using Grid = MadVoro::Voronoi3D<Vector3D>;
+
+static constexpr size_t N_SLAB_PTS = 20;
+static constexpr size_t N_VAC_PTS = 60;
+static constexpr size_t N_X_PTS = N_SLAB_PTS + N_VAC_PTS;
+static constexpr size_t NYZ = 3;
+static constexpr size_t N_TOTAL_PTS = N_X_PTS * NYZ * NYZ;
+
+static std::vector<Vector3D> BuildAllPoints(double t, double vSlab, double L_slab, double xSym, double cellHalfYZ)
+{
+    double slabPtsX[N_SLAB_PTS];
+    for(size_t i = 0; i < N_SLAB_PTS; ++i)
+    {
+        slabPtsX[i] = L_slab * (static_cast<double>(i) + 0.5) / N_SLAB_PTS;
+    }
+
+    std::array<double, NYZ> yzCenters;
+    for(size_t k = 0; k < NYZ; ++k)
+    {
+        yzCenters[k] = -cellHalfYZ + cellHalfYZ * (2.0 * k + 1.0) / NYZ;
+    }
+
+    std::vector<Vector3D> xPts(N_X_PTS);
+    double shift = vSlab * t;
+    for(size_t i = 0; i < N_SLAB_PTS; ++i)
+    {
+        xPts[i] = Vector3D(slabPtsX[i] + shift, 0, 0);
+    }
+    double vacStart = L_slab + shift;
+    size_t nLeft = N_VAC_PTS - 2;
+    double h = (xSym - vacStart) / nLeft;
+    double d = h / 2.0;
+    for(size_t i = 0; i < nLeft; ++i)
+    {
+        double x = vacStart + h * (static_cast<double>(i) + 0.5);
+        xPts[N_SLAB_PTS + i] = Vector3D(x, 0, 0);
+    }
+    xPts[N_SLAB_PTS + nLeft]     = Vector3D(xSym, 0, 0);
+    xPts[N_SLAB_PTS + nLeft + 1] = Vector3D(xSym + d, 0, 0);
+
+    std::vector<Vector3D> pts;
+    pts.reserve(N_TOTAL_PTS);
+    for(size_t i = 0; i < N_X_PTS; ++i)
+    {
+        for(size_t jy = 0; jy < NYZ; ++jy)
+        {
+            for(size_t jz = 0; jz < NYZ; ++jz)
+            {
+                pts.emplace_back(xPts[i].x, yzCenters[jy], yzCenters[jz]);
+            }
+        }
+    }
+    return pts;
+}
+
+// ============================================================
+// SyncParticleCellIDs: keep particle.cellID in sync with
+// the current cell's ID (like RICH's MonteCarloManager3D
+// wrappers and Voronoi3DMovement.cpp post-UNC sync).
+// ============================================================
+
+static void SyncParticleCellIDs(const std::vector<MovingSlabCell> &cells,
+                                std::vector<STORM::Particle<Vector3D, Grid>> &particles)
+{
+    size_t N = cells.size();
+    for(auto &p : particles)
+    {
+        if(p.cellIndex < N)
+        {
+            p.cellID = cells[p.cellIndex].ID;
+        }
+    }
+}
+
+// ============================================================
+// Rebalance: redistribute cells across MPI ranks
+// ============================================================
+
+static bool Rebalance(Grid &grid,
+                      STORM::MonteCarloManagerLegacy<Vector3D, Grid> &manager,
+                      std::vector<MovingSlabCell> &cells,
+                      std::vector<MovingSlabExtensives> &extensives,
+                      std::vector<STORM::Particle<Vector3D, Grid>> &particles,
+                      int rank)
+{
+    size_t N = grid.GetPointNo();
+    std::vector<double> weights(N, 50.0);
+
+    const std::vector<size_t> &counters = manager.GetCellsStepsCounters();
+    const std::vector<size_t> &particleCounts = manager.GetBeginningParticleCount();
+
+    for(size_t i = 0; i < N; i++)
+    {
+        if(counters.size() == N)
+        {
+            weights[i] += static_cast<double>(counters[i]);
+        }
+        if(particleCounts.size() == N)
+        {
+            weights[i] += 10.0 * static_cast<double>(particleCounts[i]);
+        }
+    }
+
+    if(!grid.ShouldRebalance(weights))
+    {
+        return false;
+    }
+
+    if(rank == 0)
+    {
+        std::cout << "Rebalancing..." << std::endl;
+    }
+
+    grid.Rebalance(weights);
+
+    STORM::MPI_exchange_data(grid, cells, false);
+    STORM::MPI_exchange_data(grid, extensives, false);
+
+    // Migrate MC cost counters along with cells (like RICH's addMigrationBuffer)
+    STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
+    STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
+
+    STORM::UpdateNewCellsAfterExchange<Vector3D>(grid, particles);
+
+    size_t newN = grid.GetPointNo();
+    cells.resize(newN);
+    extensives.resize(newN);
+    manager.GetCellsStepsCounters().resize(newN, 0);
+    manager.GetBeginningParticleCount().resize(newN, 0);
+
+    if(rank == 0)
+    {
+        std::cout << "Rebalance done, local cells: " << newN << std::endl;
+    }
+
+    return true;
+}
+
+// ============================================================
+// Remesh: move points with the slab, rebuild tessellation
+// ============================================================
+
+static void Remesh(Grid &grid, double vSlab, double L_slab, double xSym,
+                   double prevTime, double nowTime,
+                   std::vector<MovingSlabCell> &cells,
+                   std::vector<MovingSlabExtensives> &extensives,
+                   std::vector<STORM::Particle<Vector3D, Grid>> &particles,
+                   STORM::MonteCarloManagerLegacy<Vector3D, Grid> &manager)
+{
+    double slabFrontOld = L_slab + vSlab * prevTime;
+    double slabFrontNew = L_slab + vSlab * nowTime;
+    double dx = vSlab * (nowTime - prevTime);
+
+    size_t localN = grid.GetPointNo();
+    std::vector<Vector3D> localPoints(localN);
+    for(size_t i = 0; i < localN; ++i)
+    {
+        Vector3D p = grid.GetMeshPoint(i);
+        if(p.x <= slabFrontOld)
+        {
+            p.x += dx;
+        }
+        else
+        {
+            double f = (p.x - slabFrontOld) / (xSym - slabFrontOld);
+            p.x = slabFrontNew + f * (xSym - slabFrontNew);
+        }
+        localPoints[i] = p;
+    }
+
+    Vector3D newLL(vSlab * nowTime, grid.GetBoxCoordinates().first.y, grid.GetBoxCoordinates().first.z);
+    Vector3D ur = grid.GetBoxCoordinates().second;
+    grid.SetBox(newLL, ur);
+    grid.BuildParallel(localPoints);
+
+    STORM::MPI_exchange_data(grid, cells, false);
+    STORM::MPI_exchange_data(grid, extensives, false);
+    STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
+    STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
+
+    size_t newN = grid.GetPointNo();
+    manager.GetCellsStepsCounters().resize(newN, 0);
+    manager.GetBeginningParticleCount().resize(newN, 0);
+    for(size_t i = cells.size(); i < newN; ++i)
+    {
+        cells.push_back(MovingSlabCell{});
+    }
+    for(size_t i = extensives.size(); i < newN; ++i)
+    {
+        extensives.push_back(MovingSlabExtensives{});
+    }
+    cells.resize(newN);
+    extensives.resize(newN);
+
+    for(size_t i = 0; i < newN; ++i)
+    {
+        extensives[i].internal_energy = cells[i].internalEnergy;
+        extensives[i].mass = cells[i].density * grid.GetVolume(i);
+    }
+
+    auto boxCoords = grid.GetBoxCoordinates();
+    particles.erase(
+        std::remove_if(particles.begin(), particles.end(),
+            [&boxCoords](const STORM::Particle<Vector3D, Grid> &p)
+            {
+                return p.location.x < boxCoords.first.x || p.location.x > boxCoords.second.x;
+            }),
+        particles.end());
+}
+
+// ============================================================
+// Main
+// ============================================================
+
 int main(int argc, char *argv[])
 {
-    using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
-                                    MovingSlabEOS, 1>;
+    MPI_Init(&argc, &argv);
 
-    size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 80;
-    size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 100;
+    int rank, nprocs;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-    double const rhoSlab   = 0.1;
-    double const L_slab    = 0.4;
-    double const T_slab_keV = 1.0;
-    double const T_slab    = T_slab_keV * STORM::constants::kev_kelvin;
-    double const rhoVacuum = 1e-10;
-    double const vSlab     = 0.5994e9;
-    double const tO        = 10e-9;
-    double const zO        = 12.0;
+    using IMC = STORM::RadiationIMC<Vector3D, Grid, MovingSlabCell, MovingSlabExtensives,
+                                    MovingSlabEOS, G>;
 
-    double const slabMidShift = vSlab * tO * 0.5;
-    double const xSlabStart   = slabMidShift;
-    double const xSlabEnd     = xSlabStart + L_slab;
-    double const xMax         = zO + 0.2;
-    double const dy           = xMax / Nx;
+    size_t newPhotonsPerCell = (argc >= 2) ? std::stoul(argv[1]) : 30000 / (NYZ * NYZ);
 
-    Vector3D lower(0, 0, 0);
-    Vector3D upper(xMax, dy, dy);
+    double const rhoSlab     = 0.1;
+    double const L_slab      = 0.4;
+    double const T_slab_keV  = 1.0;
+    double const T_slab      = T_slab_keV * units::kev_kelvin;
+    double const vSlab       = 0.5994e9;
+    double const zO          = 12.0;
+    double const xSym        = 12.0;
+    double const tO           = 10e-9;
+    double const rhoVacuum   = 1e-10;
+    double const cellHalfYZ  = 1.0;
 
-    Grid grid(lower, upper, Nx, 1, 1);
-    size_t Ncells = grid.GetPointNo();
+    double const xMax = zO + 0.2;
+    Vector3D ll(0, -cellHalfYZ, -cellHalfYZ);
+    Vector3D ur(xMax, cellHalfYZ, cellHalfYZ);
 
-    std::cout << "Moving slab benchmark (gray, static): "
-              << Ncells << " cells, domain [0, " << xMax << "] cm" << std::endl;
-    std::cout << "Slab position [" << xSlabStart << ", " << xSlabEnd << "] cm"
-              << "  T_slab=" << T_slab_keV << " keV"
-              << "  rho=" << rhoSlab << " g/cm^3"
-              << "  observer z_O=" << zO << " cm" << std::endl;
-
-    double const cvPerVolumeSlab = 1e23 / STORM::constants::kev_kelvin;
-    double const cvPerVolumeVac  = 1e10;
-    double const T_vac   = 100.0;
-
-    std::vector<STORM::RadiationCell> cells(Ncells);
-    std::vector<STORM::SimpleExtensives> extensives(Ncells);
-    std::vector<double> densities(Ncells);
-
-    for(size_t i = 0; i < Ncells; i++)
+    // --- Build initial mesh ---
+    std::vector<Vector3D> points;
+    if(nprocs == 1)
     {
-        double x = grid.GetCellCM(i).x;
+        points = BuildAllPoints(0.0, vSlab, L_slab, xSym, cellHalfYZ);
+    }
+    else
+    {
+        if(rank == 0)
+        {
+            points = BuildAllPoints(0.0, vSlab, L_slab, xSym, cellHalfYZ);
+        }
+        points = MPI_Spread(points, 0, MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    Grid grid(ll, ur);
+    if(nprocs == 1)
+    {
+        grid.Build(points);
+    }
+    else
+    {
+        grid.BuildParallel(points);
+    }
+
+    // --- EOS ---
+    double const cvPerVolumeSlab = 1e23 / units::kev_kelvin;
+    double const cvPerVolumeVac  = 1e23 / units::kev_kelvin;
+    double const T_vac = 1e5;
+
+    // --- Initialize cells ---
+    size_t Ncells = grid.GetPointNo();
+    std::vector<MovingSlabCell> cells(Ncells);
+    std::vector<MovingSlabExtensives> extensives(Ncells);
+
+    // Energy group boundaries
+    std::array<double, G + 1> energyBoundaries{};
+    for(size_t g = 0; g < G; ++g)
+    {
+        energyBoundaries[g] = STORM::examples::OPACITY_TABLE_124[g].nu_min * units::kev;
+    }
+    energyBoundaries[G] = STORM::examples::OPACITY_TABLE_124[G - 1].nu_max * units::kev;
+
+    size_t globalCellOffset = 0;
+    MPI_Exscan(&Ncells, &globalCellOffset, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        cells[i].ID = globalCellOffset + i;
+        double x = grid.GetMeshPoint(i).x;
         double volume = grid.GetVolume(i);
-        bool inSlab = (x >= xSlabStart and x <= xSlabEnd);
+        bool inSlab = (x >= 0.0 and x <= L_slab);
+
         double rho = inSlab ? rhoSlab : rhoVacuum;
         double cvPerVolume = inSlab ? cvPerVolumeSlab : cvPerVolumeVac;
         double T = inSlab ? T_slab : T_vac;
 
-        densities[i] = rho;
+        cells[i].density = rho;
         cells[i].temperature = T;
         cells[i].internalEnergy = cvPerVolume * T * volume;
+        cells[i].velocity = inSlab ? Vector3D(vSlab, 0, 0) : Vector3D(0, 0, 0);
+
+        for(size_t g = 0; g < G; ++g)
+        {
+            if(inSlab)
+            {
+                cells[i].Eg[g] = planck_integral::planck_energy_density_group_integral(
+                    energyBoundaries[g], energyBoundaries[g + 1], T_slab) / rho;
+            }
+            else
+            {
+                cells[i].Eg[g] = 0.0;
+            }
+        }
+        cells[i].Erad = std::accumulate(cells[i].Eg.begin(), cells[i].Eg.end(), 0.0);
+
         extensives[i].mass = rho * volume;
         extensives[i].internal_energy = cells[i].internalEnergy;
+        extensives[i].Erad = cells[i].Erad * extensives[i].mass;
+        for(size_t g = 0; g < G; ++g)
+        {
+            extensives[i].Eg[g] = cells[i].Eg[g] * extensives[i].mass;
+        }
     }
 
-    STORM::RadiationIMCParameters<1> imcParams;
+    // --- IMC parameters ---
+    STORM::RadiationIMCParameters<G> imcParams;
     imcParams.newPhotonsPerCell = newPhotonsPerCell;
+    imcParams.withHydro = true;
+    imcParams.withMultigroupOpacity = true;
+    imcParams.withDDMC = true;
     imcParams.noHydroFeedback = true;
-    imcParams.energyBoundaries = {0.0, 1e30};
+    imcParams.withEgTimeAvg = true;
     imcParams.energyBoundariesProvided = true;
+    imcParams.energyBoundaries = energyBoundaries;
 
-    std::shared_ptr<MovingSlabEOS> eos =
-        std::make_shared<MovingSlabEOS>(cvPerVolumeSlab, cvPerVolumeVac, rhoSlab, rhoVacuum);
-    std::shared_ptr<STORM::examples::MovingSlabOpacity<Vector3D, Grid>> opacityModel =
-        std::make_shared<STORM::examples::MovingSlabOpacity<Vector3D, Grid>>(rhoSlab, densities, cells);
-    std::shared_ptr<STORM::examples::MovingSlabBoundary<Vector3D, Grid>> boundary =
-        std::make_shared<STORM::examples::MovingSlabBoundary<Vector3D, Grid>>(grid);
-    std::shared_ptr<IMC> physics =
-        std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
-    std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl =
-        std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, 15, 6.0);
+    auto eos = std::make_shared<MovingSlabEOS>(cvPerVolumeSlab, cvPerVolumeVac, rhoSlab, rhoVacuum);
+    auto opacityModel = std::make_shared<STORM::examples::MovingSlabOpacity<Vector3D, Grid, MovingSlabCell>>(rhoSlab, cells);
+    auto boundary = std::make_shared<STORM::examples::MovingSlabBoundary<Vector3D, Grid>>(grid);
+    auto physics = std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
+    auto popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
 
-    STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
+    STORM::MonteCarloManagerLegacy<Vector3D, Grid> manager(grid, physics, popControl, boundary, STORM::MonteCarloConfig(), MPI_COMM_WORLD);
     std::vector<STORM::Particle<Vector3D, Grid>> particles;
 
-    double dt = 1e-12;
-    double const dtMax = 1e-10;
+    // --- Time stepping ---
+    double dt = 1e-3 * 1e-9;
+    double const dtMax = 0.1 * 1e-9;
     double const dtRamp = 1.1;
+    double const tEnd = tO + dtMax / 2.0;
     double simTime = 0;
     size_t cycle = 0;
-    double const tEnd = tO;
 
-    std::cout << "new_per_cell=" << newPhotonsPerCell
-              << "  t_end=" << tEnd * 1e9 << " ns" << std::endl;
-    std::cout << std::endl;
+    if(rank == 0)
+    {
+        std::cout << "Moving slab MC benchmark: "
+                  << G << " groups, "
+                  << N_TOTAL_PTS << " mesh points (" << N_X_PTS << "x * " << NYZ << "y * " << NYZ << "z), "
+                  << "newPhotonsPerCell=" << newPhotonsPerCell
+                  << ", v_slab=" << vSlab << " cm/s"
+                  << ", L=" << L_slab << " cm"
+                  << ", T=" << T_slab_keV << " keV"
+                  << ", z_O=" << zO << " cm"
+                  << ", t_O=" << tO * 1e9 << " ns"
+                  << ", MPI ranks=" << nprocs
+                  << std::endl;
+    }
+
+    auto wallStart = std::chrono::high_resolution_clock::now();
+    double prevTime = 0.0;
+
+    // Save the load balancer so we can restore the MC partition after
+    // each Remesh (mirrors RICH's setCurrentLoadBalance("radiation-mc")
+    // which calls tess.SetLoadBalancer + buildDataTransfer).
+    std::shared_ptr<LoadBalancer<Vector3D>> savedLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
 
     while(simTime < tEnd)
     {
@@ -175,106 +483,176 @@ int main(int argc, char *argv[])
             break;
         }
 
+        // --- Remesh: move mesh points with the slab ---
+        if(cycle > 0)
+        {
+            Remesh(grid, vSlab, L_slab, xSym, prevTime, simTime, cells, extensives, particles, manager);
+            Ncells = grid.GetPointNo();
+
+            // Restore MC partition after Remesh (like RICH's
+            // setCurrentLoadBalance("radiation-mc") → SetLoadBalancer → MockMesh → buildDataTransfer)
+            if(nprocs > 1 and savedLB)
+            {
+                grid.SetLoadBalancer(savedLB);
+                STORM::MPI_exchange_data(grid, cells, false);
+                STORM::MPI_exchange_data(grid, extensives, false);
+                STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
+                STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
+                Ncells = grid.GetPointNo();
+                cells.resize(Ncells);
+                extensives.resize(Ncells);
+                manager.GetCellsStepsCounters().resize(Ncells, 0);
+                manager.GetBeginningParticleCount().resize(Ncells, 0);
+            }
+
+            bool forceRebalance = cycle < 4;
+            if(nprocs > 1 and (forceRebalance or (cycle % 10 == 0)))
+            {
+                // beforeLB: assign particles to current tessellation (like RICH)
+                std::vector<size_t> lbCellIDs(Ncells);
+                for(size_t i = 0; i < Ncells; ++i)
+                {
+                    lbCellIDs[i] = cells[i].ID;
+                }
+                STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, lbCellIDs);
+                SyncParticleCellIDs(cells, particles);
+
+                if(Rebalance(grid, manager, cells, extensives, particles, rank))
+                {
+                    Ncells = grid.GetPointNo();
+                }
+            }
+
+            // Save updated LB (reflects any rebalance that happened)
+            if(nprocs > 1)
+            {
+                savedLB = grid.GetLoadBalancer();
+            }
+        }
+
+        // UpdateNewCells right before transport (like RICH's RadiationMCStep::step)
+        {
+            std::vector<size_t> cellIDs(Ncells);
+            for(size_t i = 0; i < Ncells; ++i)
+            {
+                cellIDs[i] = cells[i].ID;
+            }
+            STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
+            SyncParticleCellIDs(cells, particles);
+        }
+
+        prevTime = simTime;
         particles = manager.step(std::move(particles), thisDt);
+
+        // Sync cellID to current cell after transport (like RICH's MonteCarloManager3D)
+        SyncParticleCellIDs(cells, particles);
 
         simTime += thisDt;
         cycle++;
         dt = std::min(dt * dtRamp, dtMax);
 
-        if(cycle % 20 == 0 or simTime >= tEnd)
+        if(cycle % 5 == 0 and rank == 0)
         {
-            double maxErad = 0;
-            double totalErad = 0;
-            for(size_t i = 0; i < Ncells; i++)
-            {
-                double eradTotal = extensives[i].Erad;
-                double eradDensity = eradTotal / grid.GetVolume(i);
-                maxErad = std::max(maxErad, eradDensity);
-                totalErad += eradTotal;
-            }
-            double maxT_keV = 0;
-            for(size_t i = 0; i < Ncells; i++)
-            {
-                maxT_keV = std::max(maxT_keV, cells[i].temperature / STORM::constants::kev_kelvin);
-            }
-            std::cout << "Cycle " << cycle
+            double elapsed = std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - wallStart).count();
+            double slabBackNow  = vSlab * simTime;
+            double slabFrontNow = L_slab + vSlab * simTime;
+            std::cout << "Step " << cycle
                       << "  t=" << simTime * 1e9 << " ns"
                       << "  dt=" << thisDt * 1e9 << " ns"
-                      << "  particles=" << particles.size()
-                      << "  maxErad=" << maxErad
-                      << "  totalErad=" << totalErad
-                      << "  maxT=" << maxT_keV << " keV" << std::endl;
+                      << "  slab=[" << slabBackNow << ", " << slabFrontNow << "]"
+                      << "  elapsed=" << elapsed << "s" << std::endl;
         }
     }
 
-    std::vector<double> simX(Ncells);
-    std::vector<double> simErad(Ncells);
-    std::vector<double> simT(Ncells);
-    std::vector<size_t> idx(Ncells);
-    std::iota(idx.begin(), idx.end(), 0);
-    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
-        return grid.GetMeshPoint(a).x < grid.GetMeshPoint(b).x;
-    });
-
-    for(size_t i = 0; i < Ncells; i++)
+    double wallTotal = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - wallStart).count();
+    if(rank == 0)
     {
-        size_t k = idx[i];
-        simX[i] = grid.GetMeshPoint(k).x;
-        simErad[i] = extensives[k].Erad / grid.GetVolume(k);
-        simT[i] = cells[k].temperature;
+        std::cout << "Done. " << cycle << " steps, wall time: " << wallTotal << "s" << std::endl;
     }
 
-    std::string profilePath = "moving_slab_profile.txt";
-    {
-        std::ofstream out(profilePath);
-        out << "# x_cm  Erad_erg_per_cm3  T_kelvin\n";
-        out << std::scientific << std::setprecision(12);
-        for(size_t i = 0; i < Ncells; i++)
-        {
-            out << simX[i] << " " << simErad[i] << " " << simT[i] << "\n";
-        }
-        std::cout << "\nWrote " << profilePath << std::endl;
-    }
+    // --- Find observer cells at x closest to z_O ---
+    const auto &EgTA = physics->getEgTimeAvg();
+    size_t localN = grid.GetPointNo();
 
-    double observerErad = 0;
+    double bestX = 0.0;
     double minDist = std::numeric_limits<double>::max();
-    size_t observerIdx = 0;
-    for(size_t i = 0; i < Ncells; i++)
+    for(size_t i = 0; i < localN; ++i)
     {
-        double d = std::abs(simX[i] - zO);
+        double d = std::abs(grid.GetMeshPoint(i).x - zO);
         if(d < minDist)
         {
             minDist = d;
-            observerIdx = i;
-            observerErad = simErad[i];
+            bestX = grid.GetMeshPoint(i).x;
         }
     }
-    std::cout << "Observer at x=" << simX[observerIdx] << " cm: Erad=" << observerErad
-              << " erg/cm^3" << std::endl;
 
-    double slabEnergy = 0;
-    double vacEnergy = 0;
-    for(size_t i = 0; i < Ncells; i++)
+    int writerRank = 0;
     {
-        size_t k = idx[i];
-        if(densities[k] > 0.5 * rhoSlab)
+        struct { double dist; int rank; } localBest{minDist, rank}, globalBest;
+        MPI_Allreduce(&localBest, &globalBest, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+        writerRank = globalBest.rank;
+        MPI_Bcast(&bestX, 1, MPI_DOUBLE, writerRank, MPI_COMM_WORLD);
+    }
+
+    constexpr double xTol = 1e-8;
+    std::array<double, G> localEgSum{};
+    size_t localObsCount = 0;
+    for(size_t i = 0; i < localN; ++i)
+    {
+        if(std::abs(grid.GetMeshPoint(i).x - bestX) < xTol)
         {
-            slabEnergy += extensives[k].Erad;
-        }
-        else
-        {
-            vacEnergy += extensives[k].Erad;
+            const auto &egta = EgTA[i];
+            for(size_t g = 0; g < G; ++g)
+            {
+                localEgSum[g] += egta[g];
+            }
+            ++localObsCount;
         }
     }
-    std::cout << "Erad in slab: " << slabEnergy << " erg"
-              << "  Erad in vacuum: " << vacEnergy << " erg" << std::endl;
 
-    std::cout << "\nNote: This is a gray, static-slab approximation. The original"
-              << " benchmark uses 124-group\nfrequency-dependent transport with"
-              << " Doppler shifts (v = 0.5994 cm/ns). The spectral\nshape at the"
-              << " observer cannot be reproduced without multigroup transport.\n"
-              << std::endl;
+    std::array<double, G> globalEgSum{};
+    size_t globalObsCount = 0;
+    MPI_Reduce(localEgSum.data(), globalEgSum.data(), G, MPI_DOUBLE, MPI_SUM, writerRank, MPI_COMM_WORLD);
+    MPI_Reduce(&localObsCount, &globalObsCount, 1, MPI_UNSIGNED_LONG, MPI_SUM, writerRank, MPI_COMM_WORLD);
 
-    std::cout << "Done." << std::endl;
+    if(rank == writerRank)
+    {
+        std::cout << "Observer cells: " << globalObsCount << " cells at x=" << bestX
+                  << " (target z_O=" << zO << ", dist=" << minDist << ")" << std::endl;
+
+        double invCount = (globalObsCount > 0) ? 1.0 / static_cast<double>(globalObsCount) : 0.0;
+
+        std::string specPath = "moving_slab_mc_spectrum.txt";
+        std::ofstream out(specPath);
+        out << std::scientific << std::setprecision(12);
+        out << "# Moving slab MC benchmark\n";
+        out << "# v_slab_cm_per_ns " << vSlab / 1e9 << "\n";
+        out << "# L_slab_cm " << L_slab << "\n";
+        out << "# T_slab_keV " << T_slab_keV << "\n";
+        out << "# rho_slab " << rhoSlab << "\n";
+        out << "# z_O_cm " << zO << "\n";
+        out << "# t_O_ns " << tO * 1e9 << "\n";
+        out << "# observer_x_cm " << bestX << "\n";
+        out << "# observer_yz_cells " << globalObsCount << "\n";
+        out << "# steps " << cycle << "\n";
+        out << "# wall_time_s " << wallTotal << "\n";
+        out << "# mpi_ranks " << nprocs << "\n";
+        out << "# columns: group nu_min_keV nu_max_keV Eg_time_avg_erg_per_cm3\n";
+
+        for(size_t g = 0; g < G; ++g)
+        {
+            out << g
+                << " " << STORM::examples::OPACITY_TABLE_124[g].nu_min
+                << " " << STORM::examples::OPACITY_TABLE_124[g].nu_max
+                << " " << globalEgSum[g] * invCount
+                << "\n";
+        }
+        out.close();
+        std::cout << "Wrote " << specPath << std::endl;
+    }
+
+    MPI_Finalize();
     return 0;
 }
