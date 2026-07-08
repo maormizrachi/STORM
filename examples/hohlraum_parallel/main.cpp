@@ -23,6 +23,7 @@
 #include "HohlraumBoundary.hpp"
 #include "HohlraumIMC.hpp"
 #include "utils/MpiExchangeGrid.hpp"
+#include "examples/MPI_ParticleDtype.hpp"
 #include "mesh_movement/VoronoiMeshMovement.hpp"
 #ifdef MADVORO_WITH_VTK
 #include "MadVoro/io/vtk/write_vtu_3d.hpp"

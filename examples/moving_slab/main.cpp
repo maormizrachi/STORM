@@ -22,6 +22,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cstdio>
 
 #include <mpi.h>
 #include "examples/Vector3D.hpp"
@@ -36,9 +37,71 @@
 #include "population/NoPopulationControl.hpp"
 #include "manager/parallel/MonteCarloManagerLegacy.hpp"
 #include "utils/MpiExchangeGrid.hpp"
+#include "examples/MPI_ParticleDtype.hpp"
 #include "mesh_movement/VoronoiMeshMovement.hpp"
 #include "MovingSlabOpacity.hpp"
 #include "MovingSlabBoundary.hpp"
+
+static void PrintMaxRSS(const char *label)
+{
+    long rssKB = 0;
+    FILE *f = std::fopen("/proc/self/status", "r");
+    if(f)
+    {
+        char line[256];
+        while(std::fgets(line, sizeof(line), f))
+        {
+            if(std::strncmp(line, "VmRSS:", 6) == 0)
+            {
+                std::sscanf(line + 6, "%ld", &rssKB);
+                break;
+            }
+        }
+        std::fclose(f);
+    }
+
+    long freeKB = 0;
+    FILE *fm = std::fopen("/proc/meminfo", "r");
+    if(fm)
+    {
+        char line[256];
+        while(std::fgets(line, sizeof(line), fm))
+        {
+            if(std::strncmp(line, "MemAvailable:", 13) == 0)
+            {
+                std::sscanf(line + 13, "%ld", &freeKB);
+                break;
+            }
+        }
+        std::fclose(fm);
+    }
+
+    double rssMB = rssKB / 1024.0;
+    double freeMB = freeKB / 1024.0;
+
+    struct { double val; int rank; } local, global;
+    local.val = rssMB;
+    MPI_Comm_rank(MPI_COMM_WORLD, &local.rank);
+    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+    double avgMB = rssMB;
+    int worldSize;
+    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
+    MPI_Allreduce(MPI_IN_PLACE, &avgMB, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    avgMB /= worldSize;
+
+    struct { double val; int rank; } freeLocal, freeMin;
+    freeLocal.val = freeMB;
+    MPI_Comm_rank(MPI_COMM_WORLD, &freeLocal.rank);
+    MPI_Allreduce(&freeLocal, &freeMin, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if(rank == 0)
+    {
+        std::cout << "  RSS [" << label << "]: max=" << global.val << " MB (rank " << global.rank
+                  << "), avg=" << avgMB << " MB, node-free-min=" << freeMin.val << " MB (rank " << freeMin.rank << ")" << std::endl;
+    }
+}
 
 // ============================================================
 // Cell and extensives types with multigroup + velocity support
@@ -182,21 +245,35 @@ static bool Rebalance(Grid &grid,
                       int rank)
 {
     size_t N = grid.GetPointNo();
-    std::vector<double> weights(N, 50.0);
+    std::vector<double> weights(N, 1);
 
     const std::vector<size_t> &counters = manager.GetCellsStepsCounters();
     const std::vector<size_t> &particleCounts = manager.GetBeginningParticleCount();
 
+    double maxFactor = 20, minFactor = 0.1;
+    double sumOfWeights = 0;
     for(size_t i = 0; i < N; i++)
     {
         if(counters.size() == N)
         {
-            weights[i] += static_cast<double>(counters[i]);
+            weights[i] += 0.005 * static_cast<double>(counters[i]);
+            sumOfWeights += weights[i];
         }
-        if(particleCounts.size() == N)
-        {
-            weights[i] += 10.0 * static_cast<double>(particleCounts[i]);
-        }
+//        if(particleCounts.size() == N)
+//        {
+//            weights[i] += 1 * static_cast<double>(particleCounts[i]);
+//        }
+    }
+
+    size_t Ntotal = N;
+    MPI_Allreduce(MPI_IN_PLACE, &sumOfWeights, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    double averageWeight = sumOfWeights / Ntotal;
+    double minWeight = averageWeight * minFactor;
+    double maxWeight = averageWeight * maxFactor;
+    for(double &w : weights)
+    {
+        w = std::clamp(w, minWeight, maxWeight);
     }
 
     if(!grid.ShouldRebalance(weights))
@@ -470,10 +547,30 @@ int main(int argc, char *argv[])
     auto wallStart = std::chrono::high_resolution_clock::now();
     double prevTime = 0.0;
 
-    // Save the load balancer so we can restore the MC partition after
-    // each Remesh (mirrors RICH's setCurrentLoadBalance("radiation-mc")
-    // which calls tess.SetLoadBalancer + buildDataTransfer).
-    std::shared_ptr<LoadBalancer<Vector3D>> savedLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
+    // Dual load balancers (like RICH's loads["remesh"] and loads["radiation-mc"]).
+    // remeshLB: spatial partition used during mesh rebuild.
+    // mcLB:     cost-weighted partition used during MC transport.
+    std::shared_ptr<LoadBalancer<Vector3D>> remeshLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
+    std::shared_ptr<LoadBalancer<Vector3D>> mcLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
+
+    // Switch LB and exchange cells/extensives/counters (like RICH's
+    // setCurrentLoadBalance + buildDataTransfer).  Particles are NOT
+    // transferred — they are resolved later by the full UpdateNewCells.
+    auto switchLoadBalancer = [&](const std::shared_ptr<LoadBalancer<Vector3D>> &lb, const char *label)
+    {
+        grid.SetLoadBalancer(lb);
+        STORM::MPI_exchange_data(grid, cells, false);
+        STORM::MPI_exchange_data(grid, extensives, false);
+        STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
+        STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
+        Ncells = grid.GetPointNo();
+        // manager.GetCellsStepsCounters().resize(Ncells, 0);
+        // manager.GetBeginningParticleCount().resize(Ncells, 0);
+        if(rank == 0)
+        {
+            std::cout << "  LB switch (" << label << "). Ncells in rank 0: " << Ncells << std::endl;
+        }
+    };
 
     while(simTime < tEnd)
     {
@@ -483,50 +580,69 @@ int main(int argc, char *argv[])
             break;
         }
 
+        if(rank == 0)
+        {
+            std::cout << "=== Cycle " << cycle << ", t=" << simTime << ", dt=" << thisDt << " ===" << std::endl;
+        }
+
         // --- Remesh: move mesh points with the slab ---
         if(cycle > 0)
         {
+            // Switch to remesh partition before rebuilding
+            // (like RICH's "Changing load balance to remesh")
+            if(nprocs > 1)
+            {
+                switchLoadBalancer(remeshLB, "switch-to-remesh");
+            }
+
             Remesh(grid, vSlab, L_slab, xSym, prevTime, simTime, cells, extensives, particles, manager);
             Ncells = grid.GetPointNo();
 
-            // Restore MC partition after Remesh (like RICH's
-            // setCurrentLoadBalance("radiation-mc") → SetLoadBalancer → MockMesh → buildDataTransfer)
-            if(nprocs > 1 and savedLB)
+            // Save remesh LB (post-BuildParallel partition)
+            if(nprocs > 1)
             {
-                grid.SetLoadBalancer(savedLB);
-                STORM::MPI_exchange_data(grid, cells, false);
-                STORM::MPI_exchange_data(grid, extensives, false);
-                STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
-                STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
-                Ncells = grid.GetPointNo();
-                cells.resize(Ncells);
-                extensives.resize(Ncells);
-                manager.GetCellsStepsCounters().resize(Ncells, 0);
-                manager.GetBeginningParticleCount().resize(Ncells, 0);
+                remeshLB = grid.GetLoadBalancer();
             }
 
-            bool forceRebalance = cycle < 4;
-            if(nprocs > 1 and (forceRebalance or (cycle % 10 == 0)))
+            // Switch to MC partition
+            // (like RICH's "Changing load balance to radiation-mc")
+            if(nprocs > 1)
             {
-                // beforeLB: assign particles to current tessellation (like RICH)
-                std::vector<size_t> lbCellIDs(Ncells);
-                for(size_t i = 0; i < Ncells; ++i)
+                switchLoadBalancer(mcLB, "switch-to-mc");
+            }
+
+            // MC Rebalance (cost-weighted)
+            bool forceRebalance = cycle < 4;
+            if(nprocs > 1 and (forceRebalance or (cycle % 5 == 0)))
+            {
+                PrintMaxRSS("before-LB-UNC");
+
+                // beforeLB: resolve particle locations before rebalance
+                // (like RICH's RadiationMCStep::beforeLB → UpdateNewCells)
                 {
-                    lbCellIDs[i] = cells[i].ID;
+                    std::vector<size_t> cellIDs(Ncells);
+                    for(size_t i = 0; i < Ncells; ++i)
+                    {
+                        cellIDs[i] = cells[i].ID;
+                    }
+                    STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
+                    SyncParticleCellIDs(cells, particles);
                 }
-                STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, lbCellIDs);
-                SyncParticleCellIDs(cells, particles);
+
+                PrintMaxRSS("after-LB-UNC");
 
                 if(Rebalance(grid, manager, cells, extensives, particles, rank))
                 {
                     Ncells = grid.GetPointNo();
                 }
+
+                PrintMaxRSS("after-rebalance");
             }
 
-            // Save updated LB (reflects any rebalance that happened)
+            // Save MC LB (reflects any rebalance)
             if(nprocs > 1)
             {
-                savedLB = grid.GetLoadBalancer();
+                mcLB = grid.GetLoadBalancer();
             }
         }
 
@@ -537,15 +653,27 @@ int main(int argc, char *argv[])
             {
                 cellIDs[i] = cells[i].ID;
             }
+            MPI_Barrier(MPI_COMM_WORLD);
+            auto uncStart = std::chrono::high_resolution_clock::now();
             STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
+            MPI_Barrier(MPI_COMM_WORLD);
+            double uncTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - uncStart).count();
+            if(rank == 0)
+            {
+                std::cout << "  UNC (pre-transport): " << uncTime << "s, particles=" << particles.size() << std::endl;
+            }
             SyncParticleCellIDs(cells, particles);
         }
+
+        PrintMaxRSS("pre-transport");
 
         prevTime = simTime;
         particles = manager.step(std::move(particles), thisDt);
 
         // Sync cellID to current cell after transport (like RICH's MonteCarloManager3D)
         SyncParticleCellIDs(cells, particles);
+
+        PrintMaxRSS("post-transport");
 
         simTime += thisDt;
         cycle++;

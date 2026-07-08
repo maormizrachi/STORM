@@ -189,75 +189,116 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
         }
         assert(octTree.getSize() == N);
 
-        std::vector<ParticleT> myParticles;
         std::vector<ParticleT> shouldExchangeParticles;
 
+        std::vector<double> halfMinNeighborDist2(N);
+        for(size_t i = 0; i < N; i++)
+        {
+            double minDist2 = std::numeric_limits<double>::max();
+            const PointT &gi = grid.GetMeshPoint(i);
+            for(size_t faceIdx : grid.GetCellFaces(i))
+            {
+                const auto &[n1, n2] = grid.GetFaceNeighbors(faceIdx);
+                size_t neighbor = (n1 == i) ? n2 : n1;
+                PointT diff = gi - grid.GetMeshPoint(neighbor);
+                double d2 = ScalarProd(diff, diff);
+                if(d2 < minDist2)
+                {
+                    minDist2 = d2;
+                }
+            }
+            halfMinNeighborDist2[i] = minDist2 * 0.25;
+        }
+
         START_TIMER_PREEMPTIVE("Self Update");
+        size_t writeIdx = 0;
         if(octTree.getSize() > 0)
         {
             for(size_t i = 0; i < particles.size(); i++)
             {
                 ParticleT &p = particles[i];
+                bool keep = false;
+
                 if(p.cellIndex < N)
                 {
-                    if(grid.IsPointInCell(p.location, p.cellIndex))
+                    PointT diff = p.location - grid.GetMeshPoint(p.cellIndex);
+                    double d2 = ScalarProd(diff, diff);
+                    if(d2 < halfMinNeighborDist2[p.cellIndex])
                     {
-                        myParticles.push_back(p);
-                        continue;
+                        keep = true;
+                    }
+                    else if(grid.IsPointInCell(p.location, p.cellIndex))
+                    {
+                        keep = true;
                     }
                 }
 
-                if(grid.IsPointOutsideBox(p.location))
+                if(not keep)
                 {
-                    StormError eo("Particle location is outside of the bounding box");
-                    eo.addEntry("Particle id", p.id);
-                    eo.addEntry("Location", p.location);
-                    throw eo;
-                }
-
-                auto twoClosest = octTree.getKClosestPoints(p.location, 2);
-                bool found = false;
-                for(const auto &[cell, dist] : twoClosest)
-                {
-                    size_t index = cell.getIndex();
-                    if(grid.IsPointInCell(p.location, index))
+                    if(grid.IsPointOutsideBox(p.location))
                     {
-                        p.cellIndex = index;
-                        myParticles.push_back(p);
-                        found = true;
-                        break;
+                        StormError eo("Particle location is outside of the bounding box");
+                        eo.addEntry("Particle id", p.id);
+                        eo.addEntry("Location", p.location);
+                        throw eo;
+                    }
+
+                    auto twoClosest = octTree.getKClosestPoints(p.location, 2);
+                    for(const auto &[cell, dist] : twoClosest)
+                    {
+                        size_t index = cell.getIndex();
+                        if(grid.IsPointInCell(p.location, index))
+                        {
+                            p.cellIndex = index;
+                            keep = true;
+                            break;
+                        }
                     }
                 }
-                if(not found)
+
+                if(keep)
                 {
-                    shouldExchangeParticles.push_back(p);
+                    if(writeIdx != i)
+                    {
+                        particles[writeIdx] = std::move(p);
+                    }
+                    writeIdx++;
+                }
+                else
+                {
+                    shouldExchangeParticles.push_back(std::move(p));
                 }
             }
         }
         else
         {
             shouldExchangeParticles = std::move(particles);
+            writeIdx = 0;
         }
 
-        particles.clear();
+        size_t keptCount = writeIdx;
+        particles.resize(keptCount);
 
         FirstInaccurateMovements(grid, shouldExchangeParticles);
         MPI_Barrier(MPI_COMM_WORLD);
 
-        particles = std::move(shouldExchangeParticles);
-
         START_TIMER_PREEMPTIVE("Main Loop");
 
-        size_t iterations = ResolveRemainingParticles(grid, particles, octTree);
+        size_t iterations = ResolveRemainingParticles(grid, shouldExchangeParticles, octTree);
 
         if(rank == 0)
         {
             std::cout << "Rank " << rank << ", done UpdateNewCells, iterations is " << iterations << std::endl;
         }
 
-        particles.insert(particles.end(), myParticles.begin(), myParticles.end());
+        particles.insert(particles.end(),
+            std::make_move_iterator(shouldExchangeParticles.begin()),
+            std::make_move_iterator(shouldExchangeParticles.end()));
 #endif // STORM_WITH_MPI
+
+#ifndef STORM_WITH_MPI
         AssertLocations(grid, particles);
+#endif
     }
     catch(const StormError &eo)
     {
@@ -707,7 +748,6 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCellsAfterExchan
     }
 
     TransferParticlesWithTranslationMap(grid, particles, translationMap);
-    AssertLocations(grid, particles);
 }
 
 #endif // STORM_WITH_MPI

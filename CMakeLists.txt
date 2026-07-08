@@ -13,10 +13,27 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(CMAKE_CXX_EXTENSIONS OFF)
 
-  set(CMAKE_C_FLAGS_RELEASE   "${CMAKE_C_FLAGS_RELEASE}   -g1" CACHE STRING "" FORCE)
-  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g1" CACHE STRING "" FORCE)
-  set(CMAKE_C_FLAGS_DEBUG     "${CMAKE_C_FLAGS_DEBUG}   -g3"   CACHE STRING "" FORCE)
-  set(CMAKE_CXX_FLAGS_DEBUG   "${CMAKE_CXX_FLAGS_DEBUG} -g3"   CACHE STRING "" FORCE)
+  # --- Compiler flags (aligned with RICH/config/compiler_flags.cmake) ---
+
+  # Release: -O2 (not -O3 -- avoids aggressive FP reassociation), minimal debug info
+  set(CMAKE_C_FLAGS_RELEASE   "-O2 -DNDEBUG -g1" CACHE STRING "" FORCE)
+  set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG -g1" CACHE STRING "" FORCE)
+
+  # Debug: no optimisation, full debug info
+  set(CMAKE_C_FLAGS_DEBUG   "-O0 -g3 -gdwarf-3" CACHE STRING "" FORCE)
+  set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3 -gdwarf-3 -D_GLIBCXX_ASSERTIONS" CACHE STRING "" FORCE)
+
+  # Common flags for all build types
+  string(APPEND CMAKE_CXX_FLAGS " -fno-omit-frame-pointer")
+  string(APPEND CMAKE_CXX_FLAGS " -fstrict-aliasing")
+  string(APPEND CMAKE_CXX_FLAGS " -fno-common")
+  string(APPEND CMAKE_CXX_FLAGS " -rdynamic")
+  string(APPEND CMAKE_CXX_FLAGS " -DOMPI_SKIP_MPICXX")
+
+  string(APPEND CMAKE_C_FLAGS " -fno-omit-frame-pointer")
+  string(APPEND CMAKE_C_FLAGS " -fstrict-aliasing")
+  string(APPEND CMAKE_C_FLAGS " -fno-common")
+  string(APPEND CMAKE_C_FLAGS " -rdynamic")
 endif()
 
 # ---------- Options ----------
