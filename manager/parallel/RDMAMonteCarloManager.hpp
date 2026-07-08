@@ -988,7 +988,6 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                 size_t particleIndex = static_cast<size_t>(currentN - 1);
                 MCParticle &particle = localParticles[particleIndex];
                 bool removeCurrent = false;
-                bool keepCurrent = false;
                 bool debug = false;
 
                 try
@@ -1130,6 +1129,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                             std::cout << "Before running particle step, particle is " << particle << std::endl;
                         }
 
+                        #ifdef STORM_DEBUG
                         const T beforeStepLocation = particle.location;
                         const T beforeStepVelocity = particle.velocity;
                         const dt_t beforeStepTimeLeft = particle.timeLeft;
@@ -1159,9 +1159,11 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                             }
                             throw eo;
                         }
+                        #endif // STORM_DEBUG
 
                         MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
 
+                        #ifdef STORM_DEBUG
                         if(__builtin_expect(functionality.change != MonteCarloParticleStatus::REMOVE &&
                                           functionality.change != MonteCarloParticleStatus::CELL_MOVE &&
                                           this->grid.IsPointOutsideBox(particle.location), 0))
@@ -1192,6 +1194,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                             }
                             throw eo;
                         }
+                        #endif // STORM_DEBUG
 
                         if(particle.on_track)
                         {
@@ -1211,6 +1214,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                             assert(nextCellIndex != particle.cellIndex);
                             assert(particle.timeLeft >= 0);
 
+                            #ifdef STORM_DEBUG
                             auto throwCellMoveOutsideBox = [&](const std::string &cellMoveTarget)
                             {
                                 auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
@@ -1239,11 +1243,14 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                 }
                                 throw eo;
                             };
+                            #endif // STORM_DEBUG
 
                             if(__builtin_expect(nextCellIndex < this->Ncells, 1))
                             {
+                                #ifdef STORM_DEBUG
                                 if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
                                     throwCellMoveOutsideBox("local cell move");
+                                #endif // STORM_DEBUG
 
                                 #ifdef STORM_DEBUG
                                 size_t previousCell = particle.cellIndex;
@@ -1289,7 +1296,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                         #ifdef STORM_WITH_TRACING_HISTORY
                                             particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
                                         #endif // STORM_WITH_TRACING_HISTORY
-                                        keepCurrent = true;
+                                        continue;
                                     }
                                     else if(status == MonteCarloParticleStatus::REMOVE)
                                     {
@@ -1309,8 +1316,10 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                     break;
                                 }
 
+                                #ifdef STORM_DEBUG
                                 if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
                                     throwCellMoveOutsideBox("remote rank transfer");
+                                #endif // STORM_DEBUG
 
                                 particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
                                                     MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
@@ -1403,15 +1412,8 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                     throw eo;
                 }
 
-                if(removeCurrent)
-                {
-                    localParticles.pop_back();
-                }
-                else
-                {
-                    assert(keepCurrent);
-                    break;
-                }
+                assert(removeCurrent);
+                localParticles.pop_back();
         }
 
         if(not localParticles.empty())
@@ -1486,6 +1488,10 @@ void RDMAMonteCarloManager<T, Grid>::ResetAllBuffers(void)
 template<typename T, typename Grid>
 void RDMAMonteCarloManager<T, Grid>::ShrinkBuffers(void)
 {
+    if(this->rank_world == 0)
+    {
+        std::cout << "Shrinking buffers." << std::endl;
+    }
     std::vector<rank_t> shrinkList;
     boost::container::flat_set<rank_t> neighbors(this->neighbors.cbegin(), this->neighbors.cend());
     for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)

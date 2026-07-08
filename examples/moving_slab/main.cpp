@@ -35,7 +35,7 @@
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationIMCParameters.hpp"
 #include "population/NoPopulationControl.hpp"
-#include "manager/parallel/MonteCarloManagerLegacy.hpp"
+#include "manager/parallel/RDMAMonteCarloManager.hpp"
 #include "utils/MpiExchangeGrid.hpp"
 #include "examples/MPI_ParticleDtype.hpp"
 #include "mesh_movement/VoronoiMeshMovement.hpp"
@@ -238,7 +238,7 @@ static void SyncParticleCellIDs(const std::vector<MovingSlabCell> &cells,
 // ============================================================
 
 static bool Rebalance(Grid &grid,
-                      STORM::MonteCarloManagerLegacy<Vector3D, Grid> &manager,
+                      STORM::RDMAMonteCarloManager<Vector3D, Grid> &manager,
                       std::vector<MovingSlabCell> &cells,
                       std::vector<MovingSlabExtensives> &extensives,
                       std::vector<STORM::Particle<Vector3D, Grid>> &particles,
@@ -320,7 +320,7 @@ static void Remesh(Grid &grid, double vSlab, double L_slab, double xSym,
                    std::vector<MovingSlabCell> &cells,
                    std::vector<MovingSlabExtensives> &extensives,
                    std::vector<STORM::Particle<Vector3D, Grid>> &particles,
-                   STORM::MonteCarloManagerLegacy<Vector3D, Grid> &manager)
+                   STORM::RDMAMonteCarloManager<Vector3D, Grid> &manager)
 {
     double slabFrontOld = L_slab + vSlab * prevTime;
     double slabFrontNew = L_slab + vSlab * nowTime;
@@ -518,7 +518,7 @@ int main(int argc, char *argv[])
     auto physics = std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
     auto popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
 
-    STORM::MonteCarloManagerLegacy<Vector3D, Grid> manager(grid, physics, popControl, boundary, STORM::MonteCarloConfig(), MPI_COMM_WORLD);
+    STORM::RDMAMonteCarloManager<Vector3D, Grid> manager(grid, physics, popControl, boundary, STORM::MonteCarloConfig(), MPI_COMM_WORLD);
     std::vector<STORM::Particle<Vector3D, Grid>> particles;
 
     // --- Time stepping ---

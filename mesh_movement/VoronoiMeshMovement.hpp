@@ -276,8 +276,11 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
             writeIdx = 0;
         }
 
+        { std::vector<double>().swap(halfMinNeighborDist2); }
+
         size_t keptCount = writeIdx;
         particles.resize(keptCount);
+        particles.shrink_to_fit();
 
         FirstInaccurateMovements(grid, shouldExchangeParticles);
         MPI_Barrier(MPI_COMM_WORLD);
@@ -294,7 +297,9 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
         particles.insert(particles.end(),
             std::make_move_iterator(shouldExchangeParticles.begin()),
             std::make_move_iterator(shouldExchangeParticles.end()));
-#endif // STORM_WITH_MPI
+        particles.shrink_to_fit();
+
+    #endif // STORM_WITH_MPI
 
 #ifndef STORM_WITH_MPI
         AssertLocations(grid, particles);
@@ -383,35 +388,39 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::FirstInaccurateMovements(
     MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
 
     const std::shared_ptr<EnvironmentAgent<PointT>> &envAgent = grid.GetEnvironmentAgent();
-    std::vector<ParticleT> newParticles;
-    std::vector<Serializer> senders(worldSize);
+    std::vector<std::vector<ParticleT>> sendValues(worldSize);
 
     auto start = std::chrono::high_resolution_clock::now();
     size_t sentCounter = 0;
-    for(ParticleT &p : particles)
+    size_t writeIdx = 0;
+    for(size_t i = 0; i < particles.size(); i++)
     {
+        ParticleT &p = particles[i];
         rank_t approxOwner = envAgent->getOwner(p.location);
         if(approxOwner == rank)
         {
-            newParticles.push_back(p);
+            if(writeIdx != i)
+            {
+                particles[writeIdx] = std::move(p);
+            }
+            writeIdx++;
         }
         else
         {
-            senders[approxOwner].insert(p);
+            sendValues[approxOwner].push_back(std::move(p));
             sentCounter++;
         }
     }
+    particles.resize(writeIdx);
 
-    size_t Nparticles = particles.size();
-    (void)Nparticles;
-    particles.clear();
     auto end = std::chrono::high_resolution_clock::now();
     double timeInLoop1 = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     (void)timeInLoop1;
     MPI_Barrier(MPI_COMM_WORLD);
 
     start = std::chrono::high_resolution_clock::now();
-    std::vector<std::vector<ParticleT>> receiveValues = MPI_Exchange_all_to_all_serializers<ParticleT>(senders, MPI_COMM_WORLD);
+    std::vector<std::vector<ParticleT>> receiveValues = MPI_Exchange_all_to_all_sparse(sendValues, MPI_COMM_WORLD);
+    { std::vector<std::vector<ParticleT>>().swap(sendValues); }
     end = std::chrono::high_resolution_clock::now();
     double timeInExchange = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     (void)timeInExchange;
@@ -420,10 +429,12 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::FirstInaccurateMovements(
     start = std::chrono::high_resolution_clock::now();
     for(rank_t _rank = 0; _rank < worldSize; _rank++)
     {
-        const std::vector<ParticleT> &particlesFromRank = receiveValues[_rank];
-        newParticles.insert(newParticles.end(), particlesFromRank.cbegin(), particlesFromRank.cend());
+        std::vector<ParticleT> &particlesFromRank = receiveValues[_rank];
+        particles.insert(particles.end(),
+            std::make_move_iterator(particlesFromRank.begin()),
+            std::make_move_iterator(particlesFromRank.end()));
     }
-    particles = std::move(newParticles);
+    particles.shrink_to_fit();
 
     MPI_Allreduce(MPI_IN_PLACE, &sentCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     end = std::chrono::high_resolution_clock::now();
@@ -635,40 +646,46 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::TransferParticlesWithTran
 
     START_TIMER("Prepare Transfer Data");
 
-    std::vector<Serializer> senders(worldSize);
-    std::vector<ParticleT> selfParticles;
+    std::vector<std::vector<ParticleT>> sendValues(worldSize);
     size_t sentCounter = 0;
-    for(ParticleT &p : particles)
+    size_t writeIdx = 0;
+    for(size_t i = 0; i < particles.size(); i++)
     {
+        ParticleT &p = particles[i];
         size_t particleCellIdx = p.cellIndex;
         auto [newRank, newCellIdx] = cellsTranslation.at(particleCellIdx);
         p.cellIndex = newCellIdx;
         if(newRank == rank)
         {
-            selfParticles.push_back(p);
+            if(writeIdx != i)
+            {
+                particles[writeIdx] = std::move(p);
+            }
+            writeIdx++;
         }
         else
         {
-            senders[newRank].insert(p);
+            sendValues[newRank].push_back(std::move(p));
             sentCounter++;
         }
     }
-
-    particles.clear();
+    particles.resize(writeIdx);
 
     std::vector<std::vector<ParticleT>> allNewParticles;
     {
         START_TIMER_PREEMPTIVE("Particles Exchange");
-        allNewParticles = MPI_Exchange_all_to_all_serializers<ParticleT>(senders, MPI_COMM_WORLD);
+        allNewParticles = MPI_Exchange_all_to_all_sparse(sendValues, MPI_COMM_WORLD);
     }
+    { std::vector<std::vector<ParticleT>>().swap(sendValues); }
 
     size_t receivedCounter = 0;
-    particles = std::move(selfParticles);
-    std::for_each(allNewParticles.cbegin(), allNewParticles.cend(), [&particles, &receivedCounter](const std::vector<ParticleT> &procParticles)
+    for(std::vector<ParticleT> &procParticles : allNewParticles)
     {
         receivedCounter += procParticles.size();
-        particles.insert(particles.end(), procParticles.cbegin(), procParticles.cend());
-    });
+        particles.insert(particles.end(),
+            std::make_move_iterator(procParticles.begin()),
+            std::make_move_iterator(procParticles.end()));
+    }
 
     MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &sentCounter, &sentCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &receivedCounter, &receivedCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
