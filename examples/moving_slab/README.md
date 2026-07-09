@@ -9,6 +9,12 @@ moves at v = 0.5994 cm/ns and radiates into vacuum. The simulation uses
 acceleration. An observer at x = 12 cm records the time-averaged energy
 density spectrum, which is compared against a semi-analytic solution.
 
+**Important:** This is a parallel benchmark that consumes a large amount
+of memory. Each MPI process should have at least **20 GB** of available
+memory. On SLURM clusters, use `--ntasks-per-node=` to limit processes
+per node accordingly, and `--distribution=cyclic` is recommended to
+spread ranks across nodes.
+
 ## Usage
 
 ```bash
