@@ -10,7 +10,7 @@ set(MADVORO_EXCEPTION_SOURCES
 if(STORM_WITH_MPI)
   add_executable(hohlraum_parallel hohlraum_parallel/main.cpp ${MADVORO_EXCEPTION_SOURCES})
   target_link_libraries(hohlraum_parallel PRIVATE storm)
-  target_include_directories(hohlraum_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/hohlraum)
+  target_include_directories(hohlraum_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/hohlraum_parallel)
   set_target_properties(hohlraum_parallel PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/hohlraum_parallel")
 endif()
 
