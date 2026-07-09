@@ -611,7 +611,7 @@ int main(int argc, char *argv[])
     auto popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
 
     STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
-        grid, physics, popControl, boundary, STORM::ManagerType::Legacy);
+        grid, physics, popControl, boundary);
     std::vector<STORM::Particle<Vector3D, Grid>> particles;
 
     if(rank == 0)
