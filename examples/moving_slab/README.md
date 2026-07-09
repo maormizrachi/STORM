@@ -40,6 +40,10 @@ The opacity table is defined in `MovingSlabOpacity.hpp` with 124 energy
 groups. The opacity model weights the Planck emission CDF by absorption
 opacity for correct frequency sampling.
 
+## Example output
+
+<img src="storm_moving_slab_comparison.png?raw=true" alt="STORM vs semi-analytic spectrum comparison" width="600"/>
+
 ## Comparison
 
 At the end of the run, `check_spectrum.py` is invoked automatically. It
