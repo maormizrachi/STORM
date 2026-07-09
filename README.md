@@ -59,49 +59,21 @@ cmake .. -DSTORM_BUILD_EXAMPLES=ON
 make -j$(nproc)
 ```
 
-### Running the Examples
+### Examples
 
-Executables are placed inside each example's subdirectory (not inside the build directory):
+Executables are placed inside each example's subdirectory. Each example has its own README with problem description, parameters, and validation instructions.
 
-```bash
-./examples/serial_cartesian/serial_cartesian                    # 100 particles in a 10×10×10 Cartesian box
-./examples/hohlraum/hohlraum [N_base] [new] [min]              # Gray IMC hohlraum on Voronoi mesh (serial)
-./examples/marshak_wave_1/marshak_wave_1 [Nx] [new] [bdy]      # Marshak wave problem 1 (Krief & McClarren Test 2)
-./examples/marshak_wave_2/marshak_wave_2 [Nx] [new] [bdy]      # Marshak wave problem 2 (Krief & McClarren Test 3)
-./examples/marshak_wave_3/marshak_wave_3 [Nx] [new] [bdy]      # Marshak wave problem 3 (Derei et al. Test 1)
-./examples/marshak_wave_4/marshak_wave_4 [Nx] [new] [bdy]      # Marshak wave problem 4 (Derei et al. Test 3)
-./examples/densmore2012/densmore2012 [Nx] [new] [bdy]          # Densmore 2012 step-opacity on Cartesian mesh
-./examples/moving_slab/moving_slab [Nx] [new_per_cell]         # Moving slab (gray, static) on Cartesian mesh
-```
-
-#### Hohlraum
-
-Matches the setup from `RICH/runs/Elad_paper_hohlraum` — McClarren & Urbatsch (2009) cylindrical hohlraum with vacuum BCs, 1 keV Planck drive, and 1000 boundary photons per face.
-
-#### Marshak Wave (4 problems)
-
-Self-similar Marshak wave benchmarks on a 1D Cartesian mesh, comparing MC transport against reference diffusion solutions:
-
-| Problem | Reference | Opacity |
+| Example | Description | Mode |
 |---|---|---|
-| 1 | Krief & McClarren (2024) Test 2 | Non-equilibrium (κ_P = 0.001 κ_R) |
-| 2 | Krief & McClarren (2024) Test 3 | Equilibrium (κ_P = κ_R) |
-| 3 | Derei et al. (2024) Test 1 | Non-uniform ρ(x), power-law EOS |
-| 4 | Derei et al. (2024) Test 3 | Stretched grid, divergent density |
-
-Non-linear EOS is handled by recomputing T from internal energy after each step. The ScatteringOpacity returns κ_R − κ_P so the transport mean free path matches the Rosseland mean.
-
-**Note:** These problems are extremely optically thick and require random walk or DDMC acceleration for practical runtimes. Without acceleration, use small Nx (16–64) for demonstration.
-
-#### Densmore 2012
-
-Heterogeneous step-opacity benchmark from Densmore et al. (2012), Fig. 4. Uses a gray Planck-mean opacity approximation — the original problem requires 30 energy groups for accurate frequency-dependent transport. Results are compared against digitized reference data from the Milagro IMC code.
-
-#### Moving Slab
-
-Gray IMC adaptation of the McClarren & Gentile (2021) moving radiating slab benchmark from `RICH/regression_tests/cases/moving_slab_mc`. A slab (ρ = 0.1 g/cm³, T = 1 keV, L = 0.4 cm) radiates into vacuum with a 124-group opacity table collapsed to a single gray Planck-mean. The slab is placed at its time-averaged midpoint position. Transparent x-boundaries let photons escape; y/z faces reflect. A very large cv prevents the slab from cooling (no hydro feedback).
-
-**Note:** The original benchmark uses 124-group frequency-dependent transport with Doppler shifts (v = 0.5994 cm/ns). The spectral shape at the observer cannot be reproduced without multigroup transport — this example tests gray IMC emission, free-streaming, and energy conservation.
+| [`serial_cartesian`](examples/serial_cartesian/) | Minimal particle transport on a Cartesian grid | Serial |
+| [`hohlraum`](examples/hohlraum/) | McClarren & Urbatsch (2009) cylindrical hohlraum | Serial |
+| [`hohlraum_parallel`](examples/hohlraum_parallel/) | Same hohlraum, distributed MPI transport | MPI |
+| [`marshak_wave_1`](examples/marshak_wave_1/) | Marshak wave, Krief & McClarren Test 2 | Serial |
+| [`marshak_wave_2`](examples/marshak_wave_2/) | Marshak wave, Krief & McClarren Test 3 | Serial |
+| [`marshak_wave_3`](examples/marshak_wave_3/) | Marshak wave, Derei et al. Test 1 | Serial |
+| [`marshak_wave_4`](examples/marshak_wave_4/) | Marshak wave, Derei et al. Test 3 | Serial |
+| [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Serial |
+| [`moving_slab`](examples/moving_slab/) | McClarren & Gentile (2021) 124-group moving slab | MPI |
 
 ## Building with MPI
 
@@ -124,16 +96,6 @@ make -j$(nproc)
 ```
 
 When `STORM_WITH_IBV=OFF` (default), the `RDMAMonteCarloManager` falls back to MPI RMA windows automatically.
-
-### Parallel Hohlraum Example
-
-When `STORM_WITH_MPI=ON`, a parallel hohlraum example (`hohlraum_parallel`) is built automatically. It uses MadVoro's `BuildParallel()` for distributed Voronoi construction and STORM's `RDMAMonteCarloManager` for MPI particle transport (using IBV when available, falling back to MPI RMA otherwise):
-
-```bash
-mpirun -np 4 ./examples/hohlraum_parallel/hohlraum_parallel [N_base] [new_per_cell] [min_per_cell]
-```
-
-The parallel example generates points identically on all ranks (same seed), lets MadVoro partition the domain via Hilbert-curve load balancing, then runs the same IMC physics as the serial hohlraum with `MPI_Reduce`-based diagnostics on rank 0.
 
 ### CMake Options
 
