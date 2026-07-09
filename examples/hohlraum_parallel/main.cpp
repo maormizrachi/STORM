@@ -18,7 +18,7 @@
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
-#include "manager/parallel/RDMAMonteCarloManager.hpp"
+#include "manager/MonteCarloManagerFactory.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
 #include "HohlraumIMC.hpp"
@@ -70,8 +70,8 @@ static void DumpVTK(const Grid &grid, const std::vector<STORM::RadiationCell> &c
  *
  * Same physics as examples/hohlraum (matching RICH/runs/Elad_paper_hohlraum)
  * but uses MadVoro's parallel Voronoi construction and STORM's
- * RDMAMonteCarloManager for distributed particle transport (uses IBV when
- * available, falling back to MPI RMA).
+ * MonteCarloManager factory for distributed particle transport (default: RDMA
+ * with IBV, falling back to MPI RMA).
  *
  * Usage:
  *   mpirun -np <N> ./hohlraum_parallel [N_base] [new_per_cell] [min_per_cell]
@@ -113,7 +113,7 @@ using Grid = MadVoro::Voronoi3D<Vector3D>;
 using ParticleT = STORM::Particle<Vector3D, Grid>;
 
 static bool Rebalance(Grid &grid,
-                      STORM::RDMAMonteCarloManager<Vector3D, Grid> &manager,
+                      STORM::MonteCarloManager<Vector3D, Grid> &manager,
                       std::vector<STORM::RadiationCell> &cells,
                       std::vector<STORM::SimpleExtensives> &extensives,
                       std::vector<int> &materialFlags,
@@ -436,7 +436,8 @@ int main(int argc, char *argv[])
     std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl =
         std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, minPhotonsPerCell, 6.0);
 
-    STORM::RDMAMonteCarloManager<Vector3D, Grid> manager(grid, physics, popControl, boundary, STORM::MonteCarloConfig(), MPI_COMM_WORLD);
+    STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
+        grid, physics, popControl, boundary);
 
     std::vector<STORM::Particle<Vector3D, Grid>> particles;
 

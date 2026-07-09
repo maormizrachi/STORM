@@ -22,8 +22,6 @@
 #include <vector>
 #include <string>
 #include <algorithm>
-#include <cstdio>
-
 #include <mpi.h>
 #include "examples/Vector3D.hpp"
 #include "MadVoro/Voronoi3D.hpp"
@@ -35,73 +33,12 @@
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationIMCParameters.hpp"
 #include "population/NoPopulationControl.hpp"
-#include "manager/parallel/RDMAMonteCarloManager.hpp"
+#include "manager/MonteCarloManagerFactory.hpp"
 #include "utils/MpiExchangeGrid.hpp"
 #include "examples/MPI_ParticleDtype.hpp"
 #include "mesh_movement/VoronoiMeshMovement.hpp"
 #include "MovingSlabOpacity.hpp"
 #include "MovingSlabBoundary.hpp"
-
-static void PrintMaxRSS(const char *label)
-{
-    long rssKB = 0;
-    FILE *f = std::fopen("/proc/self/status", "r");
-    if(f)
-    {
-        char line[256];
-        while(std::fgets(line, sizeof(line), f))
-        {
-            if(std::strncmp(line, "VmRSS:", 6) == 0)
-            {
-                std::sscanf(line + 6, "%ld", &rssKB);
-                break;
-            }
-        }
-        std::fclose(f);
-    }
-
-    long freeKB = 0;
-    FILE *fm = std::fopen("/proc/meminfo", "r");
-    if(fm)
-    {
-        char line[256];
-        while(std::fgets(line, sizeof(line), fm))
-        {
-            if(std::strncmp(line, "MemAvailable:", 13) == 0)
-            {
-                std::sscanf(line + 13, "%ld", &freeKB);
-                break;
-            }
-        }
-        std::fclose(fm);
-    }
-
-    double rssMB = rssKB / 1024.0;
-    double freeMB = freeKB / 1024.0;
-
-    struct { double val; int rank; } local, global;
-    local.val = rssMB;
-    MPI_Comm_rank(MPI_COMM_WORLD, &local.rank);
-    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-    double avgMB = rssMB;
-    int worldSize;
-    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
-    MPI_Allreduce(MPI_IN_PLACE, &avgMB, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    avgMB /= worldSize;
-
-    struct { double val; int rank; } freeLocal, freeMin;
-    freeLocal.val = freeMB;
-    MPI_Comm_rank(MPI_COMM_WORLD, &freeLocal.rank);
-    MPI_Allreduce(&freeLocal, &freeMin, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
-
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    if(rank == 0)
-    {
-        std::cout << "  RSS [" << label << "]: max=" << global.val << " MB (rank " << global.rank
-                  << "), avg=" << avgMB << " MB, node-free-min=" << freeMin.val << " MB (rank " << freeMin.rank << ")" << std::endl;
-    }
-}
 
 // ============================================================
 // Cell and extensives types with multigroup + velocity support
@@ -238,7 +175,7 @@ static void SyncParticleCellIDs(const std::vector<MovingSlabCell> &cells,
 // ============================================================
 
 static bool Rebalance(Grid &grid,
-                      STORM::RDMAMonteCarloManager<Vector3D, Grid> &manager,
+                      STORM::MonteCarloManager<Vector3D, Grid> &manager,
                       std::vector<MovingSlabCell> &cells,
                       std::vector<MovingSlabExtensives> &extensives,
                       std::vector<STORM::Particle<Vector3D, Grid>> &particles,
@@ -320,7 +257,7 @@ static void Remesh(Grid &grid, double vSlab, double L_slab, double xSym,
                    std::vector<MovingSlabCell> &cells,
                    std::vector<MovingSlabExtensives> &extensives,
                    std::vector<STORM::Particle<Vector3D, Grid>> &particles,
-                   STORM::RDMAMonteCarloManager<Vector3D, Grid> &manager)
+                   STORM::MonteCarloManager<Vector3D, Grid> &manager)
 {
     double slabFrontOld = L_slab + vSlab * prevTime;
     double slabFrontNew = L_slab + vSlab * nowTime;
@@ -381,6 +318,162 @@ static void Remesh(Grid &grid, double vSlab, double L_slab, double xSym,
                 return p.location.x < boxCoords.first.x || p.location.x > boxCoords.second.x;
             }),
         particles.end());
+}
+
+// ============================================================
+// RunSimulation: main time-stepping loop
+// ============================================================
+
+struct SimulationResult
+{
+    size_t cycles;
+    double wallTimeSeconds;
+};
+
+static SimulationResult RunSimulation(
+    Grid &grid,
+    STORM::MonteCarloManager<Vector3D, Grid> &manager,
+    std::vector<MovingSlabCell> &cells,
+    std::vector<MovingSlabExtensives> &extensives,
+    std::vector<STORM::Particle<Vector3D, Grid>> &particles,
+    double vSlab, double L_slab, double xSym, double tO,
+    int rank, int nprocs)
+{
+    size_t Ncells = grid.GetPointNo();
+    double dt = 1e-3 * 1e-9;
+    double const dtMax = 0.1 * 1e-9;
+    double const dtRamp = 1.1;
+    double const tEnd = tO + dtMax / 2.0;
+    double simTime = 0;
+    size_t cycle = 0;
+
+    auto wallStart = std::chrono::high_resolution_clock::now();
+    double prevTime = 0.0;
+
+    // Dual load balancers (like RICH's loads["remesh"] and loads["radiation-mc"]).
+    std::shared_ptr<LoadBalancer<Vector3D>> remeshLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
+    std::shared_ptr<LoadBalancer<Vector3D>> mcLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
+
+    auto switchLoadBalancer = [&](const std::shared_ptr<LoadBalancer<Vector3D>> &lb, const char *label)
+    {
+        grid.SetLoadBalancer(lb);
+        STORM::MPI_exchange_data(grid, cells, false);
+        STORM::MPI_exchange_data(grid, extensives, false);
+        STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
+        STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
+        Ncells = grid.GetPointNo();
+        if(rank == 0)
+        {
+            std::cout << "  LB switch (" << label << "). Ncells in rank 0: " << Ncells << std::endl;
+        }
+    };
+
+    while(simTime < tEnd)
+    {
+        double thisDt = std::min(dt, tEnd - simTime);
+        if(thisDt <= 0)
+        {
+            break;
+        }
+
+        if(rank == 0)
+        {
+            std::cout << "=== Cycle " << cycle << ", t=" << simTime << ", dt=" << thisDt << " ===" << std::endl;
+        }
+
+        if(cycle > 0)
+        {
+            if(nprocs > 1)
+            {
+                switchLoadBalancer(remeshLB, "switch-to-remesh");
+            }
+
+            Remesh(grid, vSlab, L_slab, xSym, prevTime, simTime, cells, extensives, particles, manager);
+            Ncells = grid.GetPointNo();
+
+            if(nprocs > 1)
+            {
+                remeshLB = grid.GetLoadBalancer();
+            }
+
+            if(nprocs > 1)
+            {
+                switchLoadBalancer(mcLB, "switch-to-mc");
+            }
+
+            bool forceRebalance = cycle < 4;
+            if(nprocs > 1 and (forceRebalance or (cycle % 5 == 0)))
+            {
+                {
+                    std::vector<size_t> cellIDs(Ncells);
+                    for(size_t i = 0; i < Ncells; ++i)
+                    {
+                        cellIDs[i] = cells[i].ID;
+                    }
+                    STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
+                    SyncParticleCellIDs(cells, particles);
+                }
+
+                if(Rebalance(grid, manager, cells, extensives, particles, rank))
+                {
+                    Ncells = grid.GetPointNo();
+                }
+            }
+
+            if(nprocs > 1)
+            {
+                mcLB = grid.GetLoadBalancer();
+            }
+        }
+
+        {
+            std::vector<size_t> cellIDs(Ncells);
+            for(size_t i = 0; i < Ncells; ++i)
+            {
+                cellIDs[i] = cells[i].ID;
+            }
+            MPI_Barrier(MPI_COMM_WORLD);
+            auto uncStart = std::chrono::high_resolution_clock::now();
+            STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
+            MPI_Barrier(MPI_COMM_WORLD);
+            double uncTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - uncStart).count();
+            if(rank == 0)
+            {
+                std::cout << "  UNC (pre-transport): " << uncTime << "s, particles=" << particles.size() << std::endl;
+            }
+            SyncParticleCellIDs(cells, particles);
+        }
+
+        prevTime = simTime;
+        particles = manager.step(std::move(particles), thisDt);
+        SyncParticleCellIDs(cells, particles);
+
+        simTime += thisDt;
+        cycle++;
+        dt = std::min(dt * dtRamp, dtMax);
+
+        if(cycle % 5 == 0 and rank == 0)
+        {
+            double elapsed = std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - wallStart).count();
+            double slabBackNow  = vSlab * simTime;
+            double slabFrontNow = L_slab + vSlab * simTime;
+            std::cout << "Step " << cycle
+                      << "  t=" << simTime * 1e9 << " ns"
+                      << "  dt=" << thisDt * 1e9 << " ns"
+                      << "  slab=[" << slabBackNow << ", " << slabFrontNow << "]"
+                      << "  elapsed=" << elapsed << "s" << std::endl;
+        }
+    }
+
+    double wallTotal = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - wallStart).count();
+    if(rank == 0)
+    {
+        std::cout << "Done. " << cycle << " steps, wall time: " << wallTotal << "s" << std::endl;
+    }
+
+    return {cycle, wallTotal};
 }
 
 // ============================================================
@@ -451,7 +544,6 @@ int main(int argc, char *argv[])
     std::vector<MovingSlabCell> cells(Ncells);
     std::vector<MovingSlabExtensives> extensives(Ncells);
 
-    // Energy group boundaries
     std::array<double, G + 1> energyBoundaries{};
     for(size_t g = 0; g < G; ++g)
     {
@@ -518,16 +610,9 @@ int main(int argc, char *argv[])
     auto physics = std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
     auto popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
 
-    STORM::RDMAMonteCarloManager<Vector3D, Grid> manager(grid, physics, popControl, boundary, STORM::MonteCarloConfig(), MPI_COMM_WORLD);
+    STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
+        grid, physics, popControl, boundary, STORM::ManagerType::Legacy);
     std::vector<STORM::Particle<Vector3D, Grid>> particles;
-
-    // --- Time stepping ---
-    double dt = 1e-3 * 1e-9;
-    double const dtMax = 0.1 * 1e-9;
-    double const dtRamp = 1.1;
-    double const tEnd = tO + dtMax / 2.0;
-    double simTime = 0;
-    size_t cycle = 0;
 
     if(rank == 0)
     {
@@ -544,161 +629,8 @@ int main(int argc, char *argv[])
                   << std::endl;
     }
 
-    auto wallStart = std::chrono::high_resolution_clock::now();
-    double prevTime = 0.0;
-
-    // Dual load balancers (like RICH's loads["remesh"] and loads["radiation-mc"]).
-    // remeshLB: spatial partition used during mesh rebuild.
-    // mcLB:     cost-weighted partition used during MC transport.
-    std::shared_ptr<LoadBalancer<Vector3D>> remeshLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
-    std::shared_ptr<LoadBalancer<Vector3D>> mcLB = (nprocs > 1) ? grid.GetLoadBalancer() : nullptr;
-
-    // Switch LB and exchange cells/extensives/counters (like RICH's
-    // setCurrentLoadBalance + buildDataTransfer).  Particles are NOT
-    // transferred — they are resolved later by the full UpdateNewCells.
-    auto switchLoadBalancer = [&](const std::shared_ptr<LoadBalancer<Vector3D>> &lb, const char *label)
-    {
-        grid.SetLoadBalancer(lb);
-        STORM::MPI_exchange_data(grid, cells, false);
-        STORM::MPI_exchange_data(grid, extensives, false);
-        STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
-        STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
-        Ncells = grid.GetPointNo();
-        // manager.GetCellsStepsCounters().resize(Ncells, 0);
-        // manager.GetBeginningParticleCount().resize(Ncells, 0);
-        if(rank == 0)
-        {
-            std::cout << "  LB switch (" << label << "). Ncells in rank 0: " << Ncells << std::endl;
-        }
-    };
-
-    while(simTime < tEnd)
-    {
-        double thisDt = std::min(dt, tEnd - simTime);
-        if(thisDt <= 0)
-        {
-            break;
-        }
-
-        if(rank == 0)
-        {
-            std::cout << "=== Cycle " << cycle << ", t=" << simTime << ", dt=" << thisDt << " ===" << std::endl;
-        }
-
-        // --- Remesh: move mesh points with the slab ---
-        if(cycle > 0)
-        {
-            // Switch to remesh partition before rebuilding
-            // (like RICH's "Changing load balance to remesh")
-            if(nprocs > 1)
-            {
-                switchLoadBalancer(remeshLB, "switch-to-remesh");
-            }
-
-            Remesh(grid, vSlab, L_slab, xSym, prevTime, simTime, cells, extensives, particles, manager);
-            Ncells = grid.GetPointNo();
-
-            // Save remesh LB (post-BuildParallel partition)
-            if(nprocs > 1)
-            {
-                remeshLB = grid.GetLoadBalancer();
-            }
-
-            // Switch to MC partition
-            // (like RICH's "Changing load balance to radiation-mc")
-            if(nprocs > 1)
-            {
-                switchLoadBalancer(mcLB, "switch-to-mc");
-            }
-
-            // MC Rebalance (cost-weighted)
-            bool forceRebalance = cycle < 4;
-            if(nprocs > 1 and (forceRebalance or (cycle % 5 == 0)))
-            {
-                PrintMaxRSS("before-LB-UNC");
-
-                // beforeLB: resolve particle locations before rebalance
-                // (like RICH's RadiationMCStep::beforeLB → UpdateNewCells)
-                {
-                    std::vector<size_t> cellIDs(Ncells);
-                    for(size_t i = 0; i < Ncells; ++i)
-                    {
-                        cellIDs[i] = cells[i].ID;
-                    }
-                    STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
-                    SyncParticleCellIDs(cells, particles);
-                }
-
-                PrintMaxRSS("after-LB-UNC");
-
-                if(Rebalance(grid, manager, cells, extensives, particles, rank))
-                {
-                    Ncells = grid.GetPointNo();
-                }
-
-                PrintMaxRSS("after-rebalance");
-            }
-
-            // Save MC LB (reflects any rebalance)
-            if(nprocs > 1)
-            {
-                mcLB = grid.GetLoadBalancer();
-            }
-        }
-
-        // UpdateNewCells right before transport (like RICH's RadiationMCStep::step)
-        {
-            std::vector<size_t> cellIDs(Ncells);
-            for(size_t i = 0; i < Ncells; ++i)
-            {
-                cellIDs[i] = cells[i].ID;
-            }
-            MPI_Barrier(MPI_COMM_WORLD);
-            auto uncStart = std::chrono::high_resolution_clock::now();
-            STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
-            MPI_Barrier(MPI_COMM_WORLD);
-            double uncTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - uncStart).count();
-            if(rank == 0)
-            {
-                std::cout << "  UNC (pre-transport): " << uncTime << "s, particles=" << particles.size() << std::endl;
-            }
-            SyncParticleCellIDs(cells, particles);
-        }
-
-        PrintMaxRSS("pre-transport");
-
-        prevTime = simTime;
-        particles = manager.step(std::move(particles), thisDt);
-
-        // Sync cellID to current cell after transport (like RICH's MonteCarloManager3D)
-        SyncParticleCellIDs(cells, particles);
-
-        PrintMaxRSS("post-transport");
-
-        simTime += thisDt;
-        cycle++;
-        dt = std::min(dt * dtRamp, dtMax);
-
-        if(cycle % 5 == 0 and rank == 0)
-        {
-            double elapsed = std::chrono::duration<double>(
-                std::chrono::high_resolution_clock::now() - wallStart).count();
-            double slabBackNow  = vSlab * simTime;
-            double slabFrontNow = L_slab + vSlab * simTime;
-            std::cout << "Step " << cycle
-                      << "  t=" << simTime * 1e9 << " ns"
-                      << "  dt=" << thisDt * 1e9 << " ns"
-                      << "  slab=[" << slabBackNow << ", " << slabFrontNow << "]"
-                      << "  elapsed=" << elapsed << "s" << std::endl;
-        }
-    }
-
-    double wallTotal = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - wallStart).count();
-    if(rank == 0)
-    {
-        std::cout << "Done. " << cycle << " steps, wall time: " << wallTotal << "s" << std::endl;
-    }
+    SimulationResult result = RunSimulation(grid, manager, cells, extensives, particles,
+                                            vSlab, L_slab, xSym, tO, rank, nprocs);
 
     // --- Find observer cells at x closest to z_O ---
     const auto &EgTA = physics->getEgTimeAvg();
@@ -764,8 +696,8 @@ int main(int argc, char *argv[])
         out << "# t_O_ns " << tO * 1e9 << "\n";
         out << "# observer_x_cm " << bestX << "\n";
         out << "# observer_yz_cells " << globalObsCount << "\n";
-        out << "# steps " << cycle << "\n";
-        out << "# wall_time_s " << wallTotal << "\n";
+        out << "# steps " << result.cycles << "\n";
+        out << "# wall_time_s " << result.wallTimeSeconds << "\n";
         out << "# mpi_ranks " << nprocs << "\n";
         out << "# columns: group nu_min_keV nu_max_keV Eg_time_avg_erg_per_cm3\n";
 
@@ -779,6 +711,15 @@ int main(int argc, char *argv[])
         }
         out.close();
         std::cout << "Wrote " << specPath << std::endl;
+    }
+
+    if(rank == 0)
+    {
+        std::string scriptDir = __FILE__;
+        scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
+        std::string cmd = "python3 " + scriptDir + "/check_spectrum.py";
+        std::cout << "Running: " << cmd << std::endl;
+        std::system(cmd.c_str());
     }
 
     MPI_Finalize();

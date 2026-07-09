@@ -250,6 +250,14 @@ int main(int argc, char *argv[])
         std::cout << "No reference data at " << refPath << " — skipping comparison" << std::endl;
     }
 
+    {
+        std::string scriptDir = __FILE__;
+        scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
+        std::string cmd = "python3 " + scriptDir + "/plot_densmore.py";
+        std::cout << "Running: " << cmd << std::endl;
+        std::system(cmd.c_str());
+    }
+
     std::cout << "\nDone." << std::endl;
     return 0;
 }

@@ -230,8 +230,7 @@ inline double ComputeL1(const std::vector<double> &simX, const std::vector<doubl
 
 inline int RunMarshakWave(int problem, int argc, char *argv[])
 {
-    using IMC = RadiationIMC<Vector3D, MarshakGrid, RadiationCell, SimpleExtensives,
-                             MarshakEOS, 1>;
+    using IMC = RadiationIMC<Vector3D, MarshakGrid, RadiationCell, SimpleExtensives, MarshakEOS, 1>;
 
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 128;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 5;
@@ -367,6 +366,14 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     else
     {
         std::cout << "No reference data found at " << refPath << " - skipping comparison" << std::endl;
+    }
+
+    {
+        std::string scriptDir = __FILE__;
+        scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
+        std::string cmd = "python3 " + scriptDir + "/plot_marshak.py " + std::to_string(problem);
+        std::cout << "Running: " << cmd << std::endl;
+        std::system(cmd.c_str());
     }
 
     std::cout << "\nDone." << std::endl;
