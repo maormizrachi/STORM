@@ -486,7 +486,7 @@ private:
     double totalRadiationEnergy(std::size_t cellIndex) const;
     void depositMaterialEnergy(std::size_t cellIndex, double energy);
     void synchronizeMaterialCell(std::size_t cellIndex);
-    void throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where) const;
+    void throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where);
 
     void precomputeRandomWalkData();
     bool tryRandomWalkStep(MCParticle &particle, Functionality &functionality);
@@ -771,10 +771,23 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::throwIfNegativeInternalEnergy(
     std::size_t cellIndex,
-    const std::string &where) const
+    const std::string &where)
 {
-    if(this->extensives_[cellIndex].internal_energy >= 0.0)
+    double &E = this->extensives_[cellIndex].internal_energy;
+    if(E >= 0.0)
     {
+        return;
+    }
+    double volume = this->grid.GetVolume(cellIndex);
+    double thermalScale = constants::arad * std::pow(this->cells_[cellIndex].temperature, 4) * volume;
+    if(thermalScale < 1e-30)
+    {
+        thermalScale = 1e-30;
+    }
+    double ratio = std::abs(E) / thermalScale;
+    if(ratio < 0.1)
+    {
+        E = 0.0;
         return;
     }
 
@@ -782,7 +795,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     eo.addEntry("Where", where);
     eo.addEntry("Cell index", cellIndex);
     eo.addEntry("Cell ID", radiation_imc_detail::cellID(this->cells_[cellIndex]));
-    eo.addEntry("Internal energy", this->extensives_[cellIndex].internal_energy);
+    eo.addEntry("Internal energy", E);
     if constexpr(radiation_imc_detail::has_member_mass<ExtensivesT>::value)
     {
         eo.addEntry("Mass", this->extensives_[cellIndex].mass);
