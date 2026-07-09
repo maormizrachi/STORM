@@ -9,8 +9,8 @@ boundary. Two material regions have different opacity strengths:
 - x >= 2 cm: sigma0 = 1000 keV^{3.5}/cm (optically thick)
 
 The opacity has strong frequency dependence: sigma(E) = sigma0 / (sqrt(kT) * E^3).
-This example uses a gray Planck-mean approximation -- the original problem
-requires 30 energy groups for accurate frequency-dependent transport.
+This example uses 30-group frequency-dependent transport with opacity-weighted
+Planck emission sampling, matching the original problem specification.
 
 ## Usage
 
@@ -41,9 +41,6 @@ IMC code (30-group multigroup) and produces:
 - `densmore2012.png` / `.pdf` -- temperature profile comparison
 
 The reference data is in `data/densmore2012_fig4_mc.csv` (x in cm, T in keV).
-
-Note that the gray approximation will differ from the multigroup reference,
-especially near the material interface at x = 2 cm.
 
 To generate the plot manually:
 

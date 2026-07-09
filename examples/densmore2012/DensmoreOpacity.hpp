@@ -1,49 +1,34 @@
 #ifndef STORM_DENSMORE_OPACITY_HPP
 #define STORM_DENSMORE_OPACITY_HPP
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <vector>
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "PhysicalConstants.hpp"
+#include "utils/LinearInterpolation.hpp"
+#include <planck_integral/planck_integral.hpp>
 
 namespace STORM {
 namespace examples {
 
-/*
- * Gray Planck-mean opacity for the Densmore et al. (2012) heterogeneous
- * step-opacity problem.
- *
- * The frequency-dependent opacity is sigma(E) = sigma0 / (sqrt(kT) * E^3),
- * with sigma0 = 10 keV^{3.5}/cm for x < x_step, 1000 keV^{3.5}/cm otherwise.
- *
- * The Planck mean is computed numerically over the bounded energy range
- * [Emin, Emax] using a simple sum over Ngroups log-spaced energy groups:
- *
- *   sigma_P = sum_g[ sigma_g * B_g ] / sum_g[ B_g ]
- *
- * where B_g = integral of Planck function over group g.
- */
+constexpr size_t N_DENSMORE_GROUPS = 30;
+
 template<typename PointT, typename GridT>
-class DensmoreOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
+class DensmoreOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, N_DENSMORE_GROUPS>
 {
 public:
-    DensmoreOpacity(const std::vector<int> &regionFlags, const std::vector<RadiationCell> &cells,
-                    size_t Ngroups = 30)
-        : regionFlags_(regionFlags), cells_(&cells), Ngroups_(Ngroups)
-    {
-        double Emin = constants::kev * 1e-4;
-        double Emax = constants::kev * 1e2;
-        groupBoundaries_.resize(Ngroups + 1);
-        groupCenters_.resize(Ngroups);
-        groupBoundaries_[0] = Emin;
-        for(size_t g = 0; g < Ngroups; g++)
-        {
-            groupBoundaries_[g + 1] = std::pow(Emax / Emin, 1.0 / Ngroups) * groupBoundaries_[g];
-            groupCenters_[g] = 0.5 * (groupBoundaries_[g] + groupBoundaries_[g + 1]);
-        }
+    using Base = RadiationOpacityModel<PointT, GridT, RadiationCell, N_DENSMORE_GROUPS>;
+    using GroupArray = typename Base::GroupArray;
+    using GroupBoundaries = typename Base::GroupBoundaries;
+    using GroupCdf = std::array<double, N_DENSMORE_GROUPS + 1>;
 
+    DensmoreOpacity(const std::vector<int> &regionFlags, const std::vector<RadiationCell> &cells)
+        : regionFlags_(regionFlags), cells_(&cells)
+    {
         sigma0_left_ = 10.0 * std::pow(constants::kev, 3.5);
         sigma0_right_ = 1000.0 * std::pow(constants::kev, 3.5);
     }
@@ -57,54 +42,130 @@ public:
 
         double weightedSum = 0;
         double totalWeight = 0;
-        for(size_t g = 0; g < Ngroups_; g++)
+        for(size_t g = 0; g < N_DENSMORE_GROUPS; ++g)
         {
-            double a = groupBoundaries_[g] / kT;
-            double b = groupBoundaries_[g + 1] / kT;
-            double Bg = PlanckIntegral(a, b);
-            double sigma_g = sigma0 / (sqrtKT * groupCenters_[g] * groupCenters_[g] * groupCenters_[g]);
+            double Ec = 0.5 * (groupBounds_[g] + groupBounds_[g + 1]);
+            double sigma_g = sigma0 / (sqrtKT * Ec * Ec * Ec);
+            double a = groupBounds_[g] / kT;
+            double b = groupBounds_[g + 1] / kT;
+            double Bg = (a > 0.0 && b > a) ? planck_integral::planck_integral(a, b) : 0.0;
             weightedSum += sigma_g * Bg;
             totalWeight += Bg;
         }
         return (totalWeight > 0) ? weightedSum / totalWeight : 1e-20;
     }
 
-    double CalcScatteringOpacity(const RadiationCell &) override
+    double CalcAbsorptionOpacity(const RadiationCell &cell, double frequency) override
     {
-        return 0;
+        std::size_t idx = cellIndex(cell);
+        double sigma0 = regionFlags_[idx] ? sigma0_left_ : sigma0_right_;
+        double kT = constants::k_boltz * std::max(cell.temperature, 1.0);
+        double sqrtKT = std::sqrt(kT);
+        double E = std::max(frequency, groupBounds_[0]);
+        return sigma0 / (sqrtKT * E * E * E);
+    }
+
+    double CalcScatteringOpacity(const RadiationCell &) override { return 0.0; }
+    double CalcScatteringOpacity(const RadiationCell &, double) override { return 0.0; }
+
+    double GetThermalEnergy(const RadiationCell &cell, double random,
+                            const GroupBoundaries &boundaries) const override
+    {
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        double total = cumulative[N_DENSMORE_GROUPS];
+        if(!(total > 0.0) || !std::isfinite(total))
+        {
+            return Base::GetThermalEnergy(cell, random, boundaries);
+        }
+        double r = clampUnitOpen(random);
+        return LinearInterpolation(cumulative, boundaries, r * total);
+    }
+
+    double SampleThermalEnergyInGroup(const RadiationCell &cell, std::size_t group, double random,
+                                       const GroupBoundaries &boundaries) const override
+    {
+        group = std::min<std::size_t>(group, N_DENSMORE_GROUPS - 1);
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        double c0 = cumulative[group];
+        double c1 = cumulative[group + 1];
+        if(c1 <= c0 || !std::isfinite(c1 - c0))
+        {
+            return 0.5 * (boundaries[group] + boundaries[group + 1]);
+        }
+        double r = clampUnitOpen(random);
+        return LinearInterpolation(cumulative, boundaries, c0 + r * (c1 - c0));
+    }
+
+    GroupArray GetThermalGroupPdf(const RadiationCell &cell, const GroupBoundaries &boundaries) const override
+    {
+        GroupArray pdf{};
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        double total = cumulative[N_DENSMORE_GROUPS];
+        if(!(total > 0.0) || !std::isfinite(total))
+        {
+            return pdf;
+        }
+        for(std::size_t g = 0; g < N_DENSMORE_GROUPS; ++g)
+        {
+            double weight = cumulative[g + 1] - cumulative[g];
+            pdf[g] = (weight > 0.0 && std::isfinite(weight)) ? weight / total : 0.0;
+        }
+        return pdf;
+    }
+
+    GroupArray GetCumulativeOpacity(const RadiationCell &cell, const GroupBoundaries &boundaries) const override
+    {
+        GroupArray cumulativeUpper{};
+        GroupCdf cumulative = computeCumulativePlanck(cell, boundaries);
+        for(std::size_t g = 0; g < N_DENSMORE_GROUPS; ++g)
+        {
+            cumulativeUpper[g] = cumulative[g + 1];
+        }
+        return cumulativeUpper;
+    }
+
+    void setGroupBoundaries(const GroupBoundaries &bounds)
+    {
+        groupBounds_ = bounds;
     }
 
 private:
+    static double clampUnitOpen(double random)
+    {
+        double upper = std::nextafter(1.0, 0.0);
+        return std::isfinite(random) ? std::clamp(random, 0.0, upper) : 0.5;
+    }
+
     std::size_t cellIndex(const RadiationCell &cell) const
     {
         return static_cast<std::size_t>(&cell - cells_->data());
     }
 
-    static double PlanckIntegral(double a, double b)
+    GroupCdf computeCumulativePlanck(const RadiationCell &cell, const GroupBoundaries &boundaries) const
     {
-        size_t N = 64;
-        double h = (b - a) / N;
-        double sum = 0;
-        for(size_t i = 0; i <= N; i++)
+        GroupCdf cdf{};
+        cdf[0] = 0.0;
+        std::size_t idx = cellIndex(cell);
+        double sigma0 = regionFlags_[idx] ? sigma0_left_ : sigma0_right_;
+        double kT = constants::k_boltz * std::max(cell.temperature, 1.0);
+        double sqrtKT = std::sqrt(kT);
+        for(std::size_t g = 0; g < N_DENSMORE_GROUPS; ++g)
         {
-            double x = a + i * h;
-            double f = 0;
-            if(x > 0 and x < 500)
-            {
-                f = x * x * x / (std::exp(x) - 1.0);
-            }
-            double w = (i == 0 or i == N) ? 0.5 : 1.0;
-            sum += w * f;
+            double a = boundaries[g] / kT;
+            double b = boundaries[g + 1] / kT;
+            double bg = (a > 0.0 && b > a) ? planck_integral::planck_integral(a, b) : 0.0;
+            double Ec = 0.5 * (boundaries[g] + boundaries[g + 1]);
+            double sigma_g = sigma0 / (sqrtKT * Ec * Ec * Ec);
+            double weight = (sigma_g > 0.0 && std::isfinite(sigma_g) && std::isfinite(bg)) ? sigma_g * bg : 0.0;
+            cdf[g + 1] = cdf[g] + weight;
         }
-        return sum * h;
+        return cdf;
     }
 
     const std::vector<int> &regionFlags_;
     const std::vector<RadiationCell> *cells_;
-    size_t Ngroups_;
     double sigma0_left_, sigma0_right_;
-    std::vector<double> groupBoundaries_;
-    std::vector<double> groupCenters_;
+    GroupBoundaries groupBounds_{};
 };
 
 } // namespace examples

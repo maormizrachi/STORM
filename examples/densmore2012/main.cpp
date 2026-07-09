@@ -16,7 +16,7 @@
 #include "population/CombPopulationControl.hpp"
 #include "manager/MonteCarloManagerSerial.hpp"
 #include "DensmoreOpacity.hpp"
-#include "examples/marshak_wave/MarshakBoundary.hpp"
+#include "DensmoreBoundary.hpp"
 
 /*
  * Densmore et al. (2012), Figure 4: heterogeneous step-opacity benchmark.
@@ -34,9 +34,8 @@
  * Initial T = 1 eV.   density = 1.
  * dt = 5e-12 s,  t_final = 1e-9 s  (200 steps).
  *
- * NOTE: This uses a gray Planck-mean opacity approximation. The original
- * problem requires multigroup (30 energy groups) for accurate frequency-
- * dependent transport. The gray result is approximate.
+ * 30-group frequency-dependent transport with opacity-weighted Planck
+ * emission sampling.
  *
  * Usage:
  *   ./densmore2012 [Nx] [new_per_cell] [boundary_per_cell]
@@ -100,8 +99,9 @@ static std::vector<RefPoint> LoadCSV(const std::string &path)
 
 int main(int argc, char *argv[])
 {
+    constexpr size_t G = STORM::examples::N_DENSMORE_GROUPS;
     using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
-                                    DensmoreEOS, 1>;
+                                    DensmoreEOS, G>;
 
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 256;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 50;
@@ -120,6 +120,16 @@ int main(int argc, char *argv[])
     double dt = 5e-12;
     size_t iterations = static_cast<size_t>(tf / dt);
 
+    double Emin = STORM::constants::kev * 1e-4;
+    double Emax = STORM::constants::kev * 1e2;
+    std::array<double, G + 1> energyBoundaries{};
+    energyBoundaries[0] = Emin;
+    double ratio = std::pow(Emax / Emin, 1.0 / G);
+    for(size_t g = 0; g < G; ++g)
+    {
+        energyBoundaries[g + 1] = energyBoundaries[g] * ratio;
+    }
+
     double dy = domainLength / Nx;
     Vector3D lower(0, 0, 0);
     Vector3D upper(domainLength, dy, dy);
@@ -127,7 +137,7 @@ int main(int argc, char *argv[])
     Grid grid(lower, upper, Nx, 1, 1);
     size_t Ncells = grid.GetPointNo();
 
-    std::cout << "Densmore 2012 heterogeneous step-opacity (gray MC)" << std::endl;
+    std::cout << "Densmore 2012 heterogeneous step-opacity (" << G << "-group MC)" << std::endl;
     std::cout << "Nx=" << Ncells << ", domain=[0, " << domainLength << "] cm" << std::endl;
     std::cout << "new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << std::endl;
     std::cout << "dt=" << dt << " s, t_final=" << tf << " s, iterations=" << iterations << std::endl;
@@ -147,17 +157,19 @@ int main(int argc, char *argv[])
         extensives[i].internal_energy = cells[i].internalEnergy;
     }
 
-    STORM::RadiationIMCParameters<1> imcParams;
+    STORM::RadiationIMCParameters<G> imcParams;
     imcParams.newPhotonsPerCell = newPhotonsPerCell;
     imcParams.withRandomWalk = true;
-    imcParams.energyBoundaries = {0.0, 1e30};
+    imcParams.withMultigroupOpacity = true;
+    imcParams.energyBoundaries = energyBoundaries;
     imcParams.energyBoundariesProvided = true;
 
     std::shared_ptr<DensmoreEOS> eos = std::make_shared<DensmoreEOS>(cvPerVolume, density);
     std::shared_ptr<STORM::examples::DensmoreOpacity<Vector3D, Grid>> opacityModel =
         std::make_shared<STORM::examples::DensmoreOpacity<Vector3D, Grid>>(regionFlags, cells);
-    std::shared_ptr<STORM::examples::MarshakBoundary<Vector3D, Grid>> boundary =
-        std::make_shared<STORM::examples::MarshakBoundary<Vector3D, Grid>>(grid, T_boundary, boundaryPhotonsPerCell);
+    opacityModel->setGroupBoundaries(energyBoundaries);
+    std::shared_ptr<STORM::examples::DensmoreBoundary<Vector3D, Grid>> boundary =
+        std::make_shared<STORM::examples::DensmoreBoundary<Vector3D, Grid>>(grid, T_boundary, boundaryPhotonsPerCell, energyBoundaries);
     std::shared_ptr<IMC> physics =
         std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
     std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl =
@@ -235,7 +247,7 @@ int main(int argc, char *argv[])
             count++;
         }
         double l1 = (count > 0) ? l1sum / count : -1;
-        std::cout << "DESMORE2012_TGAS_L1 = " << std::scientific << l1 << " keV" << std::endl;
+        std::cout << "DENSMORE2012_TGAS_L1 = " << std::scientific << l1 << " keV" << std::endl;
         if(l1 >= 0 and l1 < 0.10)
         {
             std::cout << "PASS (L1 < 0.10 keV)" << std::endl;

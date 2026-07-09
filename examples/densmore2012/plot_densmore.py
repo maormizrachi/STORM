@@ -39,7 +39,7 @@ def main():
     sim_T_keV = sim[:, 1] / keV_K
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(sim_x, sim_T_keV, "-", lw=1, label="STORM MC (gray)")
+    ax.plot(sim_x, sim_T_keV, "-", lw=1, label="STORM MC (30-group)")
 
     if os.path.exists(ref_path):
         ref = np.loadtxt(ref_path, delimiter=",", comments="#")
