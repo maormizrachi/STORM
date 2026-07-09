@@ -63,16 +63,16 @@ make -j$(nproc)
 
 Executables are placed inside each example's subdirectory. Each example has its own README with problem description, parameters, and validation instructions.
 
-| Example | Description | Mode |
-|---|---|---|
-| [`serial_cartesian`](examples/serial_cartesian/) | Minimal particle transport on a Cartesian grid | Serial |
-| [`hohlraum_parallel`](examples/hohlraum_parallel/) | McClarren & Urbatsch (2009) cylindrical hohlraum | MPI |
-| [`marshak_wave_1`](examples/marshak_wave_1/) | Marshak wave, Krief & McClarren Test 2 | Serial |
-| [`marshak_wave_2`](examples/marshak_wave_2/) | Marshak wave, Krief & McClarren Test 3 | Serial |
-| [`marshak_wave_3`](examples/marshak_wave_3/) | Marshak wave, Derei et al. Test 1 | Serial |
-| [`marshak_wave_4`](examples/marshak_wave_4/) | Marshak wave, Derei et al. Test 3 (geometric mesh) | MPI |
-| [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Serial |
-| [`moving_slab`](examples/moving_slab/) | McClarren & Gentile (2021) 124-group moving slab | MPI |
+| Example | Description | Mesh | Mode |
+|---|---|---|---|
+| [`serial_cartesian`](examples/serial_cartesian/) | Minimal particle transport on a Cartesian grid | Cartesian | Serial |
+| [`hohlraum_parallel`](examples/hohlraum_parallel/) | McClarren & Urbatsch (2009) cylindrical hohlraum | Voronoi | MPI |
+| [`marshak_wave_1`](examples/marshak_wave_1/) | Marshak wave, Krief & McClarren Test 2 | Cartesian | Serial |
+| [`marshak_wave_2`](examples/marshak_wave_2/) | Marshak wave, Krief & McClarren Test 3 | Cartesian | Serial |
+| [`marshak_wave_3`](examples/marshak_wave_3/) | Marshak wave, Derei et al. Test 1 | Cartesian | Serial |
+| [`marshak_wave_4`](examples/marshak_wave_4/) | Marshak wave, Derei et al. Test 3 (geometric mesh) | Cartesian | Serial / MPI |
+| [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Cartesian | Serial |
+| [`moving_slab`](examples/moving_slab/) | McClarren & Gentile (2021) 124-group moving slab | Voronoi | MPI |
 
 ## Building with MPI
 

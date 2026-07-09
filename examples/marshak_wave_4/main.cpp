@@ -1,5 +1,5 @@
 /*
- * Marshak wave problem 4 (MPI parallel): Derei et al. (2024) Test 3
+ * Marshak wave problem 4: Derei et al. (2024) Test 3
  *
  * Divergent density on a stretched grid.
  * kappa_R = 2*(T/keV)^{-4.5}*rho^{1.9}, kappa_P = 5e-4*kappa_R
@@ -8,10 +8,12 @@
  * T_bath(t) = 1.01008116*(t/ns)^{14/139} keV
  * Domain [1e-5, 1+1e-5] cm, t_final = 1 ns
  *
- * Uses CartesianMesh3D with non-uniform x-edges and MPI domain decomposition.
+ * Uses CartesianMesh3D with non-uniform x-edges.
+ * Supports both serial and MPI-parallel execution.
  *
  * Usage:
- *   mpirun -np N ./marshak_wave_4 [new_per_cell] [boundary_per_cell]
+ *   Serial:          ./marshak_wave_4 [new_per_cell] [boundary_per_cell]
+ *   MPI parallel:    mpirun -np N ./marshak_wave_4 [new_per_cell] [boundary_per_cell]
  */
 
 #include <iostream>
@@ -25,15 +27,21 @@
 #include <numeric>
 #include <algorithm>
 #include <chrono>
+#ifdef STORM_WITH_MPI
 #include <mpi.h>
 #include <mpi_utils/mpi_collectives.hpp>
+#endif
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
 #include "PhysicalConstants.hpp"
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
+#ifdef STORM_WITH_MPI
 #include "manager/MonteCarloManagerFactory.hpp"
+#else
+#include "manager/MonteCarloManagerSerial.hpp"
+#endif
 #include "examples/marshak_wave/MarshakOpacity.hpp"
 #include "examples/marshak_wave/MarshakBoundary.hpp"
 #include "examples/marshak_wave/MarshakCommon.hpp"
@@ -46,18 +54,23 @@ using namespace STORM::constants;
 
 int main(int argc, char *argv[])
 {
+#ifdef STORM_WITH_MPI
     MPI_Init(&argc, &argv);
-
     int rank, nprocs;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+#else
+    int rank = 0;
+#endif
 
     using IMC = RadiationIMC<Vector3D, Grid, RadiationCell, SimpleExtensives, MarshakEOS, 1>;
 
     size_t newPhotonsPerCell = (argc >= 2) ? std::stoul(argv[1]) : 15;
     size_t boundaryPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 100;
 
-    { // scope: all MPI-dependent objects must be destroyed before MPI_Finalize
+#ifdef STORM_WITH_MPI
+    { // scope: MPI-dependent objects must be destroyed before MPI_Finalize
+#endif
     ProblemParams params = GetProblemParams(4);
     double xMax = params.xOffset + params.domainLength;
 
@@ -67,20 +80,29 @@ int main(int argc, char *argv[])
 
     Grid grid(xEdges, 0.0, dy, 1, 0.0, dy, 1);
 
+#ifdef STORM_WITH_MPI
     std::vector<double> uniformWeights(globalNx, 1.0);
     grid.BuildParallel(uniformWeights);
+#endif
 
     size_t Ncells = grid.GetPointNo();
+
+#ifdef STORM_WITH_MPI
     size_t globalCells = 0;
     {
         size_t localSz = Ncells;
         MPI_Reduce(&localSz, &globalCells, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     }
+#endif
 
     if(rank == 0)
     {
+#ifdef STORM_WITH_MPI
         std::cout << "Marshak wave problem 4 (parallel): " << globalCells << " cells across "
                   << nprocs << " ranks (" << globalNx << " global), domain [0, " << xMax << "] cm" << std::endl;
+#else
+        std::cout << "Marshak wave problem 4: " << Ncells << " cells, domain [0, " << xMax << "] cm" << std::endl;
+#endif
     }
 
     double keV_K = kev_kelvin;
@@ -106,7 +128,7 @@ int main(int argc, char *argv[])
 
     RadiationIMCParameters<1> imcParams;
     imcParams.newPhotonsPerCell = newPhotonsPerCell;
-    imcParams.withRandomWalk = false;
+    imcParams.withRandomWalk = true;
     imcParams.energyBoundaries = {0.0, 1e30};
     imcParams.energyBoundariesProvided = true;
 
@@ -120,12 +142,17 @@ int main(int argc, char *argv[])
     std::shared_ptr<CombPopulationControl<Vector3D, Grid>> popControl =
         std::make_shared<CombPopulationControl<Vector3D, Grid>>(grid, 15, 6.0);
 
+#ifdef STORM_WITH_MPI
     MonteCarloManager<Vector3D, Grid> manager = CreateMonteCarloManager<Vector3D, Grid>(
         grid, physics, popControl, boundary);
+#else
+    MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
+#endif
 
     std::vector<ParticleT> particles;
 
     double dt = params.initialDt;
+    double maxDt = 5e-13;
     double simTime = 0;
     size_t cycle = 0;
 
@@ -165,44 +192,59 @@ int main(int argc, char *argv[])
         cycle++;
 
         double newDt = std::max(params.initialDt, simTime * 1e-3);
-        dt = std::min(newDt, 5e-11);
+        dt = std::min(newDt, maxDt);
     }
 
     double wallSec = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - wallStart).count();
 
     const std::vector<double> &EradTimeAvg = physics->getEradTimeAvg();
-
-    // Gather all cell data to rank 0
     Ncells = grid.GetPointNo();
-    std::vector<double> localX(Ncells), localTgas(Ncells), localTrad(Ncells);
-    for(size_t i = 0; i < Ncells; i++)
-    {
-        localX[i] = grid.GetMeshPoint(i).x;
-        localTgas[i] = cells[i].temperature;
-        double Erad = std::max(EradTimeAvg[i], 0.0);
-        localTrad[i] = std::pow(Erad / arad, 0.25);
-    }
-
-    int localCount = static_cast<int>(Ncells);
-    std::vector<int> recvCounts(nprocs), displacements(nprocs);
-    MPI_Gather(&localCount, 1, MPI_INT, recvCounts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     std::vector<double> allX, allTgas, allTrad;
-    if(rank == 0)
+
+#ifdef STORM_WITH_MPI
     {
-        displacements[0] = 0;
-        for(int r = 1; r < nprocs; r++)
+        std::vector<double> localX(Ncells), localTgas(Ncells), localTrad(Ncells);
+        for(size_t i = 0; i < Ncells; i++)
         {
-            displacements[r] = displacements[r - 1] + recvCounts[r - 1];
+            localX[i] = grid.GetMeshPoint(i).x;
+            localTgas[i] = cells[i].temperature;
+            double Erad = std::max(EradTimeAvg[i], 0.0);
+            localTrad[i] = std::pow(Erad / arad, 0.25);
         }
-        int total = displacements[nprocs - 1] + recvCounts[nprocs - 1];
-        allX.resize(total);
-        allTgas.resize(total);
-        allTrad.resize(total);
+
+        int localCount = static_cast<int>(Ncells);
+        std::vector<int> recvCounts(nprocs), displacements(nprocs);
+        MPI_Gather(&localCount, 1, MPI_INT, recvCounts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        if(rank == 0)
+        {
+            displacements[0] = 0;
+            for(int r = 1; r < nprocs; r++)
+            {
+                displacements[r] = displacements[r - 1] + recvCounts[r - 1];
+            }
+            int total = displacements[nprocs - 1] + recvCounts[nprocs - 1];
+            allX.resize(total);
+            allTgas.resize(total);
+            allTrad.resize(total);
+        }
+        MPI_Gatherv(localX.data(), localCount, MPI_DOUBLE, allX.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(localTgas.data(), localCount, MPI_DOUBLE, allTgas.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(localTrad.data(), localCount, MPI_DOUBLE, allTrad.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
-    MPI_Gatherv(localX.data(), localCount, MPI_DOUBLE, allX.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Gatherv(localTgas.data(), localCount, MPI_DOUBLE, allTgas.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Gatherv(localTrad.data(), localCount, MPI_DOUBLE, allTrad.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#else
+    allX.resize(Ncells);
+    allTgas.resize(Ncells);
+    allTrad.resize(Ncells);
+    for(size_t i = 0; i < Ncells; i++)
+    {
+        allX[i] = grid.GetMeshPoint(i).x;
+        allTgas[i] = cells[i].temperature;
+        double Erad = std::max(EradTimeAvg[i], 0.0);
+        allTrad[i] = std::pow(Erad / arad, 0.25);
+    }
+#endif
 
     if(rank == 0)
     {
@@ -258,8 +300,9 @@ int main(int argc, char *argv[])
 
         std::cout << "\nDone." << std::endl;
     }
+#ifdef STORM_WITH_MPI
     } // end MPI scope
-
     MPI_Finalize();
+#endif
     return 0;
 }
