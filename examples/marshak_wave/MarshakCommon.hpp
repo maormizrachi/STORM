@@ -324,7 +324,9 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         }
     }
 
-    std::vector<double> simX(Ncells), simT(Ncells);
+    const std::vector<double> &EradTimeAvg = physics->getEradTimeAvg();
+
+    std::vector<double> simX(Ncells), simT(Ncells), simTrad(Ncells);
     std::vector<size_t> idx(Ncells);
     std::iota(idx.begin(), idx.end(), 0);
     std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
@@ -335,6 +337,8 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         size_t k = idx[i];
         simX[i] = grid.GetMeshPoint(k).x;
         simT[i] = cells[k].temperature;
+        double Erad = std::max(EradTimeAvg[k], 0.0);
+        simTrad[i] = std::pow(Erad / constants::arad, 0.25);
     }
 
     std::string profilePath = "marshak_wave_" + std::to_string(problem) + "_profile.txt";
@@ -343,7 +347,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         out << std::scientific << std::setprecision(12);
         for(size_t i = 0; i < Ncells; i++)
         {
-            out << simX[i] << " " << simT[i] << "\n";
+            out << simX[i] << " " << simT[i] << " " << simTrad[i] << "\n";
         }
         std::cout << "\nWrote " << profilePath << std::endl;
     }

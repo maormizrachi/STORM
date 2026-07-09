@@ -42,10 +42,13 @@ def main():
 
     sim = np.loadtxt(profile_path)
     sim_x = sim[:, 0]
-    sim_T_keV = sim[:, 1] / keV_K
+    sim_Tgas_keV = sim[:, 1] / keV_K
+    sim_Trad_keV = sim[:, 2] / keV_K if sim.shape[1] >= 3 else None
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(sim_x, sim_T_keV, "o-", ms=3, lw=1, label="STORM MC")
+    ax.plot(sim_x, sim_Tgas_keV, "o-", ms=3, lw=1, label="STORM $T_{gas}$")
+    if sim_Trad_keV is not None:
+        ax.plot(sim_x, sim_Trad_keV, "s-", ms=3, lw=1, label="STORM $T_{rad}$")
 
     if os.path.exists(ref_path):
         ref = np.loadtxt(ref_path)
