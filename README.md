@@ -85,16 +85,7 @@ make -j$(nproc)
 
 The MPI build requires the `mpi_utils`, `MeshDecomposer3D`, and `EasyRMA` dependencies (all cloned by `install_deps.sh`).
 
-### Building with IBV (Recommended for InfiniBand Clusters)
-
-On systems with InfiniBand hardware, enabling IBV allows `RDMAMonteCarloManager` to use native InfiniBand Verbs for one-sided RDMA communication, which significantly reduces latency compared to MPI two-sided or MPI RMA fallbacks. Install `libibverbs-dev` (Debian/Ubuntu) or `rdma-core-devel` (RHEL/Fedora), then:
-
-```bash
-cmake .. -DSTORM_BUILD_EXAMPLES=ON -DSTORM_WITH_MPI=ON -DSTORM_WITH_IBV=ON
-make -j$(nproc)
-```
-
-When `STORM_WITH_IBV=OFF` (default), the `RDMAMonteCarloManager` falls back to MPI RMA windows automatically.
+On systems with InfiniBand hardware, `RDMAMonteCarloManager` automatically detects and uses native InfiniBand Verbs for one-sided RDMA communication. Install `libibverbs-dev` (Debian/Ubuntu) or `rdma-core-devel` (RHEL/Fedora) to enable this. When IBV is unavailable, it falls back to MPI RMA windows automatically.
 
 ### CMake Options
 
@@ -102,7 +93,6 @@ When `STORM_WITH_IBV=OFF` (default), the `RDMAMonteCarloManager` falls back to M
 |---|---|---|
 | `STORM_BUILD_EXAMPLES` | `OFF` | Build example programs |
 | `STORM_WITH_MPI` | `OFF` | Enable MPI distributed-memory support |
-| `STORM_WITH_IBV` | `OFF` | Enable IBV (InfiniBand Verbs) RDMA transport (requires MPI) |
 | `STORM_WITH_VTK` | `OFF` | Enable VTK mesh output (requires VTK >= 9.3) |
 | `STORM_WITH_HDF5` | `OFF` | Enable HDF5 I/O |
 | `STORM_DEPS_DIR` | `./deps` | Path to external dependencies |
