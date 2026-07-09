@@ -318,7 +318,8 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
             {
                 maxT_keV = std::max(maxT_keV, cells[i].temperature / keV_K);
             }
-            std::cout << "Cycle " << cycle << "  t=" << simTime * 1e9 << " ns  dt=" << dt
+            int pct = static_cast<int>(simTime / params.tf * 100);
+            std::cout << "Cycle " << cycle << " (" << pct << "%)  t=" << simTime * 1e9 << "/" << params.tf * 1e9 << " ns  dt=" << dt
                       << "  particles=" << particles.size() << "  maxT=" << maxT_keV << " keV"
                       << "  T_bath=" << T_bath / keV_K << " keV" << std::endl;
         }
