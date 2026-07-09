@@ -14,7 +14,7 @@ density spectrum, which is compared against a semi-analytic solution.
 > Each MPI process should have at least **20 GB** of available memory.
 > On SLURM clusters, use `--ntasks-per-node=` to limit processes per
 > node accordingly, and `--distribution=cyclic` is recommended to
-> spread ranks across nodes.
+> spread memory-heavy ranks evenly across nodes.
 
 ## Usage
 
