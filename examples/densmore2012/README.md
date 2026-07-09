@@ -2,13 +2,13 @@
 
 Heterogeneous step-opacity benchmark from Densmore et al. (2012), Figure 4.
 
-A 1D slab (x in [0, 3] cm) is driven by a 1 keV Planck source at the left
+A 1D slab ($x \in [0, 3]$ cm) is driven by a 1 keV Planck source at the left
 boundary. Two material regions have different opacity strengths:
 
-- x < 2 cm: sigma0 = 10 keV^{3.5}/cm (optically thin)
-- x >= 2 cm: sigma0 = 1000 keV^{3.5}/cm (optically thick)
+- $x < 2$ cm: $\sigma_0 = 10\;\mathrm{keV}^{3.5}/\mathrm{cm}$ (optically thin)
+- $x \geq 2$ cm: $\sigma_0 = 1000\;\mathrm{keV}^{3.5}/\mathrm{cm}$ (optically thick)
 
-The opacity has strong frequency dependence: sigma(E) = sigma0 / (sqrt(kT) * E^3).
+The opacity has strong frequency dependence: $\sigma(E) = \sigma_0 / (\sqrt{kT} \cdot E^3)$.
 This example uses 30-group frequency-dependent transport with opacity-weighted
 Planck emission sampling, matching the original problem specification.
 

@@ -3,10 +3,10 @@
 McClarren & Gentile (2021) moving radiating slab benchmark, adapted from
 `RICH/regression_tests/cases/moving_slab_mc`.
 
-A uniform slab of material (rho = 0.1 g/cm^3, T = 1 keV, L = 0.4 cm)
-moves at v = 0.5994 cm/ns and radiates into vacuum. The simulation uses
+A uniform slab of material ($\rho = 0.1\;\mathrm{g/cm^3}$, $T = 1$ keV, $L = 0.4$ cm)
+moves at $v = 0.5994$ cm/ns and radiates into vacuum. The simulation uses
 124-group frequency-dependent transport with Doppler shifts and DDMC
-acceleration. An observer at x = 12 cm records the time-averaged energy
+acceleration. An observer at $x = 12$ cm records the time-averaged energy
 density spectrum, which is compared against a semi-analytic solution.
 
 > [!IMPORTANT]

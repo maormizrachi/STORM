@@ -1,6 +1,6 @@
 # Marshak Wave -- Problem 3
 
-Derei et al. (2024), Test 1: non-uniform rho(x) with power-law EOS.
+Derei et al. (2024), Test 1: non-uniform $\rho(x)$ with power-law EOS.
 
 See [`../marshak_wave/README.md`](../marshak_wave/README.md) for full description,
 parameters, and comparison instructions.

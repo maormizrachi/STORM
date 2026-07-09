@@ -5,15 +5,15 @@ IMC Monte Carlo transport against reference diffusion solutions.
 
 | Problem | Directory | Reference | Opacity |
 |---|---|---|---|
-| 1 | `marshak_wave_1/` | Krief & McClarren (2024), Test 2 | Non-equilibrium (kappa_P = 0.001 kappa_R) |
-| 2 | `marshak_wave_2/` | Krief & McClarren (2024), Test 3 | Equilibrium (kappa_P = kappa_R) |
-| 3 | `marshak_wave_3/` | Derei et al. (2024), Test 1 | Non-uniform rho(x), power-law EOS |
+| 1 | `marshak_wave_1/` | Krief & McClarren (2024), Test 2 | Non-equilibrium ($\kappa_P = 0.001\,\kappa_R$) |
+| 2 | `marshak_wave_2/` | Krief & McClarren (2024), Test 3 | Equilibrium ($\kappa_P = \kappa_R$) |
+| 3 | `marshak_wave_3/` | Derei et al. (2024), Test 1 | Non-uniform $\rho(x)$, power-law EOS |
 | 4 | `marshak_wave_4/` | Derei et al. (2024), Test 3 | Stretched grid, divergent density |
 
 A thermal radiation wave propagates into cold material driven by a
-time-dependent Planck boundary source at x = 0. The non-linear EOS
-is handled by recomputing T from internal energy after each step.
-The scattering opacity returns kappa_R - kappa_P so the transport
+time-dependent Planck boundary source at $x = 0$. The non-linear EOS
+is handled by recomputing $T$ from internal energy after each step.
+The scattering opacity returns $\kappa_R - \kappa_P$ so the transport
 mean free path matches the Rosseland mean.
 
 ## Usage
