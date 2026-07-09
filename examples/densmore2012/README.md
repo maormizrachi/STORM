@@ -47,3 +47,7 @@ To generate the plot manually:
 ```bash
 python3 plot_densmore.py
 ```
+
+## Example output
+
+<img src="densmore2012.png?raw=true" alt="Densmore 2012 temperature profile comparison" width="600"/>

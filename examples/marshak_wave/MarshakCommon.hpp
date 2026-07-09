@@ -228,6 +228,26 @@ inline double ComputeL1(const std::vector<double> &simX, const std::vector<doubl
     return count > 0 ? l1sum / count : -1.0;
 }
 
+inline std::vector<double> BuildGeometricMeshEdges(double xOffset, double xMax)
+{
+    const double scale = 2.24e-2;
+    const double ratio = 1.0075;
+
+    std::vector<double> edges;
+    edges.push_back(xOffset);
+    for(size_t i = 1; ; ++i)
+    {
+        double xi = xOffset + scale * (std::pow(ratio, static_cast<double>(i)) - 1.0);
+        if(xi >= xMax)
+        {
+            edges.push_back(xMax);
+            break;
+        }
+        edges.push_back(xi);
+    }
+    return edges;
+}
+
 inline int RunMarshakWave(int problem, int argc, char *argv[])
 {
     using IMC = RadiationIMC<Vector3D, MarshakGrid, RadiationCell, SimpleExtensives, MarshakEOS, 1>;
@@ -239,11 +259,18 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     ProblemParams params = GetProblemParams(problem);
 
     double xMax = params.xOffset + params.domainLength;
-    double dy = xMax / Nx;
-    Vector3D lower(0, 0, 0);
-    Vector3D upper(xMax, dy, dy);
 
-    MarshakGrid grid(lower, upper, Nx, 1, 1);
+    MarshakGrid grid = [&]()
+    {
+        if(problem == 4)
+        {
+            std::vector<double> xEdges = BuildGeometricMeshEdges(0.0, xMax);
+            double dy = xMax / static_cast<double>(xEdges.size() - 1);
+            return MarshakGrid(xEdges, 0.0, dy, 1, 0.0, dy, 1);
+        }
+        double dy = xMax / Nx;
+        return MarshakGrid(Vector3D(0, 0, 0), Vector3D(xMax, dy, dy), Nx, 1, 1);
+    }();
     size_t Ncells = grid.GetPointNo();
 
     double keV_K = constants::kev_kelvin;

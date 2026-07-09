@@ -267,7 +267,7 @@ int main(int argc, char *argv[])
     using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
                                     STORM::examples::HohlraumEOS, 1>;
 
-    size_t N_base = 2000;
+    size_t N_base = 15000;
     size_t newPhotonsPerCell = 5;
     size_t minPhotonsPerCell = 15;
     std::string outputProfileFile;
@@ -560,16 +560,25 @@ int main(int argc, char *argv[])
             std::cout << "  x = " << entry.first * 10 << " mm: T = " << entry.second / STORM::constants::kev_kelvin << " keV" << std::endl;
         }
 
-        if(not outputProfileFile.empty())
+        std::string profileFile = outputProfileFile.empty() ? "profile.txt" : outputProfileFile;
         {
-            std::ofstream out(outputProfileFile);
+            std::ofstream out(profileFile);
             out << "# x(cm), T(K), T(keV)\n";
             for(const std::pair<double, double> &entry : profile)
             {
                 out << entry.first << ", " << entry.second << ", " << entry.second / STORM::constants::kev_kelvin << "\n";
             }
             out.close();
-            std::cout << "Wrote profile to " << outputProfileFile << " (" << profile.size() << " cells)" << std::endl;
+            std::cout << "Wrote profile to " << profileFile << " (" << profile.size() << " cells)" << std::endl;
+        }
+
+        {
+            std::string scriptDir = __FILE__;
+            scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
+            std::string cmd = "python3 " + scriptDir + "/plot_profile.py " + profileFile
+                              + " --save hohlraum_profile.png";
+            std::cout << "Running: " << cmd << std::endl;
+            std::system(cmd.c_str());
         }
 
         std::cout << "\nDone." << std::endl;

@@ -103,7 +103,7 @@ int main(int argc, char *argv[])
     using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
                                     DensmoreEOS, G>;
 
-    size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 256;
+    size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 512;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 50;
     size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
 

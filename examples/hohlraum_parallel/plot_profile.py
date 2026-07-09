@@ -30,8 +30,11 @@ def main():
     fig.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150)
-        print(f"Saved to {save_path}")
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        base = save_path.rsplit(".", 1)[0] if "." in save_path else save_path
+        pdf_path = base + ".pdf"
+        fig.savefig(pdf_path, bbox_inches="tight")
+        print(f"Saved {save_path} and {pdf_path}")
     else:
         plt.show()
 

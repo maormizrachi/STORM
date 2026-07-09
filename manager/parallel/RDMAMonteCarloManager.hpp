@@ -1296,6 +1296,8 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                         #ifdef STORM_WITH_TRACING_HISTORY
                                             particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
                                         #endif // STORM_WITH_TRACING_HISTORY
+                                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                                            MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
                                         continue;
                                     }
                                     else if(status == MonteCarloParticleStatus::REMOVE)

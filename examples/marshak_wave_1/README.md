@@ -8,3 +8,7 @@ parameters, and comparison instructions.
 ```bash
 ./marshak_wave_1 [Nx] [new_per_cell] [boundary_per_cell]
 ```
+
+## Example output
+
+<img src="marshak_wave_1.png?raw=true" alt="Marshak wave problem 1 temperature profile" width="600"/>

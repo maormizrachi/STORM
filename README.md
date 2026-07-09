@@ -66,12 +66,11 @@ Executables are placed inside each example's subdirectory. Each example has its 
 | Example | Description | Mode |
 |---|---|---|
 | [`serial_cartesian`](examples/serial_cartesian/) | Minimal particle transport on a Cartesian grid | Serial |
-| [`hohlraum`](examples/hohlraum/) | McClarren & Urbatsch (2009) cylindrical hohlraum | Serial |
-| [`hohlraum_parallel`](examples/hohlraum_parallel/) | Same hohlraum, distributed MPI transport | MPI |
+| [`hohlraum_parallel`](examples/hohlraum_parallel/) | McClarren & Urbatsch (2009) cylindrical hohlraum | MPI |
 | [`marshak_wave_1`](examples/marshak_wave_1/) | Marshak wave, Krief & McClarren Test 2 | Serial |
 | [`marshak_wave_2`](examples/marshak_wave_2/) | Marshak wave, Krief & McClarren Test 3 | Serial |
 | [`marshak_wave_3`](examples/marshak_wave_3/) | Marshak wave, Derei et al. Test 1 | Serial |
-| [`marshak_wave_4`](examples/marshak_wave_4/) | Marshak wave, Derei et al. Test 3 | Serial |
+| [`marshak_wave_4`](examples/marshak_wave_4/) | Marshak wave, Derei et al. Test 3 (geometric mesh) | MPI |
 | [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Serial |
 | [`moving_slab`](examples/moving_slab/) | McClarren & Gentile (2021) 124-group moving slab | MPI |
 
@@ -131,6 +130,12 @@ The `install_deps.sh` script clones external dependencies into `deps/` (override
 ## Using Inside RICH
 
 When used as a submodule inside RICH (at `source/monte/`), the CMakeLists.txt is not used. RICH's own build system compiles the source files directly via `GLOB_RECURSE`.
+
+## Contact
+
+For questions, suggestions, or help getting started, feel free to reach out — I'm always happy to help:
+
+**Maor Mizrachi** — [maormiz@cs.huji.ac.il](mailto:maormiz@cs.huji.ac.il)
 
 ## License
 

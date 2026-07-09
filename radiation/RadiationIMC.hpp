@@ -1200,7 +1200,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     PointT rwCenter = particle.location;
     particle.location = rwCenter + displacement * posDir;
 
-    static constexpr double nudge = 1e-10;
+    static constexpr double nudge = 1e-6;
     particle.location = particle.location * (1.0 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
 
     const auto &normals = this->gridData.normalsOfCells[cellIndex];

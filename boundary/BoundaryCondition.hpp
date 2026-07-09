@@ -97,7 +97,7 @@ protected:
         double const signedDistance = ScalarProd(particle.location - onFace, normal);
         particle.location -= signedDistance * normal;
 
-        constexpr double nudge = 1e-12;
+        constexpr double nudge = 1e-6;
         particle.location += nudge * faceScale * normal;
 
         double const vn = ScalarProd(particle.velocity, normal);

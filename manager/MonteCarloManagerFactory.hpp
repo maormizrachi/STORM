@@ -3,6 +3,7 @@
 
 #ifdef STORM_WITH_MPI
 
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,7 @@ namespace STORM {
 
 enum class ManagerType
 {
+    Auto,
     RDMA,
     Legacy,
     P2P
@@ -108,13 +110,60 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
     const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
-    ManagerType managerType = ManagerType::RDMA,
+    ManagerType managerType = ManagerType::Auto,
     RDMAEngine rdmaEngine = RDMAEngine::IBV,
     const MonteCarloConfig &config = MonteCarloConfig(),
     const MPI_Comm &comm = MPI_COMM_WORLD)
 {
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+
+    auto log = [&](const std::string &msg)
+    {
+        if(rank == 0)
+        {
+            std::cout << "[MonteCarloManager] " << msg << std::endl;
+        }
+    };
+
     switch(managerType)
     {
+        case ManagerType::Auto:
+        {
+            // Fallback chain: (1) RDMA+IBV -> (2) P2P -> (3) RDMA+MPI_RMA
+            try
+            {
+                log("Trying RDMA with IBV...");
+                auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
+                    grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::IBV_RDMA);
+                log("Using RDMA with IBV");
+                return mgr;
+            }
+            catch(const std::exception &e)
+            {
+                log(std::string("RDMA+IBV unavailable: ") + e.what());
+            }
+
+            try
+            {
+                log("Trying P2P (two-sided MPI)...");
+                auto mgr = MonteCarloManager<T, Grid>::template Create<TwoSidedMonteCarloManager<T, Grid>>(
+                    grid, physics, populationControl, boundaryCondition, comm);
+                log("Using P2P (two-sided MPI)");
+                return mgr;
+            }
+            catch(const std::exception &e)
+            {
+                log(std::string("P2P unavailable: ") + e.what());
+            }
+
+            log("Trying RDMA with MPI RMA...");
+            auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
+                grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::MPI_RMA);
+            log("Using RDMA with MPI RMA");
+            return mgr;
+        }
+
         case ManagerType::RDMA:
             return MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
                 grid, physics, populationControl, boundaryCondition, config, comm, ToRDMAType(rdmaEngine));

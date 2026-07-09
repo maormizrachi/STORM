@@ -7,11 +7,6 @@ set(MADVORO_EXCEPTION_SOURCES
   ${STORM_DEPS_DIR}/MadVoro/exception/InvalidArgumentException.cpp
   ${STORM_DEPS_DIR}/MadVoro/exception/SizeException.cpp
 )
-add_executable(hohlraum hohlraum/main.cpp ${MADVORO_EXCEPTION_SOURCES})
-target_link_libraries(hohlraum PRIVATE storm)
-target_include_directories(hohlraum PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/hohlraum)
-set_target_properties(hohlraum PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/hohlraum")
-
 if(STORM_WITH_MPI)
   add_executable(hohlraum_parallel hohlraum_parallel/main.cpp ${MADVORO_EXCEPTION_SOURCES})
   target_link_libraries(hohlraum_parallel PRIVATE storm)
@@ -19,13 +14,29 @@ if(STORM_WITH_MPI)
   set_target_properties(hohlraum_parallel PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/hohlraum_parallel")
 endif()
 
-foreach(MNUM 1 2 3 4)
+foreach(MNUM 1 2 3)
   add_executable(marshak_wave_${MNUM} marshak_wave_${MNUM}/main.cpp)
   target_link_libraries(marshak_wave_${MNUM} PRIVATE storm)
   target_include_directories(marshak_wave_${MNUM} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave)
   target_compile_definitions(marshak_wave_${MNUM} PRIVATE STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_${MNUM}")
   set_target_properties(marshak_wave_${MNUM} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_${MNUM}")
 endforeach()
+
+if(STORM_WITH_MPI)
+  add_executable(marshak_wave_4 marshak_wave_4/main.cpp)
+  target_link_libraries(marshak_wave_4 PRIVATE storm)
+  target_include_directories(marshak_wave_4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave)
+  target_compile_definitions(marshak_wave_4 PRIVATE STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_4")
+  set_target_properties(marshak_wave_4 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_4")
+
+  add_executable(cartesian_parallel_check cartesian_parallel_check/main.cpp)
+  target_link_libraries(cartesian_parallel_check PRIVATE storm)
+  set_target_properties(cartesian_parallel_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/cartesian_parallel_check")
+  if(BUILD_TESTING AND MPIEXEC_EXECUTABLE)
+    add_test(NAME cartesian_parallel_check
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 $<TARGET_FILE:cartesian_parallel_check>)
+  endif()
+endif()
 
 add_executable(densmore2012 densmore2012/main.cpp)
 target_link_libraries(densmore2012 PRIVATE storm)

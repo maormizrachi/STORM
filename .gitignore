@@ -1,5 +1,7 @@
 build/
+build_regression/
 deps/
+regression_results/
 
 # Example binaries (built in-place by CMake)
 examples/serial_cartesian/serial_cartesian

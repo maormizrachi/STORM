@@ -504,7 +504,10 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                             std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;
                         }
                         if(status == MonteCarloParticleStatus::REFLECT)
-                        {}
+                        {
+                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                                MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
+                        }
                         else if(status == MonteCarloParticleStatus::REMOVE)
                         {
                             stepData.leavingCount++;
