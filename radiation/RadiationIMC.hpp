@@ -625,7 +625,12 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 
 #ifdef STORM_WITH_MPI
     int rank = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int mpiInitialized = 0;
+    MPI_Initialized(&mpiInitialized);
+    if(mpiInitialized)
+    {
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    }
     this->rng_.seed(seed + static_cast<std::uint64_t>(rank) * 104729ULL);
 #endif
     this->opacity_->reseed(seed + 1ULL);
@@ -1882,7 +1887,14 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
             {
 #ifdef STORM_WITH_MPI
-                STORM::MPI_exchange_data(this->grid, this->Erad_time_avg_, true);
+                {
+                    int mpiInit = 0;
+                    MPI_Initialized(&mpiInit);
+                    if(mpiInit)
+                    {
+                        STORM::MPI_exchange_data(this->grid, this->Erad_time_avg_, true);
+                    }
+                }
 #endif
                 for(std::size_t i = 0; i < Ncells; ++i)
                 {
@@ -2026,8 +2038,15 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     double globalTotalEnergy = localTotalEnergy;
     std::size_t globalTotalCells = Ncells;
 #ifdef STORM_WITH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    {
+        int mpiInit = 0;
+        MPI_Initialized(&mpiInit);
+        if(mpiInit)
+        {
+            MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        }
+    }
 #endif
 
     std::size_t totalParticles = globalTotalCells * this->parameters_.newPhotonsPerCell * 10;

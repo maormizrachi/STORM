@@ -83,7 +83,12 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
 
     #ifdef STORM_WITH_MPI
         rank_t rank = 0;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        int mpiInit = 0;
+        MPI_Initialized(&mpiInit);
+        if(mpiInit)
+        {
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        }
         static std::mt19937_64 gen((873 * rank) + particles.size());
     #else
         static std::mt19937_64 gen(particles.size());
@@ -94,7 +99,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
     size_t Ncells = this->grid.GetPointNo();
     size_t Ntotal = Ncells;
     #ifdef STORM_WITH_MPI
-        MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        { int mpiInit = 0; MPI_Initialized(&mpiInit); if(mpiInit) { MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD); } }
     #endif
     std::vector<double> weights(Ncells, 0);
     std::vector<std::vector<const MCParticle *>> particlesInCells(Ncells);
@@ -137,7 +142,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
     }
 
     #ifdef STORM_WITH_MPI
-        MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        { int mpiInit = 0; MPI_Initialized(&mpiInit); if(mpiInit) { MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); } }
     #endif
     if(!std::isfinite(totalWeight))
     {
@@ -254,7 +259,12 @@ std::vector<Particle<T, Grid>> StratifiedCombPopulationControl<T, Grid>::activat
 
     #ifdef STORM_WITH_MPI
         rank_t rank = 0;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        int mpiInit = 0;
+        MPI_Initialized(&mpiInit);
+        if(mpiInit)
+        {
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        }
         std::mt19937_64 gen((873 * rank) + particles.size());
     #else
         std::mt19937_64 gen(particles.size());
@@ -264,7 +274,7 @@ std::vector<Particle<T, Grid>> StratifiedCombPopulationControl<T, Grid>::activat
     size_t const Ncells = this->grid.GetPointNo();
     size_t Ntotal = Ncells;
     #ifdef STORM_WITH_MPI
-        MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        { int mpiInit = 0; MPI_Initialized(&mpiInit); if(mpiInit) { MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD); } }
     #endif
 
     std::vector<double> cellWeights(Ncells, 0.0);
@@ -316,7 +326,7 @@ std::vector<Particle<T, Grid>> StratifiedCombPopulationControl<T, Grid>::activat
     }
 
     #ifdef STORM_WITH_MPI
-        MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        { int mpiInit = 0; MPI_Initialized(&mpiInit); if(mpiInit) { MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD); } }
     #endif
     if(!std::isfinite(totalWeight))
     {

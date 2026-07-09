@@ -123,7 +123,9 @@ MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial(const Grid &grid, cons
     this->particlesData.buffsize = 0;
     this->particlesData.particles = nullptr;
     this->particlesData.av = nullptr;
+    this->particlesData.av_length = 0;
     this->particlesData.th = nullptr;
+    this->particlesData.th_length = 0;
 }
 
 template<typename T, typename Grid>
@@ -144,10 +146,13 @@ void MonteCarloManagerSerial<T, Grid>::AddParticles(const std::vector<MCParticle
         MCParticle *new_particles = new MCParticle[this->particlesData.buffsize];
         index_t *new_av = new index_t[this->particlesData.buffsize];
         index_t *new_th = new index_t[this->particlesData.buffsize];
-        std::memcpy(new_particles, this->particlesData.particles, oldBuffSize * sizeof(MCParticle));
         index_t difference = newBuffSize - oldBuffSize;
-        std::memcpy(new_av + difference, this->particlesData.av, oldBuffSize * sizeof(index_t));
-        std::memcpy(new_th, this->particlesData.th, oldBuffSize * sizeof(index_t));
+        if(oldBuffSize > 0)
+        {
+            std::memcpy(new_particles, this->particlesData.particles, oldBuffSize * sizeof(MCParticle));
+            std::memcpy(new_av + difference, this->particlesData.av, oldBuffSize * sizeof(index_t));
+            std::memcpy(new_th, this->particlesData.th, oldBuffSize * sizeof(index_t));
+        }
         delete[] this->particlesData.particles;
         delete[] this->particlesData.av;
         delete[] this->particlesData.th;
