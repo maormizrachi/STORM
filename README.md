@@ -10,14 +10,14 @@ STORM provides a templated Monte Carlo particle transport engine used by the [RI
 
 ## Features
 
-- **Templated on `PointT` and `Grid`** — works with any 3D point type and tessellation (e.g. [MadVoro](https://github.com/maormizrachi/MadVoro), [MadCart](https://github.com/maormizrachi/MadCart))
-- **Pluggable physics** — `MonteCarloPhysics` interface for custom particle interactions
-- **Pluggable boundaries** — rigid, temperature-driven (single/two-sided), or custom BCs
-- **Population control** — comb algorithm for photon packet management
-- **Serial and MPI managers** — scale from laptop to supercomputer
-- **Full IMC radiation** — `RadiationIMC` with Random Walk, DDMC, and multigroup support
-- **Benchmark suite** — Hohlraum, Marshak wave (1–4), Densmore 2012, Moving slab
-- **Header-heavy** — most code is inline in headers for easy integration
+- **Templated on `PointT` and `Grid`** - works with any 3D point type and tessellation (e.g. [MadVoro](https://github.com/maormizrachi/MadVoro), [MadCart](https://github.com/maormizrachi/MadCart))
+- **Pluggable physics** - `MonteCarloPhysics` interface for custom particle interactions
+- **Pluggable boundaries** - rigid, temperature-driven (single/two-sided), or custom BCs
+- **Population control** - comb algorithm for photon packet management
+- **Serial and MPI managers** - scale from laptop to supercomputer
+- **Full IMC radiation** - `RadiationIMC` with Random Walk, DDMC, and multigroup support
+- **Benchmark suite** - Hohlraum, Marshak wave (1–4), Densmore 2012, Moving slab
+- **Header-heavy** - most code is inline in headers for easy integration
 
 ## Directory Structure
 
@@ -108,14 +108,14 @@ cmake .. -DSTORM_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Debug     # debug symbols 
 
 The `install_deps.sh` script clones external dependencies into `deps/` (override with `cmake .. -DSTORM_DEPS_DIR=/path/to/deps`):
 
-- **[MadCart](https://github.com/maormizrachi/MadCart)** — 3D Cartesian mesh (used by the examples)
-- **[MadVoro](https://github.com/maormizrachi/MadVoro)** — 3D Voronoi tessellation (includes a `range/finders` submodule, initialized automatically)
-- **[mpi_utils](https://github.com/maormizrachi/mpi_utils)** — MPI serialization and exchange
-- **[spatial_ds](https://github.com/maormizrachi/spatial_ds)** — Spatial data structures (OctTree, KDTree)
-- **[MeshDecomposer3D](https://github.com/maormizrachi/MeshDecomposer3D)** — Domain decomposition, Hilbert ordering
-- **[EasyRMA](https://github.com/maormizrachi/EasyRMA)** — One-sided MPI communication (MPI builds only)
-- **[planck_integral](https://github.com/menahemkrief/planck_integral)** — Planck function integrals (Clark 1987)
-- **[units](https://github.com/menahemkrief/units)** — Physical constants in CGS (required by planck_integral)
+- **[MadCart](https://github.com/maormizrachi/MadCart)** - 3D Cartesian mesh (used by the examples)
+- **[MadVoro](https://github.com/maormizrachi/MadVoro)** - 3D Voronoi tessellation (includes a `range/finders` submodule, initialized automatically)
+- **[mpi_utils](https://github.com/maormizrachi/mpi_utils)** - MPI serialization and exchange
+- **[spatial_ds](https://github.com/maormizrachi/spatial_ds)** - Spatial data structures (OctTree, KDTree)
+- **[MeshDecomposer3D](https://github.com/maormizrachi/MeshDecomposer3D)** - Domain decomposition, Hilbert ordering
+- **[EasyRMA](https://github.com/maormizrachi/EasyRMA)** - One-sided MPI communication (MPI builds only)
+- **[planck_integral](https://github.com/menahemkrief/planck_integral)** - Planck function integrals (Clark 1987)
+- **[units](https://github.com/menahemkrief/units)** - Physical constants in CGS (required by planck_integral)
 
 ## Using Inside RICH
 
@@ -123,9 +123,9 @@ When used as a submodule inside RICH (at `source/monte/`), the CMakeLists.txt is
 
 ## Contact
 
-For questions, suggestions, or help getting started, feel free to reach out — I'm always happy to help:
+For questions, suggestions, or help getting started, feel free to reach out - I'm always happy to help:
 
-**Maor Mizrachi** — [maormiz@cs.huji.ac.il](mailto:maormiz@cs.huji.ac.il)
+**Maor Mizrachi** - [maormiz@cs.huji.ac.il](mailto:maormiz@cs.huji.ac.il)
 
 ## License
 
