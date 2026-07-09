@@ -229,11 +229,16 @@ private:
     {
         GroupCdf cdf{};
         cdf[0] = 0.0;
+        double kT = constants::k_boltz * cell.temperature;
+        bool isVacuum = (cell.density < 0.5 * rhoSlab_);
         for(std::size_t g = 0; g < N_OPACITY_GROUPS; ++g)
         {
-            double Bg = planck_integral::planck_energy_density_group_integral(
-                boundaries[g], boundaries[g + 1], cell.temperature);
-            cdf[g + 1] = cdf[g] + Bg;
+            double a = boundaries[g] / kT;
+            double b = boundaries[g + 1] / kT;
+            double bg = (a > 0.0 && b > a) ? planck_integral::planck_integral(a, b) : 0.0;
+            double sigma = isVacuum ? 1e-12 : sigmaG_[g];
+            double weight = (sigma > 0.0 && std::isfinite(sigma) && std::isfinite(bg)) ? sigma * bg : 0.0;
+            cdf[g + 1] = cdf[g] + weight;
         }
         return cdf;
     }
