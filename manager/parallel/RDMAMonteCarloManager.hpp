@@ -1494,13 +1494,31 @@ void RDMAMonteCarloManager<T, Grid>::ShrinkBuffers(void)
     }
     std::vector<rank_t> shrinkList;
     boost::container::flat_set<rank_t> neighbors(this->neighbors.cbegin(), this->neighbors.cend());
+    size_t avgBuffSize = 0;
+    size_t numHandlers = 0;
+    for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
+    {
+        if(r != this->rank_world and this->rankHandlers[r] != nullptr)
+        {
+            avgBuffSize += this->rankHandlers[r]->buffsize;
+            numHandlers++;
+        }
+    }
+    if(numHandlers > 0)
+    {
+        avgBuffSize /= numHandlers;
+    }
     for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
     {
         if(r != this->rank_world and this->rankHandlers[r] != nullptr and this->rankHandlers[r]->buffsize > this->config.minimalBuffSize)
         {
-            if(neighbors.find(r) == neighbors.end())
+            bool isNeighbor = neighbors.find(r) != neighbors.end();
+            if(!isNeighbor)
             {
-                // no longer neighbor
+                shrinkList.push_back(r);
+            }
+            else if(this->rankHandlers[r]->buffsize > 4 * std::max(avgBuffSize, this->config.minimalBuffSize))
+            {
                 shrinkList.push_back(r);
             }
         }

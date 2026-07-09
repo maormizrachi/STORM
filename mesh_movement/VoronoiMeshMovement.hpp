@@ -34,6 +34,7 @@ namespace mesh_movement_detail {
 
 constexpr double UPDATE_NEW_CELLS_BOX_EPS_FACTOR = 16.0;
 constexpr int RADIUSES_FACTOR = 2;
+constexpr size_t FACE_WALK_MAX_HOPS = 64;
 
 } // namespace mesh_movement_detail
 
@@ -210,6 +211,24 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
             halfMinNeighborDist2[i] = minDist2 * 0.25;
         }
 
+        std::vector<rank_t> ghostRank(grid.GetTotalPointNumber(), -1);
+        {
+            const std::vector<rank_t> &dupProcs = grid.GetDuplicatedProcs();
+            const auto &ghostIndices = grid.GetGhostIndeces();
+            for(size_t j = 0; j < dupProcs.size(); j++)
+            {
+                for(size_t idx : ghostIndices[j])
+                {
+                    if(idx < ghostRank.size())
+                    {
+                        ghostRank[idx] = dupProcs[j];
+                    }
+                }
+            }
+        }
+
+        std::vector<std::vector<ParticleT>> directSend(worldSize);
+
         START_TIMER_PREEMPTIVE("Self Update");
         size_t writeIdx = 0;
         if(octTree.getSize() > 0)
@@ -227,36 +246,71 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
                     {
                         keep = true;
                     }
-                    else if(grid.IsPointInCell(p.location, p.cellIndex))
+                    else
                     {
-                        keep = true;
-                    }
-                }
-
-                if(not keep)
-                {
-                    if(grid.IsPointOutsideBox(p.location))
-                    {
-                        StormError eo("Particle location is outside of the bounding box");
-                        eo.addEntry("Particle id", p.id);
-                        eo.addEntry("Location", p.location);
-                        throw eo;
-                    }
-
-                    auto twoClosest = octTree.getKClosestPoints(p.location, 2);
-                    for(const auto &[cell, dist] : twoClosest)
-                    {
-                        size_t index = cell.getIndex();
-                        if(grid.IsPointInCell(p.location, index))
+                        size_t current = p.cellIndex;
+                        for(size_t hop = 0; hop < mesh_movement_detail::FACE_WALK_MAX_HOPS; hop++)
                         {
-                            p.cellIndex = index;
-                            keep = true;
-                            break;
+                            auto [inside, neighbor] = grid.FindViolatedFaceNeighbor(p.location, current);
+                            if(inside)
+                            {
+                                p.cellIndex = current;
+                                keep = true;
+                                break;
+                            }
+                            else if(neighbor < N)
+                            {
+                                current = neighbor;
+                            }
+                            else if(neighbor < ghostRank.size() && ghostRank[neighbor] >= 0)
+                            {
+                                directSend[ghostRank[neighbor]].push_back(std::move(p));
+                                goto nextParticle;
+                            }
+                            else
+                            {
+                                break;
+                            }
                         }
                     }
                 }
 
-                if(keep)
+                if(!keep)
+                {
+                    size_t current = grid.GetContainingCell(p.location);
+                    if(current < N)
+                    {
+                        for(size_t hop = 0; hop < mesh_movement_detail::FACE_WALK_MAX_HOPS; hop++)
+                        {
+                            auto [inside, neighbor] = grid.FindViolatedFaceNeighbor(p.location, current);
+                            if(inside)
+                            {
+                                p.cellIndex = current;
+                                keep = true;
+                                break;
+                            }
+                            else if(neighbor < N)
+                            {
+                                current = neighbor;
+                            }
+                            else if(neighbor < ghostRank.size() && ghostRank[neighbor] >= 0)
+                            {
+                                directSend[ghostRank[neighbor]].push_back(std::move(p));
+                                goto nextParticle;
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if(!keep)
+                {
+                    shouldExchangeParticles.push_back(std::move(p));
+                }
+                else
                 {
                     if(writeIdx != i)
                     {
@@ -264,10 +318,7 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
                     }
                     writeIdx++;
                 }
-                else
-                {
-                    shouldExchangeParticles.push_back(std::move(p));
-                }
+                nextParticle:;
             }
         }
         else
@@ -277,10 +328,68 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
         }
 
         { std::vector<double>().swap(halfMinNeighborDist2); }
+        { std::vector<rank_t>().swap(ghostRank); }
 
         size_t keptCount = writeIdx;
         particles.resize(keptCount);
         particles.shrink_to_fit();
+
+        START_TIMER_PREEMPTIVE("Direct Ghost Exchange");
+        {
+            size_t directSentTotal = 0;
+            for(const auto &v : directSend)
+            {
+                directSentTotal += v.size();
+            }
+            std::vector<std::vector<ParticleT>> directRecv = MPI_Exchange_all_to_all_sparse(directSend, MPI_COMM_WORLD);
+            { std::vector<std::vector<ParticleT>>().swap(directSend); }
+
+            for(std::vector<ParticleT> &recvFromRank : directRecv)
+            {
+                for(ParticleT &p : recvFromRank)
+                {
+                    size_t current = grid.GetContainingCell(p.location);
+                    bool resolved = false;
+                    if(current < N)
+                    {
+                        for(size_t hop = 0; hop < mesh_movement_detail::FACE_WALK_MAX_HOPS; hop++)
+                        {
+                            auto [inside, neighbor] = grid.FindViolatedFaceNeighbor(p.location, current);
+                            if(inside)
+                            {
+                                p.cellIndex = current;
+                                particles.push_back(std::move(p));
+                                resolved = true;
+                                break;
+                            }
+                            else if(neighbor < N)
+                            {
+                                current = neighbor;
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    if(!resolved)
+                    {
+                        shouldExchangeParticles.push_back(std::move(p));
+                    }
+                }
+            }
+
+            size_t directRecvTotal = 0;
+            for(const auto &v : directRecv)
+            {
+                directRecvTotal += v.size();
+            }
+            MPI_Allreduce(MPI_IN_PLACE, &directSentTotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+            if(rank == 0)
+            {
+                std::cout << "Direct ghost exchange: " << directSentTotal << " particles" << std::endl;
+            }
+        }
 
         FirstInaccurateMovements(grid, shouldExchangeParticles);
         MPI_Barrier(MPI_COMM_WORLD);
@@ -495,21 +604,41 @@ size_t MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::ResolveRemainingParticl
     for(size_t i = 0; i < particles.size(); i++)
     {
         ParticleT &p = particles[i];
-        size_t closestCell = std::numeric_limits<size_t>::max();
+        bool resolved = false;
         if(N > 0)
         {
-            closestCell = grid.GetContainingCell(p.location);
+            size_t current = grid.GetContainingCell(p.location);
+            if(current < N)
+            {
+                for(size_t hop = 0; hop < mesh_movement_detail::FACE_WALK_MAX_HOPS; hop++)
+                {
+                    auto [inside, neighbor] = grid.FindViolatedFaceNeighbor(p.location, current);
+                    if(inside)
+                    {
+                        p.cellIndex = current;
+                        resolvedParticles.push_back(p);
+                        resolved = true;
+                        break;
+                    }
+                    else if(neighbor < N)
+                    {
+                        current = neighbor;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
         }
-        if(closestCell < N and grid.IsPointInCell(p.location, closestCell))
-        {
-            p.cellIndex = closestCell;
-            resolvedParticles.push_back(p);
-            ranksTested.push_back({});
-        }
-        else
+        if(!resolved)
         {
             particlesLeft.insert(i);
             ranksTested.push_back({rank});
+        }
+        else
+        {
+            ranksTested.push_back({});
         }
     }
     {
@@ -591,16 +720,27 @@ size_t MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::ResolveRemainingParticl
                 for(size_t i = 0; i < Np; i++)
                 {
                     ParticleT &p = particlesFromRank[i];
-                    auto candidates = octTree.getKClosestPoints(p.location, 2);
-                    for(const auto &[cell, dist] : candidates)
+                    size_t current = octTree.closestPoint(p.location).getIndex();
+                    if(current < N)
                     {
-                        size_t index = cell.getIndex();
-                        if(index < N and grid.IsPointInCell(p.location, index))
+                        for(size_t hop = 0; hop < mesh_movement_detail::FACE_WALK_MAX_HOPS; hop++)
                         {
-                            p.cellIndex = index;
-                            resolvedParticles.push_back(p);
-                            acknowledgementValues[_rank].push_back(i);
-                            break;
+                            auto [inside, neighbor] = grid.FindViolatedFaceNeighbor(p.location, current);
+                            if(inside)
+                            {
+                                p.cellIndex = current;
+                                resolvedParticles.push_back(p);
+                                acknowledgementValues[_rank].push_back(i);
+                                break;
+                            }
+                            else if(neighbor < N)
+                            {
+                                current = neighbor;
+                            }
+                            else
+                            {
+                                break;
+                            }
                         }
                     }
                 }
