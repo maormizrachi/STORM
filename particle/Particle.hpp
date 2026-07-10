@@ -21,7 +21,6 @@ namespace STORM {
 using namespace STORM::fallback;
 
 using dt_t = double;
-using distance_t = double;
 
 #ifdef STORM_WITH_TRACING_HISTORY
 
@@ -154,7 +153,7 @@ struct Particle
 #endif
     };
 
-    std::pair<size_t, distance_t> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
+    std::pair<size_t, typename T::coord_type> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
 
     friend inline std::ostream &operator<<(std::ostream &stream, const Particle &particle)
     {
@@ -187,11 +186,12 @@ struct Particle
 };
 
 template<typename T, typename Grid>
-std::pair<size_t, dt_t> Particle<T, Grid>::distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const
+std::pair<size_t, typename T::coord_type> Particle<T, Grid>::distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const
 {
-    std::pair<size_t, dt_t> best = {std::numeric_limits<size_t>::max(), std::numeric_limits<dt_t>::max()};
+    using coord_t = typename T::coord_type;
+    std::pair<size_t, coord_t> best = {std::numeric_limits<size_t>::max(), std::numeric_limits<coord_t>::max()};
     size_t &min_face = best.first;
-    dt_t &min_alpha = best.second;
+    coord_t &min_alpha = best.second;
 
     const double velocityAbs = EPSILON * fastabs(this->velocity);
     const auto &faces = grid.GetCellFaces(this->cellIndex);
@@ -209,7 +209,7 @@ std::pair<size_t, dt_t> Particle<T, Grid>::distanceToNearestFace(const Grid &gri
         }
         const T &pointOnFace = pointsOnFaces[i];
 
-        dt_t alpha = ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
+        coord_t alpha = ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
 
         __builtin_prefetch(&Nfaces, 0, 0);
 
@@ -231,7 +231,7 @@ std::pair<size_t, dt_t> Particle<T, Grid>::distanceToNearestFace(const Grid &gri
         }
     }
 
-    if(min_alpha != std::numeric_limits<distance_t>::max())
+    if(min_alpha != std::numeric_limits<coord_t>::max())
     {
         return best;
     }

@@ -7,7 +7,6 @@
 namespace STORM {
 
 using dt_t = double;
-using distance_t = double;
 
 #ifdef STORM_WITH_MPI
 using rank_t = int;
