@@ -30,6 +30,7 @@ enum class ManagerType
 enum class RDMAEngine
 {
     IBV,
+    OFI,
     MPI,
     Auto
 };
@@ -98,6 +99,7 @@ inline RDMA_Type ToRDMAType(RDMAEngine engine)
     switch(engine)
     {
         case RDMAEngine::IBV:  return RDMA_Type::IBV_RDMA;
+        case RDMAEngine::OFI:  return RDMA_Type::OFI_RDMA;
         case RDMAEngine::MPI:  return RDMA_Type::MPI_RMA;
         case RDMAEngine::Auto: return RDMA_Type::AUTO_RDMA;
     }
@@ -130,7 +132,20 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
     {
         case ManagerType::Auto:
         {
-            // Fallback chain: (1) RDMA+IBV -> (2) P2P -> (3) RDMA+MPI_RMA
+            // Fallback chain: (1) RDMA+OFI -> (2) RDMA+IBV -> (3) P2P
+            try
+            {
+                log("Trying RDMA with OFI (libfabric)...");
+                auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
+                    grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::OFI_RDMA);
+                log("Using RDMA with OFI (libfabric)");
+                return mgr;
+            }
+            catch(const std::exception &e)
+            {
+                log(std::string("RDMA+OFI unavailable: ") + e.what());
+            }
+
             try
             {
                 log("Trying RDMA with IBV...");
@@ -144,23 +159,10 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
                 log(std::string("RDMA+IBV unavailable: ") + e.what());
             }
 
-            try
-            {
-                log("Trying P2P (two-sided MPI)...");
-                auto mgr = MonteCarloManager<T, Grid>::template Create<TwoSidedMonteCarloManager<T, Grid>>(
-                    grid, physics, populationControl, boundaryCondition, comm);
-                log("Using P2P (two-sided MPI)");
-                return mgr;
-            }
-            catch(const std::exception &e)
-            {
-                log(std::string("P2P unavailable: ") + e.what());
-            }
-
-            log("Trying RDMA with MPI RMA...");
-            auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
-                grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::MPI_RMA);
-            log("Using RDMA with MPI RMA");
+            log("Falling back to P2P (two-sided MPI)...");
+            auto mgr = MonteCarloManager<T, Grid>::template Create<TwoSidedMonteCarloManager<T, Grid>>(
+                grid, physics, populationControl, boundaryCondition, comm);
+            log("Using P2P (two-sided MPI)");
             return mgr;
         }
 
