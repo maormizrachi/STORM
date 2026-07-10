@@ -6,7 +6,7 @@
 #include <vector>
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/RadiationCell.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 
 namespace STORM {
 namespace examples {
@@ -33,7 +33,7 @@ public:
     {
         std::size_t idx = cellIndex(cell);
         double rhoFactor = (betaRho_ != 0.0) ? std::pow(densities_[idx], betaRho_) : 1.0;
-        double Tfactor = std::pow(constants::kev_kelvin / std::max(cell.temperature, 1.0), alpha_);
+        double Tfactor = std::pow(units::kev_kelvin / std::max(cell.temperature, 1.0), alpha_);
         return kappaP0_ * Tfactor * rhoFactor;
     }
 
@@ -41,7 +41,7 @@ public:
     {
         std::size_t idx = cellIndex(cell);
         double rhoFactor = (betaRho_ != 0.0) ? std::pow(densities_[idx], betaRho_) : 1.0;
-        double Tfactor = std::pow(constants::kev_kelvin / std::max(cell.temperature, 1.0), alpha_);
+        double Tfactor = std::pow(units::kev_kelvin / std::max(cell.temperature, 1.0), alpha_);
         double kappaR = kappaR0_ * Tfactor * rhoFactor;
         double kappaP = kappaP0_ * Tfactor * rhoFactor;
         return std::max(kappaR - kappaP, 0.0);

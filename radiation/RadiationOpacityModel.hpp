@@ -9,7 +9,7 @@
 #include <random>
 
 #include "elementary/PointOps.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 
 namespace STORM {
 
@@ -146,7 +146,7 @@ protected:
         double sinTheta = std::sqrt(sinThetaSquared);
         return PointT(sinTheta * std::cos(theta),
                       sinTheta * std::sin(theta),
-                      cosTheta) * constants::clight;
+                      cosTheta) * units::clight;
     }
 };
 

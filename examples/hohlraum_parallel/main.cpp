@@ -14,7 +14,7 @@
 #include <mpi_utils/mpi_collectives.hpp>
 #include "examples/Vector3D.hpp"
 #include "MadVoro/Voronoi3D.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
@@ -46,7 +46,7 @@ static void DumpVTK(const Grid &grid, const std::vector<STORM::RadiationCell> &c
     for(size_t i = 0; i < Ncells; i++)
     {
         cellScalars[0][i] = cells[i].temperature;
-        cellScalars[1][i] = cells[i].temperature / STORM::constants::kev_kelvin;
+        cellScalars[1][i] = cells[i].temperature / units::kev_kelvin;
         cellScalars[2][i] = materialFlags[i];
         coords[i] = grid.GetMeshPoint(i);
     }
@@ -381,8 +381,8 @@ int main(int argc, char *argv[])
     double T_init = 300.0;
     double densityMaterial = 10.0;
     double densityVacuum = 0.01;
-    double cvPerVolumeMaterial = 3e15 / STORM::constants::kev_kelvin;
-    double cvPerVolumeVacuum = 1e15 / STORM::constants::kev_kelvin;
+    double cvPerVolumeMaterial = 3e15 / units::kev_kelvin;
+    double cvPerVolumeVacuum = 1e15 / units::kev_kelvin;
 
     std::vector<STORM::RadiationCell> cells(Ncells);
     std::vector<STORM::SimpleExtensives> extensives(Ncells);
@@ -403,7 +403,7 @@ int main(int argc, char *argv[])
 
         cells[i].temperature = T_init;
         cells[i].internalEnergy = cvPerVolume * T_init * volume;
-        cells[i].Erad = STORM::constants::arad * std::pow(T_init, 4) / density;
+        cells[i].Erad = units::arad * std::pow(T_init, 4) / density;
 
         extensives[i].mass = density * volume;
         extensives[i].internal_energy = cells[i].internalEnergy;
@@ -416,7 +416,7 @@ int main(int argc, char *argv[])
         std::cout << "Material cells: " << nMaterialGlobal << ", vacuum cells: " << (globalCells - nMaterialGlobal) << std::endl;
     }
 
-    double T_drive = 1.0 * STORM::constants::kev_kelvin;
+    double T_drive = 1.0 * units::kev_kelvin;
     constexpr size_t boundaryPhotonsPerCell = 1000;
 
     STORM::RadiationIMCParameters<1> params;
@@ -450,7 +450,7 @@ int main(int argc, char *argv[])
     if(rank == 0)
     {
         std::cout << "Running until t_final = " << t_final * 1e9 << " ns, initial dt = " << dt << " s" << std::endl;
-        std::cout << "Drive temperature: " << T_drive << " K (" << T_drive / STORM::constants::kev_kelvin << " keV)" << std::endl;
+        std::cout << "Drive temperature: " << T_drive << " K (" << T_drive / units::kev_kelvin << " keV)" << std::endl;
         std::cout << "Photons: new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << ", min_per_cell=" << minPhotonsPerCell << std::endl;
         std::cout << std::endl;
     }
@@ -514,8 +514,8 @@ int main(int argc, char *argv[])
                           << " (" << static_cast<int>(fraction * 100) << "%)"
                           << "  step=" << computeSec << "s"
                           << "  " << globalParticles << " particles"
-                          << "  max T = " << globalMaxT / STORM::constants::kev_kelvin << " keV"
-                          << "  avg T = " << avgT / STORM::constants::kev_kelvin << " keV"
+                          << "  max T = " << globalMaxT / units::kev_kelvin << " keV"
+                          << "  avg T = " << avgT / units::kev_kelvin << " keV"
                           << "  ETA=" << static_cast<int>(eta) / 60 << "m" << static_cast<int>(eta) % 60 << "s"
                           << std::endl;
             }
@@ -557,7 +557,7 @@ int main(int argc, char *argv[])
         std::cout << "\nFinal temperature profile along x-axis (r~0):" << std::endl;
         for(const std::pair<double, double> &entry : profile)
         {
-            std::cout << "  x = " << entry.first * 10 << " mm: T = " << entry.second / STORM::constants::kev_kelvin << " keV" << std::endl;
+            std::cout << "  x = " << entry.first * 10 << " mm: T = " << entry.second / units::kev_kelvin << " keV" << std::endl;
         }
 
         std::string profileFile = outputProfileFile.empty() ? "profile.txt" : outputProfileFile;
@@ -566,7 +566,7 @@ int main(int argc, char *argv[])
             out << "# x(cm), T(K), T(keV)\n";
             for(const std::pair<double, double> &entry : profile)
             {
-                out << entry.first << ", " << entry.second << ", " << entry.second / STORM::constants::kev_kelvin << "\n";
+                out << entry.first << ", " << entry.second << ", " << entry.second / units::kev_kelvin << "\n";
             }
             out.close();
             std::cout << "Wrote profile to " << profileFile << " (" << profile.size() << " cells)" << std::endl;

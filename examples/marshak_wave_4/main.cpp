@@ -33,7 +33,7 @@
 #endif
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
@@ -50,7 +50,7 @@ using Grid = MadCart::CartesianMesh3D<Vector3D>;
 using ParticleT = STORM::Particle<Vector3D, Grid>;
 using namespace STORM;
 using namespace STORM::examples;
-using namespace STORM::constants;
+using namespace units;
 
 int main(int argc, char *argv[])
 {

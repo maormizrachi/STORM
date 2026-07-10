@@ -25,7 +25,6 @@
 #include <mpi.h>
 #include "examples/Vector3D.hpp"
 #include "MadVoro/Voronoi3D.hpp"
-#include "PhysicalConstants.hpp"
 #include <units/units.hpp>
 #include <planck_integral/planck_integral.hpp>
 #include <mpi_utils/mpi_collectives.hpp>

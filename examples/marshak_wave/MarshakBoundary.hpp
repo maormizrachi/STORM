@@ -5,7 +5,7 @@
 #include <random>
 #include <cmath>
 #include "boundary/BoundaryCondition.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "utils/RandomOnFace.hpp"
 #include "elementary/PointOps.hpp"
 
@@ -105,7 +105,7 @@ std::vector<Particle<T, Grid>> MarshakBoundary<T, Grid>::generateNewBoundaryPart
                 T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
                 if(normal.x < -0.99)
                 {
-                    double energyToProduce = constants::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / this->Npercell_;
+                    double energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / this->Npercell_;
                     for(size_t j = 0; j < this->Npercell_; j++)
                     {
                         newParticles.emplace_back();
@@ -117,7 +117,7 @@ std::vector<Particle<T, Grid>> MarshakBoundary<T, Grid>::generateNewBoundaryPart
                         double theta = 2 * M_PI * unif(re);
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
-                        newParticle.velocity *= constants::clight;
+                        newParticle.velocity *= units::clight;
                         newParticle.frequency = 0;
                         newParticle.weight = energyToProduce;
                         newParticle.initialWeight = newParticle.weight;

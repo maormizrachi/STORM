@@ -3,7 +3,7 @@
 
 #include <cmath>
 #include "boundary/BoundaryCondition.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "elementary/PointOps.hpp"
 
 namespace STORM {

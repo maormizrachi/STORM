@@ -229,7 +229,7 @@ private:
     {
         GroupCdf cdf{};
         cdf[0] = 0.0;
-        double kT = constants::k_boltz * cell.temperature;
+        double kT = units::k_boltz * cell.temperature;
         bool isVacuum = (cell.density < 0.5 * rhoSlab_);
         for(std::size_t g = 0; g < N_OPACITY_GROUPS; ++g)
         {

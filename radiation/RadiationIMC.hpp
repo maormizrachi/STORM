@@ -22,7 +22,7 @@
 
 #include <boost/math/special_functions/pow.hpp>
 
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "StormError.hpp"
 #include "boundary/BoundaryCondition.hpp"
 #include "elementary/PointOps.hpp"
@@ -235,8 +235,8 @@ double computeDopplerShift(const ParticleT &particle, const CellT &cell)
         {
             return 1.0;
         }
-        double gamma = 1.0 / std::sqrt(1.0 - v2 * constants::inv_clight2);
-        return gamma * (1.0 - ScalarProd(cell.velocity, particle.velocity) * constants::inv_clight2);
+        double gamma = 1.0 / std::sqrt(1.0 - v2 * units::inv_clight2);
+        return gamma * (1.0 - ScalarProd(cell.velocity, particle.velocity) * units::inv_clight2);
     }
     else
     {
@@ -251,7 +251,7 @@ void lorentzTransformToComoving(ParticleT &particle, const CellT &cell)
 {
     if constexpr(has_member_velocity<CellT>::value)
     {
-        double beta2 = ScalarProd(cell.velocity, cell.velocity) * constants::inv_clight2;
+        double beta2 = ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2;
         if(beta2 < 1e-20)
         {
             return;
@@ -265,15 +265,15 @@ void lorentzTransformToComoving(ParticleT &particle, const CellT &cell)
         }
         PointT dir = particle.velocity / speed;
         double vDotDirNorm = ScalarProd(cell.velocity, dir);
-        double D = 1.0 - vDotDirNorm / constants::clight;
+        double D = 1.0 - vDotDirNorm / units::clight;
         particle.frequency *= D;
         particle.weight *= D;
-        PointT newDir = dir - cell.velocity / constants::clight
-            + (gamma - 1.0) * vDotDirNorm / (beta2 * constants::clight2) * cell.velocity;
+        PointT newDir = dir - cell.velocity / units::clight
+            + (gamma - 1.0) * vDotDirNorm / (beta2 * units::clight2) * cell.velocity;
         double newDirMag = fastabs(newDir);
         if(newDirMag > 0.0)
         {
-            particle.velocity = newDir * (constants::clight / newDirMag);
+            particle.velocity = newDir * (units::clight / newDirMag);
         }
     }
     else
@@ -293,9 +293,9 @@ void lorentzTransformToLab(ParticleT &particle, const CellT &cell)
         {
             return;
         }
-        double gamma = 1.0 / std::sqrt(1.0 - constants::inv_clight2 * v2);
+        double gamma = 1.0 / std::sqrt(1.0 - units::inv_clight2 * v2);
         PointT negV = cell.velocity * (-1.0);
-        double dopplerShift = gamma * (1.0 - ScalarProd(negV, particle.velocity) * constants::inv_clight2);
+        double dopplerShift = gamma * (1.0 - ScalarProd(negV, particle.velocity) * units::inv_clight2);
         particle.frequency *= dopplerShift;
         particle.weight *= dopplerShift;
         double vDotP = ScalarProd(particle.velocity, negV);
@@ -303,7 +303,7 @@ void lorentzTransformToLab(ParticleT &particle, const CellT &cell)
         double newSpeed = fastabs(particle.velocity);
         if(newSpeed > 0.0)
         {
-            particle.velocity = particle.velocity * (constants::clight / newSpeed);
+            particle.velocity = particle.velocity * (units::clight / newSpeed);
         }
     }
     else
@@ -779,7 +779,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         return;
     }
     double volume = this->grid.GetVolume(cellIndex);
-    double thermalScale = constants::arad * std::pow(this->cells_[cellIndex].temperature, 4) * volume;
+    double thermalScale = units::arad * std::pow(this->cells_[cellIndex].temperature, 4) * volume;
     if(thermalScale < 1e-30)
     {
         thermalScale = 1e-30;
@@ -997,7 +997,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         else
         {
             GroupArray energyCenters = this->opacity_->getEnergyCenters(this->energyBoundaries_);
-            double kT = constants::k_boltz * cell.temperature;
+            double kT = units::k_boltz * cell.temperature;
 
             double totalSigABgAll = 0.0;
             double totalBgDiff = 0.0, sumBgSigADiff = 0.0, sumBgSigTDiff = 0.0, sumBgOverSigTDiff = 0.0;
@@ -1037,7 +1037,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 data.groupCutoff = cutoff;
                 data.sigmaA_bar = sumBgSigADiff / totalBgDiff;
                 data.sigmaT_bar = sumBgSigTDiff / totalBgDiff;
-                data.D = (constants::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff;
+                data.D = (units::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff;
                 data.gamma = (totalSigABgAll > 0.0) ? sumBgSigADiff / totalSigABgAll : 1.0;
                 this->rwCellTotalOpacity_[i] = data.sigmaT_bar;
                 this->rwCellEligible_[i] = true;
@@ -1077,7 +1077,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     {
         sigmaT = this->rwCellTotalOpacity_[cellIndex];
         sigma_a_eff = this->planckOpacities_[cellIndex];
-        D_phys = (sigmaT > 0.0) ? constants::clight / (3.0 * sigmaT) : 0.0;
+        D_phys = (sigmaT > 0.0) ? units::clight / (3.0 * sigmaT) : 0.0;
         gamma_rw = 1.0;
     }
 
@@ -1121,7 +1121,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     if(isPGRW && gamma_rw < 1.0 && sigma_a_eff > 0.0 && f > 0.0)
     {
         double xiUp = this->randomUnitOpen();
-        tUpscatter = -std::log(xiUp) / (constants::clight * (1.0 - f) * sigma_a_eff * (1.0 - gamma_rw));
+        tUpscatter = -std::log(xiUp) / (units::clight * (1.0 - f) * sigma_a_eff * (1.0 - gamma_rw));
     }
 
     enum { RW_LEAK, RW_CENSUS, RW_UPSCATTER };
@@ -1143,7 +1143,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         dt = tUpscatter;
     }
 
-    double rwAbsRate = sigma_a_eff * f * constants::clight;
+    double rwAbsRate = sigma_a_eff * f * units::clight;
     double rwExp = std::expm1(-dt * rwAbsRate);
     if(!this->parameters_.noHydroFeedback)
     {
@@ -1251,7 +1251,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             {
                 if(!this->parameters_.diffusionPressureGradient && !this->parameters_.noHydroFeedback)
                 {
-                    this->extensives_[cellIndex].momentum += (oldWeight * oldVelocity - particle.weight * particle.velocity) * constants::inv_clight2;
+                    this->extensives_[cellIndex].momentum += (oldWeight * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2;
                 }
             }
         }
@@ -1290,7 +1290,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         if(this->parameters_.ddmcUseMultigroupPGRW && this->parameters_.withMultigroupOpacity)
         {
             GroupArray energyCenters = this->opacity_->getEnergyCenters(this->energyBoundaries_);
-            double kT = constants::k_boltz * cell.temperature;
+            double kT = units::k_boltz * cell.temperature;
             if(kT <= 0.0)
             {
                 continue;
@@ -1324,7 +1324,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 data.groupCutoff = cutoff;
                 data.sigmaA = sumBgSigADiff / totalBgDiff;
                 data.sigmaT = sumBgSigTDiff / totalBgDiff;
-                data.diffusionCoefficient = (constants::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff;
+                data.diffusionCoefficient = (units::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff;
                 data.gamma = 1.0;
                 data.eligible = (data.sigmaT > 0.0 && data.diffusionCoefficient > 0.0);
             }
@@ -1333,7 +1333,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         {
             data.sigmaA = this->planckOpacities_[i];
             data.sigmaT = data.sigmaA + scatOp;
-            data.diffusionCoefficient = (data.sigmaT > 0.0) ? constants::clight / (3.0 * data.sigmaT) : 0.0;
+            data.diffusionCoefficient = (data.sigmaT > 0.0) ? units::clight / (3.0 * data.sigmaT) : 0.0;
             data.gamma = 1.0;
             data.eligible = (data.sigmaT * meanChordLength >= this->parameters_.ddmcMinCellOpticalDepth
                              && data.diffusionCoefficient > 0.0);
@@ -1443,7 +1443,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double upscatterRate = 0.0;
     if(this->parameters_.ddmcUseMultigroupPGRW && data.gamma < 1.0 && data.sigmaA > 0.0 && f > 0.0)
     {
-        upscatterRate = constants::clight * (1.0 - f) * data.sigmaA * (1.0 - data.gamma);
+        upscatterRate = units::clight * (1.0 - f) * data.sigmaA * (1.0 - data.gamma);
     }
     double eventRate = data.totalLeakRate + upscatterRate;
     if(eventRate <= 0.0)
@@ -1457,7 +1457,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double dt = std::min(tEvent, tCensus);
     bool censusEvent = (tCensus <= tEvent);
 
-    double absRate = data.sigmaA * f * constants::clight;
+    double absRate = data.sigmaA * f * units::clight;
     double oldWeight = particle.weight;
     double expFactor = std::expm1(-dt * absRate);
 
@@ -1575,7 +1575,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
 
         particle.location = leakFaceCenter;
-        particle.velocity = dir * constants::clight;
+        particle.velocity = dir * units::clight;
 
         functionality.change = ParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = chosen->nextCellIndex;
@@ -1627,7 +1627,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         {
             if(this->parameters_.withHydro && !this->parameters_.MMC)
             {
-                gamma = 1.0 / std::sqrt(1.0 - ScalarProd(cell.velocity, cell.velocity) * constants::inv_clight2);
+                gamma = 1.0 / std::sqrt(1.0 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2);
             }
         }
 
@@ -1635,7 +1635,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         const auto &tracers = this->traits_.tracers(cell);
         const auto &tracerNames = this->traits_.tracerNames(cell);
         double cv = this->eos_->dT2cv(this->density(i), cell.temperature, tracers, tracerNames);
-        this->factorFleck_[i] = 1.0 / (1.0 + (4.0 * constants::arad * boost::math::pow<3>(cell.temperature) * this->planckOpacities_[i] * constants::clight * fullDt * gamma) / cv);
+        this->factorFleck_[i] = 1.0 / (1.0 + (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * this->planckOpacities_[i] * units::clight * fullDt * gamma) / cv);
         if(this->factorFleck_[i] < 0.0 || this->factorFleck_[i] > 1.0)
         {
             StormError eo("Invalid factor fleck in RadiationIMC::preStep");
@@ -1765,7 +1765,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 
     particle.timeLeft -= dt;
     double weightEvolutionOpacity = absorptionOpacity * this->factorFleck_[cellIndex];
-    double tmp2 = weightEvolutionOpacity * constants::clight;
+    double tmp2 = weightEvolutionOpacity * units::clight;
     double tmp = -dt * tmp2;
     double expFactor1 = std::expm1(tmp * dopplerShift);
     double expFactor2 = std::expm1(tmp);
@@ -1783,7 +1783,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         {
             if(this->parameters_.withHydro && !this->parameters_.diffusionPressureGradient)
             {
-                this->extensives_[cellIndex].momentum += -expFactor1 * particle.weight * particle.velocity * constants::inv_clight2;
+                this->extensives_[cellIndex].momentum += -expFactor1 * particle.weight * particle.velocity * units::inv_clight2;
             }
         }
     }
@@ -1854,7 +1854,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                 {
                     if(!this->parameters_.diffusionPressureGradient && !this->parameters_.noHydroFeedback)
                     {
-                        this->extensives_[cellIndex].momentum += (weightBefore * oldVelocity - particle.weight * particle.velocity) * constants::inv_clight2;
+                        this->extensives_[cellIndex].momentum += (weightBefore * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2;
                     }
                 }
             }
@@ -2040,11 +2040,11 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         {
             if(this->parameters_.withHydro && !this->parameters_.MMC)
             {
-                gamma = 1.0 / std::sqrt(1.0 - ScalarProd(cell.velocity, cell.velocity) * constants::inv_clight2);
+                gamma = 1.0 / std::sqrt(1.0 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2);
             }
         }
         gammaVec[i] = gamma;
-        energyToCreateVec[i] = this->factorFleck_[i] * this->grid.GetVolume(i) * constants::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities_[i] * fullDt * constants::clight;
+        energyToCreateVec[i] = this->factorFleck_[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities_[i] * fullDt * units::clight;
         localTotalEnergy += energyToCreateVec[i];
     }
 
@@ -2190,7 +2190,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                 {
                     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                     {
-                        this->extensives_[i].momentum -= energyToCreate * cell.velocity * constants::inv_clight2 * gamma;
+                        this->extensives_[i].momentum -= energyToCreate * cell.velocity * units::inv_clight2 * gamma;
                     }
                 }
             }
@@ -2569,7 +2569,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         std::vector<double> cumulativePlanck;
         if(this->parameters_.withMultigroupOpacity && Ngroups > 0)
         {
-            double kT = constants::k_boltz * this->cells_[i].temperature;
+            double kT = units::k_boltz * this->cells_[i].temperature;
             cumulativePlanck.resize(Ngroups + 1);
             cumulativePlanck[0] = 0.0;
             for(std::size_t g = 1; g <= Ngroups; ++g)

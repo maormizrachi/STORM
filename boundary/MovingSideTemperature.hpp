@@ -12,7 +12,7 @@
 #include <mpi.h>
 #endif
 #include "BoundaryCondition.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include <planck_integral/planck_integral.hpp>
 #include "utils/LinearInterpolation.hpp"
 #include "utils/RandomOnFace.hpp"
@@ -94,7 +94,7 @@ template<typename T, typename Grid>
 void MovingSideTemperature<T, Grid>::RecomputePlanckCDF()
 {
     size_t const Ngroups = this->energyBoundaries_.size() - 1;
-    double const kT = constants::k_boltz * temperature_;
+    double const kT = units::k_boltz * temperature_;
     this->cumulativePlanckFunction_.resize(Ngroups + 1);
     this->cumulativePlanckFunction_[0] = 0.0;
     for(size_t g = 1; g <= Ngroups; ++g)
@@ -189,10 +189,10 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                     double const area = this->grid.GetArea(faceIdx);
 
                     double const v2 = ScalarProd(leftFaceVelocity_, leftFaceVelocity_);
-                    double const gammaFace = 1.0 / std::sqrt(1.0 - v2 / (constants::clight * constants::clight));
+                    double const gammaFace = 1.0 / std::sqrt(1.0 - v2 / (units::clight * units::clight));
 
                     double const dtFace = fullDt / gammaFace;
-                    double const packetEnergyFace = constants::sigma_sb * T4 * area * dtFace / Npercell_;
+                    double const packetEnergyFace = units::sigma_sb * T4 * area * dtFace / Npercell_;
                     double const fluidEnergy = packetEnergyFace * Npercell_ * gammaFace;
 
                     T e1(0, 1, 0);
@@ -221,7 +221,7 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                                       + sinTheta * std::sin(phi) * e2;
                             dirFace = normalize(dirFace);
 
-                            p.velocity = constants::clight * dirFace;
+                            p.velocity = units::clight * dirFace;
                             LorentzTransformation(p, -1.0 * leftFaceVelocity_,
                                 multigroup_ ? &this->energyBoundaries_ : nullptr);
                             p.initialWeight = p.weight;
@@ -232,7 +232,7 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                         newParticles.push_back(p);
                     }
                     std::cout << "Total weight: " << totalWeight << ", fluidEnergy: " << fluidEnergy
-                              << " expected lab weight: " << fluidEnergy * (1 + 2 * leftFaceVelocity_.x / (3 * constants::clight))
+                              << " expected lab weight: " << fluidEnergy * (1 + 2 * leftFaceVelocity_.x / (3 * units::clight))
                               << std::endl;
                 }
             }

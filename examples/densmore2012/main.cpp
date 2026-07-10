@@ -10,7 +10,7 @@
 #include <algorithm>
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 50;
     size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
 
-    double keV_K = STORM::constants::kev_kelvin;
+    double keV_K = units::kev_kelvin;
     double eV_K = keV_K / 1000.0;
 
     double domainLength = 3.0;
@@ -120,8 +120,8 @@ int main(int argc, char *argv[])
     double dt = 5e-12;
     size_t iterations = static_cast<size_t>(tf / dt);
 
-    double Emin = STORM::constants::kev * 1e-4;
-    double Emax = STORM::constants::kev * 1e2;
+    double Emin = units::kev * 1e-4;
+    double Emax = units::kev * 1e2;
     std::array<double, G + 1> energyBoundaries{};
     energyBoundaries[0] = Emin;
     double ratio = std::pow(Emax / Emin, 1.0 / G);

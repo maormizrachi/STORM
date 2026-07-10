@@ -7,7 +7,7 @@
 #include <vector>
 #include <array>
 #include "BoundaryCondition.hpp"
-#include "../PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include <planck_integral/planck_integral.hpp>
 #include "../utils/LinearInterpolation.hpp"
 #include "../utils/RandomOnFace.hpp"
@@ -62,7 +62,7 @@ SideTemperature<T, Grid>::SideTemperature(const Grid &grid, double temperature, 
     if(this->multigroup)
     {
         size_t Ngroups = this->energyBoundaries.size() - 1;
-        double const kT = constants::k_boltz * temperature;
+        double const kT = units::k_boltz * temperature;
         this->cumulativePlanckFunction.resize(Ngroups + 1);
         this->cumulativePlanckFunction[0] = 0.0;
         for(size_t g = 1; g <= Ngroups; g++)
@@ -132,7 +132,7 @@ std::vector<Particle<T, Grid>> SideTemperature<T, Grid>::generateNewBoundaryPart
                 T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
                 if(normal.x < -0.99)
                 {
-                    double energyToProduce = constants::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
+                    double energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
                     for(size_t j = 0; j < this->Npercell; j++)
                     {
                         newParticles.emplace_back();
@@ -144,7 +144,7 @@ std::vector<Particle<T, Grid>> SideTemperature<T, Grid>::generateNewBoundaryPart
                         double theta = 2 * M_PI * unif(re);
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
-                        newParticle.velocity *= constants::clight;
+                        newParticle.velocity *= units::clight;
                         newParticle.frequency = 0;
                         if(this->multigroup)
                         {

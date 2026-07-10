@@ -7,7 +7,7 @@
 #include <vector>
 #include <boost/math/special_functions/pow.hpp>
 #include "boundary/BoundaryCondition.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "utils/RandomOnFace.hpp"
 #include "elementary/PointOps.hpp"
 #include "DensmoreOpacity.hpp"
@@ -86,7 +86,7 @@ public:
         std::uniform_real_distribution<double> unif(0, 1);
         static std::mt19937_64 re(0);
 
-        double kT = constants::k_boltz * temperature_;
+        double kT = units::k_boltz * temperature_;
         std::array<double, N_DENSMORE_GROUPS + 1> cdf{};
         cdf[0] = 0.0;
         for(size_t g = 0; g < N_DENSMORE_GROUPS; ++g)
@@ -113,7 +113,7 @@ public:
                     T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
                     if(normal.x < -0.99)
                     {
-                        double energyToProduce = constants::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / Npercell_;
+                        double energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / Npercell_;
                         for(size_t j = 0; j < Npercell_; j++)
                         {
                             newParticles.emplace_back();
@@ -125,7 +125,7 @@ public:
                             double theta = 2 * M_PI * unif(re);
                             p.velocity.y = sinMu * std::cos(theta);
                             p.velocity.z = sinMu * std::sin(theta);
-                            p.velocity *= constants::clight;
+                            p.velocity *= units::clight;
                             if(total > 0.0)
                             {
                                 double r = unif(re) * total;

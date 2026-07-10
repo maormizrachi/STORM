@@ -3,7 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "particle/Particle.hpp"
 #include "elementary/PointOps.hpp"
 
@@ -15,7 +15,7 @@ template<typename T, typename Grid>
 double DopplerShift(const Particle<T, Grid> &particle, const T &velocity)
 {
     double const v2 = ScalarProd(velocity, velocity);
-    double const invClight2 = 1.0 / (constants::clight * constants::clight);
+    double const invClight2 = 1.0 / (units::clight * units::clight);
     double const gamma = 1.0 / std::sqrt(1.0 - invClight2 * v2);
     return gamma * (1.0 - ScalarProd(velocity, particle.velocity) * invClight2);
 }
@@ -30,7 +30,7 @@ void LorentzTransformation(
     if(v2 < 1e-30)
         return;
 
-    double const invClight2 = 1.0 / (constants::clight * constants::clight);
+    double const invClight2 = 1.0 / (units::clight * units::clight);
     double const gamma = 1.0 / std::sqrt(1.0 - invClight2 * v2);
     double const dopplerShift = DopplerShift(particle, velocity);
     particle.frequency *= dopplerShift;
@@ -43,7 +43,7 @@ void LorentzTransformation(
     }
     particle.weight *= dopplerShift;
     particle.velocity = particle.velocity + velocity * ((gamma - 1.0) * ScalarProd(particle.velocity, velocity) / v2 - gamma);
-    particle.velocity *= constants::clight / abs(particle.velocity);
+    particle.velocity *= units::clight / abs(particle.velocity);
 }
 
 } // namespace STORM

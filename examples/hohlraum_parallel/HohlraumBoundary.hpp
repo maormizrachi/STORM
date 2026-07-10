@@ -5,7 +5,7 @@
 #include <random>
 #include <cmath>
 #include "boundary/BoundaryCondition.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "utils/RandomOnFace.hpp"
 #include "elementary/PointOps.hpp"
 
@@ -56,7 +56,7 @@ std::vector<Particle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewBoundaryPar
                 T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
                 if(normal.x < -0.99 and std::sqrt(point.y * point.y + point.z * point.z) < 0.65)
                 {
-                    double energyToProduce = constants::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
+                    double energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
                     for(size_t j = 0; j < this->Npercell; j++)
                     {
                         newParticles.emplace_back();
@@ -68,7 +68,7 @@ std::vector<Particle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewBoundaryPar
                         double theta = 2 * M_PI * unif(re);
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
-                        newParticle.velocity *= constants::clight;
+                        newParticle.velocity *= units::clight;
                         newParticle.frequency = 0;
                         newParticle.weight = energyToProduce;
                         newParticle.initialWeight = newParticle.weight;

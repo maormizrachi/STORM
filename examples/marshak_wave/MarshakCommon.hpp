@@ -13,7 +13,7 @@
 #include <algorithm>
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
@@ -53,7 +53,7 @@ inline ProblemParams GetProblemParams(int problem)
     p.tf = 1e-9;
     p.initialDt = 1e-15;
 
-    double keV_K = constants::kev_kelvin;
+    double keV_K = units::kev_kelvin;
 
     switch(problem)
     {
@@ -145,7 +145,7 @@ inline double EOS_cv(const ProblemParams &p, double T, double rho)
 inline double BathTemperature(const ProblemParams &p, double t)
 {
     double t_ns = std::max(t, 1e-20) * 1e9;
-    return p.T_bath_coeff * std::pow(t_ns, p.T_bath_exponent) * constants::kev_kelvin;
+    return p.T_bath_coeff * std::pow(t_ns, p.T_bath_exponent) * units::kev_kelvin;
 }
 
 class MarshakEOS
@@ -199,7 +199,7 @@ inline double ComputeL1(const std::vector<double> &simX, const std::vector<doubl
     {
         return -1.0;
     }
-    double keV_K = constants::kev_kelvin;
+    double keV_K = units::kev_kelvin;
     double l1sum = 0;
     size_t count = 0;
     size_t j = 0;
@@ -273,7 +273,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     }();
     size_t Ncells = grid.GetPointNo();
 
-    double keV_K = constants::kev_kelvin;
+    double keV_K = units::kev_kelvin;
     double T_init = 1e-3 * keV_K;
 
     std::cout << "Marshak wave problem " << problem << ": " << Ncells << " cells, domain [0, " << xMax << "] cm" << std::endl;
@@ -366,7 +366,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         simX[i] = grid.GetMeshPoint(k).x;
         simT[i] = cells[k].temperature;
         double Erad = std::max(EradTimeAvg[k], 0.0);
-        simTrad[i] = std::pow(Erad / constants::arad, 0.25);
+        simTrad[i] = std::pow(Erad / units::arad, 0.25);
     }
 
     std::string profilePath = "marshak_wave_" + std::to_string(problem) + "_profile.txt";

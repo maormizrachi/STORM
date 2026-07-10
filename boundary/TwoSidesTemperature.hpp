@@ -6,7 +6,7 @@
 #include <cmath>
 #include <vector>
 #include "BoundaryCondition.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include <planck_integral/planck_integral.hpp>
 #include "utils/LinearInterpolation.hpp"
 #include "utils/RandomOnFace.hpp"
@@ -61,8 +61,8 @@ TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, double tempe
     if(this->multigroup)
     {
         size_t Ngroups = this->energyBoundaries.size() - 1;
-        double const kTLeft = constants::k_boltz * temperatureLeft;
-        double const kTRight = constants::k_boltz * temperatureRight;
+        double const kTLeft = units::k_boltz * temperatureLeft;
+        double const kTRight = units::k_boltz * temperatureRight;
         this->cumulativePlanckFunctionLeft.resize(Ngroups + 1);
         this->cumulativePlanckFunctionRight.resize(Ngroups + 1);
         this->cumulativePlanckFunctionLeft[0] = 0.0;
@@ -149,12 +149,12 @@ std::vector<Particle<T, Grid>> TwoSidesTemperature<T, Grid>::generateNewBoundary
                     if(normal.x > 0)
                     {
                         isLeft = false;
-                        energyToProduce = constants::sigma_sb * T4_R * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
+                        energyToProduce = units::sigma_sb * T4_R * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
                     }
                     else
                     {
                         isLeft = true;
-                        energyToProduce = constants::sigma_sb * T4_L * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
+                        energyToProduce = units::sigma_sb * T4_L * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
                     }
                     for(size_t j = 0; j < this->Npercell; j++)
                     {
@@ -168,7 +168,7 @@ std::vector<Particle<T, Grid>> TwoSidesTemperature<T, Grid>::generateNewBoundary
                         newParticle.steps = 0;
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
-                        newParticle.velocity *= constants::clight;
+                        newParticle.velocity *= units::clight;
                         newParticle.frequency = 0;
                         if(this->multigroup)
                         {

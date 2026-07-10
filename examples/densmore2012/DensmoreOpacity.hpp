@@ -8,7 +8,7 @@
 #include <vector>
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/RadiationCell.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 #include "utils/LinearInterpolation.hpp"
 #include <planck_integral/planck_integral.hpp>
 
@@ -29,15 +29,15 @@ public:
     DensmoreOpacity(const std::vector<int> &regionFlags, const std::vector<RadiationCell> &cells)
         : regionFlags_(regionFlags), cells_(&cells)
     {
-        sigma0_left_ = 10.0 * std::pow(constants::kev, 3.5);
-        sigma0_right_ = 1000.0 * std::pow(constants::kev, 3.5);
+        sigma0_left_ = 10.0 * std::pow(units::kev, 3.5);
+        sigma0_right_ = 1000.0 * std::pow(units::kev, 3.5);
     }
 
     double CalcPlanckOpacity(const RadiationCell &cell) override
     {
         std::size_t idx = cellIndex(cell);
         double sigma0 = regionFlags_[idx] ? sigma0_left_ : sigma0_right_;
-        double kT = constants::k_boltz * std::max(cell.temperature, 1.0);
+        double kT = units::k_boltz * std::max(cell.temperature, 1.0);
         double sqrtKT = std::sqrt(kT);
 
         double weightedSum = 0;
@@ -59,7 +59,7 @@ public:
     {
         std::size_t idx = cellIndex(cell);
         double sigma0 = regionFlags_[idx] ? sigma0_left_ : sigma0_right_;
-        double kT = constants::k_boltz * std::max(cell.temperature, 1.0);
+        double kT = units::k_boltz * std::max(cell.temperature, 1.0);
         double sqrtKT = std::sqrt(kT);
         double E = std::max(frequency, groupBounds_[0]);
         return sigma0 / (sqrtKT * E * E * E);
@@ -147,7 +147,7 @@ private:
         cdf[0] = 0.0;
         std::size_t idx = cellIndex(cell);
         double sigma0 = regionFlags_[idx] ? sigma0_left_ : sigma0_right_;
-        double kT = constants::k_boltz * std::max(cell.temperature, 1.0);
+        double kT = units::k_boltz * std::max(cell.temperature, 1.0);
         double sqrtKT = std::sqrt(kT);
         for(std::size_t g = 0; g < N_DENSMORE_GROUPS; ++g)
         {

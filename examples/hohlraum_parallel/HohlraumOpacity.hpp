@@ -6,7 +6,7 @@
 #include <vector>
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/RadiationCell.hpp"
-#include "PhysicalConstants.hpp"
+#include <units/units.hpp>
 
 namespace STORM {
 namespace examples {
@@ -24,7 +24,7 @@ public:
         std::size_t idx = cellIndex(cell);
         if(idx < materialFlags_.size() && materialFlags_[idx])
         {
-            double T_keV = cell.temperature / constants::kev_kelvin;
+            double T_keV = cell.temperature / units::kev_kelvin;
             T_keV = std::max(T_keV, 1e-4);
             return 300.0 * std::pow(T_keV, -3.0);
         }
