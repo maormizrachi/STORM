@@ -100,6 +100,14 @@ public:
 
     void DeregisterSendSource(uint64_t handle);
 
+    void MakeProgress(void)
+    {
+        if(this->size_internal > 1)
+        {
+            this->particles_agent->MakeProgress();
+        }
+    }
+
     inline void LockSelfBuffer(void)
     {
         if(this->size_internal > 1)
@@ -408,13 +416,13 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
         throw eo;
     }
 
-    std::vector<MCParticle> activeParticles;
+    std::vector<unsigned char> activeParticles;
     if(not noParticles)
     {
-        activeParticles.resize(localCount);
+        activeParticles.resize(localCount * sizeof(MCParticle));
         this->ForEachLocalParticle([&activeParticles](const MCParticle &particle, size_t index)
         {
-            std::memcpy(activeParticles.data() + index, &particle, sizeof(MCParticle));
+            std::memcpy(activeParticles.data() + index * sizeof(MCParticle), &particle, sizeof(MCParticle));
         });
     }
 
@@ -486,10 +494,8 @@ bool RankHandler2<T, Grid>::UsesAsyncReallocation(void) const
     {
         return false;
     }
-    RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
-                             ? RMAFactory::ResolveAutoRDMA()
-                             : this->rdma_type;
-    return resolved == RDMA_Type::IBV_RDMA;
+    return this->particles_agent->SupportsAsyncReallocation() and
+           this->lengths_agent->SupportsAsyncReallocation();
 }
 
 template<typename T, typename Grid>
@@ -518,13 +524,13 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
         }
 
         size_t localCount = this->LocalSize();
-        std::vector<MCParticle> activeParticles;
+        std::vector<unsigned char> activeParticles;
         if(localCount > 0)
         {
-            activeParticles.resize(localCount);
+            activeParticles.resize(localCount * sizeof(MCParticle));
             this->ForEachLocalParticle([&activeParticles](const MCParticle &particle, size_t index)
             {
-                std::memcpy(activeParticles.data() + index, &particle, sizeof(MCParticle));
+                std::memcpy(activeParticles.data() + index * sizeof(MCParticle), &particle, sizeof(MCParticle));
             });
         }
 
@@ -637,6 +643,8 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
 
             if(this->UsesAsyncReallocation())
             {
+                this->particles_agent->QuiesceTarget(this->other_rank);
+                this->lengths_agent->QuiesceTarget(this->other_rank);
                 this->reallocationAgent->RequestReallocationAsync(this->peer_rank_world, this->requestedFactor);
                 this->requestedFactor = 1;
                 return false;
@@ -668,14 +676,19 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
                                  ? RMAFactory::ResolveAutoRDMA()
                                  : this->rdma_type;
         bool is_mpi = (resolved == RDMA_Type::MPI_RMA);
+        // MPI RMA needs an explicit flush before the tail update.
+        // IBV relies on RC QP ordering. OFI atomics use FI_FENCE internally.
+        bool requires_data_flush_before_tail = is_mpi;
 
         uint64_t remoteTail = remoteCounters[TAIL_INDEX];
         size_t start = static_cast<size_t>(remoteTail % this->peer_buffsize);
         size_t first = std::min(Np, this->peer_buffsize - start);
-        this->particles_agent->Put(particles, first, this->other_rank, start, is_mpi and first == Np, source_lkey);
+        this->particles_agent->Put(particles, first, this->other_rank, start,
+                                   requires_data_flush_before_tail and first == Np, source_lkey);
         if(first < Np)
         {
-            this->particles_agent->Put(particles + first, Np - first, this->other_rank, 0, is_mpi, source_lkey);
+            this->particles_agent->Put(particles + first, Np - first, this->other_rank, 0,
+                                       requires_data_flush_before_tail, source_lkey);
         }
 
         uint64_t tailIncrement = static_cast<uint64_t>(Np);

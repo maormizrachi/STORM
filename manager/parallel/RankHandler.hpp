@@ -993,17 +993,16 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         assert(toHandleLength >= 0);
         assert(toHandleLength < static_cast<int>(this->peer_buffsize));
 
-        // For MPI RMA each agent has a separate MPI_Win; flushes on one
-        // window do not cover another — flush particles and lengths explicitly.
-        // For IBV all agents share one RC QP with FIFO completion ordering,
-        // so the TH drain confirms PutBatch, and the Unlock CAS drain
-        // confirms the lengths Put.
+        // MPI RMA uses separate MPI_Win objects, and OFI providers do not
+        // guarantee the IBV-style RC FIFO ordering that this publication path
+        // relies on. Flush payload writes before exposing queue metadata.
         RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
                                  ? RMAFactory::ResolveAutoRDMA()
                                  : this->rdma_type;
         bool is_mpi = (resolved == RDMA_Type::MPI_RMA);
+        bool is_ofi = (resolved == RDMA_Type::OFI_RDMA);
 
-        if(is_mpi)
+        if(is_mpi or is_ofi)
         {
             this->particles_agent->Flush(this->other_rank);
         }
@@ -1023,7 +1022,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, true, availIndices_lkey);
         int newLengths[2] = {availLength - static_cast<int>(Np),
                              toHandleLength + static_cast<int>(Np)};
-        this->lengths_agent->Put(newLengths, 2, this->other_rank, 0, is_mpi);
+        this->lengths_agent->Put(newLengths, 2, this->other_rank, 0, is_mpi or is_ofi);
 
         #ifdef ADVANCED_STORM_DEBUG
         try

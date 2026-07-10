@@ -401,6 +401,8 @@ private:
 
     void ProgressReallocations(void);
 
+    void MakeRDMAProgress(void);
+
     void FlushSendBuffers(bool flushSmallBuffers);
 
     void FlushAllSendBuffers(void);
@@ -592,10 +594,14 @@ RDMAMonteCarloManager<T, Grid>::~RDMAMonteCarloManager()
 template<typename T, typename Grid>
 bool RDMAMonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
 {
-    RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
-                             ? RMAFactory::ResolveAutoRDMA()
-                             : this->rdma_type;
-    return resolved == RDMA_Type::IBV_RDMA;
+    for(const RankHandler_t *handler : this->rankHandlers)
+    {
+        if(handler and handler->UsesAsyncReallocation())
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 template<typename T, typename Grid>
@@ -608,6 +614,19 @@ void RDMAMonteCarloManager<T, Grid>::ProgressReallocations(void)
     else
     {
         this->reallocationAgent->HandleAllWaitingReallocations();
+    }
+}
+
+template<typename T, typename Grid>
+void RDMAMonteCarloManager<T, Grid>::MakeRDMAProgress(void)
+{
+    for(RankHandler_t *handler : this->rankHandlers)
+    {
+        if(handler and handler->peer_rank_world != this->rank_world)
+        {
+            handler->MakeProgress();
+            return;
+        }
     }
 }
 
@@ -2271,6 +2290,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
             {
                 this->ProgressReallocations();
             }
+            this->MakeRDMAProgress();
             bool localWorkDone = this->HandleAll(data);
             this->FlushSendBuffers(localWorkDone);
 
