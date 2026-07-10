@@ -6,7 +6,7 @@
 
 STORM provides a templated Monte Carlo particle transport engine used by the [RICH](https://gitlab.com/eladtan/RICH) astrophysical simulation code. It can also be used as a standalone library for radiation transport and other Monte Carlo applications.
 
-<img src="examples/hohlraum_parallel/hohlraum_profile.png?raw=true" alt="Hohlraum radiation temperature profile computed with STORM's gray IMC solver on a Voronoi mesh (McClarren &amp; Urbatsch 2009)." width="600"/>
+<img src="examples/hohlraum_parallel/hohlraum_3D.png?raw=true" alt="3D Hohlraum radiation temperature field computed with STORM's gray IMC solver on a Voronoi mesh." width="600"/>
 
 ## Features
 
