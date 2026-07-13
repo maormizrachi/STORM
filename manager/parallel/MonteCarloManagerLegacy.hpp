@@ -223,6 +223,8 @@ private:
 
     bool UsesAsyncReallocation(void) const;
 
+    void PumpRMAProgress(void);
+
     void ProgressReallocations(void);
 
     void FlushSendBuffers(bool flushSmallBuffers);
@@ -441,12 +443,22 @@ bool MonteCarloManagerLegacy<T, Grid>::UsesAsyncReallocation(void) const
     RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
                              ? RMAFactory::ResolveAutoRDMA()
                              : this->rdma_type;
-    return resolved == RDMA_Type::IBV_RDMA;
+    return resolved == RDMA_Type::OFI_RDMA or resolved == RDMA_Type::IBV_RDMA;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManagerLegacy<T, Grid>::PumpRMAProgress(void)
+{
+    if(this->UsesAsyncReallocation())
+    {
+        RMAFactory::MakeProgress(this->rdma_type);
+    }
 }
 
 template<typename T, typename Grid>
 void MonteCarloManagerLegacy<T, Grid>::ProgressReallocations(void)
 {
+    this->PumpRMAProgress();
     if(this->UsesAsyncReallocation())
     {
         this->reallocationAgent->ProgressAsyncReallocations();
@@ -862,6 +874,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
     static std::vector<std::vector<rank_t>> transferToRanks;
     static std::vector<std::vector<size_t>> transferParticlesVec;
     static std::vector<MCParticle> particlesToAdd;
+    static size_t progressStepCounter;
     std::vector<rank_t> &active_ranks = this->activeRanks;
     std::vector<rank_t> &next_active_ranks = this->nextActiveRanks;
 
@@ -1016,6 +1029,11 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 isEmpty = false;
                 while(true)
                 {
+                    ++progressStepCounter;
+                    if((progressStepCounter & 0x3FF) == 0)
+                    {
+                        this->PumpRMAProgress();
+                    }
                     // TODO: shouldn't be, there's a bug
                     // if(particle.sent)
                     // {
@@ -2189,6 +2207,7 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
     {
         while(not done)
         {
+            this->PumpRMAProgress();
             bool shouldProgressReallocations = (not usesAsyncReallocation) or
                 (this->iteration % reallocationProgressMinCycles == 0) or
                 this->reallocationAgent->HasPendingAsyncReallocations();
@@ -2197,6 +2216,7 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
                 this->ProgressReallocations();
             }
             bool localWorkDone = this->HandleAll(data);
+            this->PumpRMAProgress();
             this->FlushSendBuffers(localWorkDone);
 
             amountManager.Decrease(this->localDecrementAmount);

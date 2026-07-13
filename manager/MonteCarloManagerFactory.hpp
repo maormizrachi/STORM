@@ -113,7 +113,7 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
     ManagerType managerType = ManagerType::Auto,
-    RDMAEngine rdmaEngine = RDMAEngine::IBV,
+    RDMAEngine rdmaEngine = RDMAEngine::OFI,
     const MonteCarloConfig &config = MonteCarloConfig(),
     const MPI_Comm &comm = MPI_COMM_WORLD)
 {
@@ -132,10 +132,15 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
     {
         case ManagerType::Auto:
         {
-            // Fallback chain: (1) RDMA+OFI -> (2) RDMA+IBV -> (3) P2P
+            // Fallback chain: (1) native RDMA through OFI/libfabric -> (2) P2P.
+            // The old IBV backend is kept for explicit requests only.
             try
             {
                 log("Trying RDMA with OFI (libfabric)...");
+                if(not RMAFactory::IsBackendAvailable(RDMA_Type::OFI_RDMA, comm))
+                {
+                    throw std::runtime_error("no hardware OFI/libfabric RDMA provider is available on all ranks");
+                }
                 auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
                     grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::OFI_RDMA);
                 log("Using RDMA with OFI (libfabric)");
@@ -144,19 +149,6 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
             catch(const std::exception &e)
             {
                 log(std::string("RDMA+OFI unavailable: ") + e.what());
-            }
-
-            try
-            {
-                log("Trying RDMA with IBV...");
-                auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
-                    grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::IBV_RDMA);
-                log("Using RDMA with IBV");
-                return mgr;
-            }
-            catch(const std::exception &e)
-            {
-                log(std::string("RDMA+IBV unavailable: ") + e.what());
             }
 
             log("Falling back to P2P (two-sided MPI)...");

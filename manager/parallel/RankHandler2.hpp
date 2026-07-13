@@ -124,6 +124,17 @@ public:
         }
     }
 
+    inline void MakeProgress(void)
+    {
+        if(this->size_internal > 1)
+        {
+            this->particles_agent->MakeProgress();
+            this->lengths_agent->MakeProgress();
+            this->localListMutex->MakeProgress();
+            this->remoteListMutex->MakeProgress();
+        }
+    }
+
     double requestedFactor;
     size_t minimalBuffSize;
 
@@ -503,7 +514,7 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
 {
     if(not this->UsesAsyncReallocation())
     {
-        throw std::runtime_error("RankHandler2::LocalReallocate is only supported for the IBV RMA backend");
+        throw std::runtime_error("RankHandler2::LocalReallocate is only supported for native RDMA backends");
     }
 
 #ifdef MEMORY_DEBUG

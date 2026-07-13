@@ -1,0 +1,4 @@
+# STORM regression test configuration
+TAGS="serial"
+CHECK_FUNCTION="check_marshak_wave_case"
+TIMEOUT=1800

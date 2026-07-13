@@ -1,0 +1,5 @@
+# STORM regression test configuration
+TAGS="mpi"
+MPI_NP=4
+CHECK_FUNCTION="check_densmore2012_case"
+TIMEOUT=1800

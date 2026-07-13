@@ -1,0 +1,4 @@
+# STORM regression test configuration
+TAGS="mpi"
+CHECK_FUNCTION="check_cartesian_parallel_case"
+TIMEOUT=300

@@ -94,6 +94,19 @@ public:
         }
     }
 
+    inline void MakeProgress(void)
+    {
+        if(this->size_internal > 1)
+        {
+            this->particles_agent->MakeProgress();
+            this->av_agent->MakeProgress();
+            this->th_agent->MakeProgress();
+            this->lengths_agent->MakeProgress();
+            this->localTHMutex->MakeProgress();
+            this->remoteTHMutex->MakeProgress();
+        }
+    }
+
     double requestedFactor;
     size_t minimalBuffSize;
 
@@ -722,7 +735,7 @@ bool RankHandler<T, Grid>::UsesAsyncReallocation(void) const
     RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
                              ? RMAFactory::ResolveAutoRDMA()
                              : this->rdma_type;
-    return resolved == RDMA_Type::IBV_RDMA;
+    return resolved == RDMA_Type::OFI_RDMA or resolved == RDMA_Type::IBV_RDMA;
 }
 
 template<typename T, typename Grid>
@@ -730,7 +743,7 @@ ReallocationMetadata RankHandler<T, Grid>::LocalReallocate(double factor)
 {
     if(not this->UsesAsyncReallocation())
     {
-        throw std::runtime_error("RankHandler::LocalReallocate is only supported for the IBV RMA backend");
+        throw std::runtime_error("RankHandler::LocalReallocate is only supported for native RDMA backends");
     }
 
 #ifdef MEMORY_DEBUG

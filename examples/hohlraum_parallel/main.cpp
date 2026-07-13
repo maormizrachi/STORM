@@ -70,8 +70,8 @@ static void DumpVTK(const Grid &grid, const std::vector<STORM::RadiationCell> &c
  *
  * Same physics as examples/hohlraum (matching RICH/runs/Elad_paper_hohlraum)
  * but uses MadVoro's parallel Voronoi construction and STORM's
- * MonteCarloManager factory for distributed particle transport (default: RDMA
- * with IBV, falling back to MPI RMA).
+ * MonteCarloManager factory for distributed particle transport (default:
+ * native RDMA through OFI/libfabric, falling back to two-sided MPI).
  *
  * Usage:
  *   mpirun -np <N> ./hohlraum_parallel [N_base] [new_per_cell] [min_per_cell]

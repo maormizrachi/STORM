@@ -2,7 +2,8 @@
 
 2D cylindrical hohlraum from McClarren & Urbatsch (2009), using MadVoro's
 parallel Voronoi construction and STORM's distributed Monte Carlo transport
-via `CreateMonteCarloManager()` (default: RDMA with IBV, falling back to MPI RMA).
+via `CreateMonteCarloManager()` (default: native RDMA through OFI/libfabric,
+falling back to two-sided MPI).
 
 ## Usage
 
@@ -33,7 +34,7 @@ mpirun -np 512 ./hohlraum_parallel [N_base] [new_per_cell] [min_per_cell] [optio
 | `numSteps` | `main.cpp` | Number of time steps (default 100) |
 | `boundaryPhotonsPerCell` | `main.cpp` | Boundary source intensity (default 1000) |
 | Manager type | `CreateMonteCarloManager()` call | `ManagerType::RDMA`, `Legacy`, or `P2P` |
-| RDMA engine | `CreateMonteCarloManager()` call | `RDMAEngine::IBV`, `MPI`, or `Auto` |
+| RDMA engine | `CreateMonteCarloManager()` call | `RDMAEngine::OFI`, `IBV`, `MPI`, or `Auto` |
 
 ## Output
 

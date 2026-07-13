@@ -1,0 +1,8 @@
+# STORM regression test configuration
+TAGS="mpi"
+MPI_NP=48
+MEM_PER_CPU="20G"
+SBATCH_ARGS='-n ${MPI_NP} --distribution=cyclic'
+RUN_COMMAND='mpirun --map-by node "${STORM_BIN}"'
+CHECK_FUNCTION="check_moving_slab_case"
+TIMEOUT=7200

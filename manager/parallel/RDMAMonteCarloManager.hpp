@@ -399,6 +399,8 @@ private:
 
     bool UsesAsyncReallocation(void) const;
 
+    void PumpRMAProgress(void);
+
     void ProgressReallocations(void);
 
     void MakeRDMAProgress(void);
@@ -605,8 +607,18 @@ bool RDMAMonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
 }
 
 template<typename T, typename Grid>
+void RDMAMonteCarloManager<T, Grid>::PumpRMAProgress(void)
+{
+    if(this->UsesAsyncReallocation())
+    {
+        RMAFactory::MakeProgress(this->rdma_type);
+    }
+}
+
+template<typename T, typename Grid>
 void RDMAMonteCarloManager<T, Grid>::ProgressReallocations(void)
 {
+    this->PumpRMAProgress();
     if(this->UsesAsyncReallocation())
     {
         this->reallocationAgent->ProgressAsyncReallocations();
@@ -1034,6 +1046,10 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                     while(true)
                     {
                         ++progressStepCounter;
+                        if((progressStepCounter & 0x3FF) == 0)
+                        {
+                            this->PumpRMAProgress();
+                        }
                         if((progressStepCounter & 0x3FFFF) == 0 && particle.steps > 100000)
                         {
                             std::cerr << "[StuckParticle] rank=" << this->rank_world
@@ -2283,6 +2299,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
     {
         while(not done)
         {
+            this->PumpRMAProgress();
             bool shouldProgressReallocations = (not usesAsyncReallocation) or
                 (this->iteration % reallocationProgressMinCycles == 0) or
                 this->reallocationAgent->HasPendingAsyncReallocations();
@@ -2292,6 +2309,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
             }
             this->MakeRDMAProgress();
             bool localWorkDone = this->HandleAll(data);
+            this->PumpRMAProgress();
             this->FlushSendBuffers(localWorkDone);
 
             amountManager.Decrease(this->localDecrementAmount);
