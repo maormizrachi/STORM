@@ -71,7 +71,7 @@ Executables are placed inside each example's subdirectory. Each example has its 
 | [`marshak_wave_2`](examples/marshak_wave_2/) | Marshak wave, Krief & McClarren Test 3 | Cartesian | Serial |
 | [`marshak_wave_3`](examples/marshak_wave_3/) | Marshak wave, Derei et al. Test 1 | Cartesian | Serial |
 | [`marshak_wave_4`](examples/marshak_wave_4/) | Marshak wave, Derei et al. Test 3 (geometric mesh) | Cartesian | Serial / MPI |
-| [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Cartesian | Serial |
+| [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Cartesian | Serial / MPI |
 | [`moving_slab`](examples/moving_slab/) | McClarren & Gentile (2021) 124-group moving slab | Voronoi | MPI |
 
 ## Building with MPI
