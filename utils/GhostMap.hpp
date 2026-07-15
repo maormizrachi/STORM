@@ -42,7 +42,7 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const 
                 eo.addEntry("Incoming", incoming[i][j]);
                 throw eo;
             }
-            ranks_ghost_map.insert({ghosts[i][j], {_rank, incoming[i][j]}});
+            ranks_ghost_map.emplace(ghosts[i][j], std::make_pair(_rank, incoming[i][j]));
         }
     }
     return ranks_ghost_map;

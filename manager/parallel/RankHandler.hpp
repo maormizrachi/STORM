@@ -518,7 +518,7 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
             eo.addEntry("Rank", this->rank_world);
             throw eo;
         }
-        indicesMap.insert({particleIdx, toHandleIndex});
+        indicesMap.emplace(particleIdx, toHandleIndex);
         #endif // STORM_DEBUG
         assert(av_length < this->buffsize);
         #ifdef STORM_DEBUG
@@ -914,7 +914,7 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
                 eo.addEntry("Peer Rank", this->peer_rank_world);
                 throw eo;
             }
-            availIndicesMap.insert({availIndex, i});
+            availIndicesMap.emplace(availIndex, i);
             assert(availIndex < this->peer_buffsize);
             if(particles[i].nextRank != this->peer_rank_world)
             {
