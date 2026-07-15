@@ -249,6 +249,10 @@ MonteCarloManagerLegacy<T, Grid>::MonteCarloManagerLegacy(const Grid &grid, cons
     MPI_Comm_rank(this->comm_world, &this->rank_world);
     MPI_Comm_size(this->comm_world, &this->size_world);
 
+    // OFIContext construction exchanges endpoint addresses over comm_world and
+    // must therefore happen collectively before neighbor-specific handlers are built.
+    RMAFactory::Initialize(this->rdma_type, this->comm_world);
+
     this->ranksOrder = GetRanksOrder(this->comm_world);
     this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
 

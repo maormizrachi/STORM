@@ -100,14 +100,6 @@ public:
 
     void DeregisterSendSource(uint64_t handle);
 
-    void MakeProgress(void)
-    {
-        if(this->size_internal > 1)
-        {
-            this->particles_agent->MakeProgress();
-        }
-    }
-
     inline void LockSelfBuffer(void)
     {
         if(this->size_internal > 1)
@@ -121,17 +113,6 @@ public:
         if(this->size_internal > 1)
         {
             this->localListMutex->Unlock();
-        }
-    }
-
-    inline void MakeProgress(void)
-    {
-        if(this->size_internal > 1)
-        {
-            this->particles_agent->MakeProgress();
-            this->lengths_agent->MakeProgress();
-            this->localListMutex->MakeProgress();
-            this->remoteListMutex->MakeProgress();
         }
     }
 

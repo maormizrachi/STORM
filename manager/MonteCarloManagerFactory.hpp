@@ -137,10 +137,6 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
             try
             {
                 log("Trying RDMA with OFI (libfabric)...");
-                if(not RMAFactory::IsBackendAvailable(RDMA_Type::OFI_RDMA, comm))
-                {
-                    throw std::runtime_error("no hardware OFI/libfabric RDMA provider is available on all ranks");
-                }
                 auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
                     grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::OFI_RDMA);
                 log("Using RDMA with OFI (libfabric)");

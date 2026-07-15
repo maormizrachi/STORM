@@ -427,6 +427,10 @@ RDMAMonteCarloManager<T, Grid>::RDMAMonteCarloManager(const Grid &grid, const st
     MPI_Comm_rank(this->comm_world, &this->rank_world);
     MPI_Comm_size(this->comm_world, &this->size_world);
 
+    // OFIContext construction exchanges endpoint addresses over comm_world and
+    // must therefore happen collectively before neighbor-specific handlers are built.
+    RMAFactory::Initialize(this->rdma_type, this->comm_world);
+
     this->ranksOrder = GetRanksOrder(this->comm_world);
     this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
 
@@ -632,14 +636,7 @@ void RDMAMonteCarloManager<T, Grid>::ProgressReallocations(void)
 template<typename T, typename Grid>
 void RDMAMonteCarloManager<T, Grid>::MakeRDMAProgress(void)
 {
-    for(RankHandler_t *handler : this->rankHandlers)
-    {
-        if(handler and handler->peer_rank_world != this->rank_world)
-        {
-            handler->MakeProgress();
-            return;
-        }
-    }
+    RMAFactory::MakeProgress(this->rdma_type);
 }
 
 template<typename T, typename Grid>
