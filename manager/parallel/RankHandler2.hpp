@@ -624,9 +624,19 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
 
         getRemoteCounters();
 
-        while(static_cast<size_t>(remoteCounters[TAIL_INDEX] - remoteCounters[HEAD_INDEX]) + Np > this->peer_buffsize)
+        size_t remoteCount = static_cast<size_t>(remoteCounters[TAIL_INDEX] - remoteCounters[HEAD_INDEX]);
+        while(Np > this->peer_buffsize - remoteCount)
         {
-            size_t remoteCount = static_cast<size_t>(remoteCounters[TAIL_INDEX] - remoteCounters[HEAD_INDEX]);
+            if(Np > std::numeric_limits<size_t>::max() - remoteCount)
+            {
+                STORMError eo("RankHandler2::TransferParticles: transfer size overflow");
+                eo.addEntry("Remote Count", remoteCount);
+                eo.addEntry("Particles", Np);
+                eo.addEntry("My Rank", this->rank_world);
+                eo.addEntry("Peer Rank", this->peer_rank_world);
+                throw eo;
+            }
+
             size_t requiredSize = remoteCount + Np;
             size_t denominator = std::max<size_t>(1, this->peer_buffsize);
             this->requestedFactor = static_cast<double>(requiredSize) /
@@ -645,6 +655,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
 
             getRemoteCounters();
+            remoteCount = static_cast<size_t>(remoteCounters[TAIL_INDEX] - remoteCounters[HEAD_INDEX]);
         }
 
 
@@ -664,36 +675,34 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
         }
         #endif // STORM_DEBUG
 
-        RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
-                                 ? RMAFactory::ResolveAutoRDMA()
-                                 : this->rdma_type;
-        bool is_mpi = (resolved == RDMA_Type::MPI_RMA);
-        // MPI RMA needs an explicit flush before the tail update.
-        // IBV relies on RC QP ordering. OFI atomics use FI_FENCE internally.
-        bool requires_data_flush_before_tail = is_mpi;
-
         uint64_t remoteTail = remoteCounters[TAIL_INDEX];
-        size_t start = static_cast<size_t>(remoteTail % this->peer_buffsize);
-        size_t first = std::min(Np, this->peer_buffsize - start);
-        this->particles_agent->Put(particles, first, this->other_rank, start,
-                                   requires_data_flush_before_tail and first == Np, source_lkey);
-        if(first < Np)
+        if(Np > std::numeric_limits<uint64_t>::max() - remoteTail)
         {
-            this->particles_agent->Put(particles + first, Np - first, this->other_rank, 0,
-                                       requires_data_flush_before_tail, source_lkey);
-        }
-
-        uint64_t tailIncrement = static_cast<uint64_t>(Np);
-        uint64_t observedTail = this->lengths_agent->FetchAndAdd(tailIncrement, this->other_rank, TAIL_INDEX, true);
-        if(observedTail != remoteTail)
-        {
-            STORMError eo("RankHandler2::TransferParticles: producer tail changed unexpectedly");
-            eo.addEntry("Observed Tail", static_cast<size_t>(observedTail));
-            eo.addEntry("Expected Tail", static_cast<size_t>(remoteTail));
+            STORMError eo("RankHandler2::TransferParticles: tail counter overflow");
+            eo.addEntry("Remote Tail", static_cast<size_t>(remoteTail));
+            eo.addEntry("Particles", Np);
             eo.addEntry("My Rank", this->rank_world);
             eo.addEntry("Peer Rank", this->peer_rank_world);
             throw eo;
         }
+
+        size_t start = static_cast<size_t>(remoteTail % this->peer_buffsize);
+        size_t first = std::min(Np, this->peer_buffsize - start);
+        this->particles_agent->Put(particles, first, this->other_rank, start, false, source_lkey);
+        if(first < Np)
+        {
+            this->particles_agent->Put(particles + first, Np - first, this->other_rank, 0,
+                                       false, source_lkey);
+        }
+
+        // This queue is SPSC: this rank is the sole producer of the peer's tail.
+        // Complete the payload before publishing the new tail, then complete the
+        // tail write before a later transfer can observe stale producer state.
+        this->particles_agent->QuiesceTarget(this->other_rank);
+
+        uint64_t newTail = remoteTail + static_cast<uint64_t>(Np);
+        this->lengths_agent->Put(&newTail, 1, this->other_rank, TAIL_INDEX, false);
+        this->lengths_agent->QuiesceTarget(this->other_rank);
     }
     else
     {
