@@ -95,7 +95,6 @@ int main(int argc, char *argv[])
     size_t newPhotonsPerCell = (argc >= 2) ? std::stoul(argv[1]) : 15;
     size_t boundaryPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 100;
 
-    const std::string managerMode = EnvString("STORM_MANAGER", "auto");
     const bool useRandomWalk = EnvFlag("STORM_RW", true);
     const std::uint64_t seed = EnvUInt64("STORM_SEED", 42);
 
@@ -176,34 +175,8 @@ int main(int argc, char *argv[])
         std::make_shared<CombPopulationControl<Vector3D, Grid>>(grid, 100, 1.0);
 
 #ifdef STORM_WITH_MPI
-    ManagerType managerType = ManagerType::Auto;
-    RDMAEngine rdmaEngine = RDMAEngine::OFI;
-    if(managerMode == "p2p")
-    {
-        managerType = ManagerType::P2P;
-    }
-    else if(managerMode == "ofi")
-    {
-        managerType = ManagerType::RDMA;
-        rdmaEngine = RDMAEngine::OFI;
-    }
-    else if(managerMode == "ibv")
-    {
-        managerType = ManagerType::RDMA;
-        rdmaEngine = RDMAEngine::IBV;
-    }
-    else if(managerMode != "auto")
-    {
-        if(rank == 0)
-        {
-            std::cerr << "Unknown STORM_MANAGER='" << managerMode
-                      << "'. Expected auto, p2p, ofi, or ibv." << std::endl;
-        }
-        MPI_Abort(MPI_COMM_WORLD, 2);
-    }
-
     MonteCarloManager<Vector3D, Grid> manager = CreateMonteCarloManager<Vector3D, Grid>(
-        grid, physics, popControl, boundary, managerType, rdmaEngine);
+        grid, physics, popControl, boundary);
 #else
     MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 #endif
@@ -220,8 +193,7 @@ int main(int argc, char *argv[])
         std::cout << "T_bath(t_final) = " << BathTemperature(params, params.tf) / keV_K << " keV" << std::endl;
         std::cout << "new_per_cell=" << newPhotonsPerCell
                   << ", boundary_per_cell=" << boundaryPhotonsPerCell << std::endl;
-        std::cout << "manager=" << (nprocs == 1 ? "single-rank/" : "") << managerMode
-                  << ", random_walk=" << (useRandomWalk ? "on" : "off")
+        std::cout << "random_walk=" << (useRandomWalk ? "on" : "off")
                   << ", seed=" << seed
                   << std::endl;
         std::cout << std::endl;

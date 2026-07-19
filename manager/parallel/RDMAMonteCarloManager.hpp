@@ -1043,14 +1043,16 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                     #endif // STORM_DEBUG
 
                     isEmpty = false;
+                    constexpr size_t RMA_PROGRESS_INTERVAL = 1024;
+                    constexpr size_t STUCK_PARTICLE_WARN_INTERVAL = 256 * 1024;
                     while(true)
                     {
                         ++progressStepCounter;
-                        if((progressStepCounter & 0x3FF) == 0)
+                        if((progressStepCounter % RMA_PROGRESS_INTERVAL) == 0)
                         {
                             this->PumpRMAProgress();
                         }
-                        if((progressStepCounter & 0x3FFFF) == 0 && particle.steps > 100000)
+                        if((progressStepCounter % STUCK_PARTICLE_WARN_INTERVAL) == 0 && particle.steps > 100000)
                         {
                             std::cerr << "[StuckParticle] rank=" << this->rank_world
                                       << " localPts=" << this->grid.GetPointNo()
