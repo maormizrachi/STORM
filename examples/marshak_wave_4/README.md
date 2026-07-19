@@ -3,9 +3,9 @@
 Derei et al. (2024), Test 3: stretched grid with divergent density profile
 $\rho(x) = x^{-40/139}$.
 
-This problem uses a **geometrically stretched mesh** following the formula from
-the reference paper: $x_i = 10^{-5} + 2.24 \times 10^{-2}(1.0075^i - 1)$, producing
-~512 cells with fine resolution near $x = 0$.
+This problem uses the 512-cell geometrically stretched reference mesh. Its left boundary is
+$10^{-5}\,\mathrm{cm}$, the first cell width is $7\times10^{-5}\,\mathrm{cm}$, and successive
+cell widths grow by $1.0096903847403653$, ending at $1+10^{-5}\,\mathrm{cm}$.
 
 Supports both serial and MPI-parallel execution. When built with MPI, uses
 `CreateMonteCarloManager` (RDMA by default).

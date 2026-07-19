@@ -89,6 +89,7 @@ static void PrintUsage(const char *progName)
               << "  min_per_cell     Target packets per cell after population control (default: 15)\n"
               << "\nOptions:\n"
               << "  --output-profile <file>   Write final temperature profile to file\n"
+              << "  --output-dir <dir>        Write periodic profile dumps to <dir>\n"
 #ifdef MADVORO_WITH_VTK
               << "  --output-vtk <dir>        Write mesh + fields to .pvtu files in <dir> every "
               << "50 steps\n"
@@ -256,6 +257,42 @@ static std::vector<Vector3D> GenerateAllPoints(size_t N_base, Vector3D lower, Ve
     return points;
 }
 
+template<typename Grid>
+static void WriteProfile(const Grid &grid, const std::vector<STORM::RadiationCell> &cells,
+                         double simTime, const std::string &filename, int rank)
+{
+    const double r_line = 0.05;
+    const double r_tol = 0.03;
+    size_t Ncells = grid.GetPointNo();
+
+    std::vector<std::pair<double, double>> localProfile;
+    for(size_t i = 0; i < Ncells; i++)
+    {
+        Vector3D center = grid.GetCellCM(i);
+        double r = std::sqrt(center.y * center.y + center.z * center.z);
+        if(std::abs(r - r_line) < r_tol)
+        {
+            localProfile.push_back({center.x, cells[i].temperature});
+        }
+    }
+
+    std::vector<std::pair<double, double>> profile = MPI_Gatherv_serializable(localProfile, 0, MPI_COMM_WORLD);
+    if(rank == 0)
+    {
+        std::sort(profile.begin(), profile.end());
+        double t_ns = simTime * 1e9;
+        std::ofstream out(filename);
+        out << "# t_ns=" << t_ns << " r_line=" << r_line << "\n";
+        out << "# x(cm), T(K), T(keV)\n";
+        for(const std::pair<double, double> &entry : profile)
+        {
+            out << entry.first << ", " << entry.second << ", " << entry.second / units::kev_kelvin << "\n";
+        }
+        out.close();
+        std::cout << "Wrote " << filename << " (" << profile.size() << " cells, t=" << t_ns << " ns)" << std::endl;
+    }
+}
+
 int main(int argc, char *argv[])
 {
     MPI_Init(&argc, &argv);
@@ -271,6 +308,7 @@ int main(int argc, char *argv[])
     size_t newPhotonsPerCell = 5;
     size_t minPhotonsPerCell = 15;
     std::string outputProfileFile;
+    std::string outputDumpDir;
     std::string outputVtkDir;
 
     std::vector<std::string> positionalArgs;
@@ -297,6 +335,22 @@ int main(int argc, char *argv[])
                 if(rank == 0)
                 {
                     std::cerr << "--output-profile requires a filename argument\n";
+                }
+                MPI_Finalize();
+                return 1;
+            }
+        }
+        else if(arg == "--output-dir")
+        {
+            if(a + 1 < argc)
+            {
+                outputDumpDir = argv[++a];
+            }
+            else
+            {
+                if(rank == 0)
+                {
+                    std::cerr << "--output-dir requires a directory argument\n";
                 }
                 MPI_Finalize();
                 return 1;
@@ -336,6 +390,14 @@ int main(int argc, char *argv[])
         minPhotonsPerCell = std::stoul(positionalArgs[2]);
     }
 
+    if(not outputDumpDir.empty())
+    {
+        if(rank == 0)
+        {
+            std::filesystem::create_directories(outputDumpDir);
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
 #ifdef MADVORO_WITH_VTK
     if(not outputVtkDir.empty())
     {
@@ -446,6 +508,7 @@ int main(int argc, char *argv[])
     const double max_dt = 5e-11;
     constexpr size_t dumpInterval = 25;
     size_t vtkPrintNumber = 0;
+    size_t dumpCount = 0;
 
     if(rank == 0)
     {
@@ -521,13 +584,25 @@ int main(int argc, char *argv[])
             }
         }
 
-#ifdef MADVORO_WITH_VTK
-        if(not outputVtkDir.empty() and stepsSinceLastDump >= dumpInterval)
+        if(stepsSinceLastDump >= dumpInterval)
         {
             stepsSinceLastDump = 0;
-            DumpVTK(grid, cells, materialFlags, outputVtkDir, vtkPrintNumber++, rank);
-        }
+
+            if(not outputDumpDir.empty())
+            {
+                char buf[512];
+                std::snprintf(buf, sizeof(buf), "%s/hohlraum_%05zu.txt", outputDumpDir.c_str(), dumpCount);
+                WriteProfile(grid, cells, simTime, buf, rank);
+            }
+
+#ifdef MADVORO_WITH_VTK
+            if(not outputVtkDir.empty())
+            {
+                DumpVTK(grid, cells, materialFlags, outputVtkDir, vtkPrintNumber++, rank);
+            }
 #endif
+            dumpCount++;
+        }
 
         step++;
     }
@@ -538,49 +613,17 @@ int main(int argc, char *argv[])
         std::cout << "Total wall time: " << wallSec << "s (compute: " << computeTotal << "s)" << std::endl;
     }
 
-    double rTolerance = 0.05;
-    std::vector<std::pair<double, double>> localProfile;
-    for(size_t i = 0; i < Ncells; i++)
-    {
-        Vector3D center = grid.GetCellCM(i);
-        double r = std::sqrt(center.y * center.y + center.z * center.z);
-        if(r < rTolerance)
-        {
-            localProfile.push_back({center.x, cells[i].temperature});
-        }
-    }
+    WriteProfile(grid, cells, simTime, outputProfileFile.empty() ? "hohlraum_profile.txt" : outputProfileFile, rank);
 
-    std::vector<std::pair<double, double>> profile = MPI_Gatherv_serializable(localProfile, 0, MPI_COMM_WORLD);
     if(rank == 0)
     {
-        std::sort(profile.begin(), profile.end());
-        std::cout << "\nFinal temperature profile along x-axis (r~0):" << std::endl;
-        for(const std::pair<double, double> &entry : profile)
-        {
-            std::cout << "  x = " << entry.first * 10 << " mm: T = " << entry.second / units::kev_kelvin << " keV" << std::endl;
-        }
-
-        std::string profileFile = outputProfileFile.empty() ? "profile.txt" : outputProfileFile;
-        {
-            std::ofstream out(profileFile);
-            out << "# x(cm), T(K), T(keV)\n";
-            for(const std::pair<double, double> &entry : profile)
-            {
-                out << entry.first << ", " << entry.second << ", " << entry.second / units::kev_kelvin << "\n";
-            }
-            out.close();
-            std::cout << "Wrote profile to " << profileFile << " (" << profile.size() << " cells)" << std::endl;
-        }
-
-        {
-            std::string scriptDir = __FILE__;
-            scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
-            std::string cmd = "python3 " + scriptDir + "/plot_profile.py " + profileFile
-                              + " --save hohlraum_profile.png";
-            std::cout << "Running: " << cmd << std::endl;
-            std::system(cmd.c_str());
-        }
-
+        std::string profileFile = outputProfileFile.empty() ? "hohlraum_profile.txt" : outputProfileFile;
+        std::string scriptDir = __FILE__;
+        scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
+        std::string cmd = "python3 " + scriptDir + "/plot_profile.py " + profileFile
+                          + " --save hohlraum_profile.png";
+        std::cout << "Running: " << cmd << std::endl;
+        std::system(cmd.c_str());
         std::cout << "\nDone." << std::endl;
     }
 

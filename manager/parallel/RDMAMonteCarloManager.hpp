@@ -561,6 +561,9 @@ void RDMAMonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> 
             destination.removedFromRank = false;
             destination.sentByRank = std::numeric_limits<rank_t>::max();
             destination.lastSeen = 0;
+            destination.lastSeenRank = std::numeric_limits<rank_t>::max();
+            destination.lastSeenRankBuf = std::numeric_limits<rank_t>::max();
+            destination.lastSeenIndex = std::numeric_limits<size_t>::max();
         #endif // STORM_DEBUG
 
         #ifdef STORM_DEBUG
@@ -2210,6 +2213,9 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
             p.removedFromRank = false;
             p.sentByRank = std::numeric_limits<rank_t>::max();
             p.lastSeen = 0;
+            p.lastSeenRank = std::numeric_limits<rank_t>::max();
+            p.lastSeenRankBuf = std::numeric_limits<rank_t>::max();
+            p.lastSeenIndex = std::numeric_limits<size_t>::max();
             #endif // STORM_DEBUG
             #ifdef STORM_WITH_TRACING_HISTORY
             p.tracingHistoryIndex = 0;

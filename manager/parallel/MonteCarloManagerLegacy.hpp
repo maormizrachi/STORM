@@ -1028,6 +1028,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                 particle.lastSeenRankBuf = _rank;
                 particle.lastSeenRank = this->rank_world;
                 particle.lastSeenIndex = i;
+                T prevLoc = particle.location;
                 #endif // STORM_DEBUG
 
                 isEmpty = false;
@@ -1130,7 +1131,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                 throw eo;
                             }
                         }
-                        if(abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
+                        if(std::abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
                         {
                             STORMError eo("Particle is in Wrong Location After Transfer");
                             eo.addEntry("My Rank", this->rank_world);
@@ -1323,9 +1324,9 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                             particle.cellIndex = neighborIndexInRank;
 
                             #ifdef STORM_DEBUG
-                            if(not TransferParticlesVecOfRank.empty())
+                            if(not transferParticlesVec[index].empty())
                             {
-                                size_t lastTHIndex = TransferParticlesVecOfRank.back();
+                                size_t lastTHIndex = transferParticlesVec[index].back();
                                 size_t lastParticleIndex = handler->th[lastTHIndex];
                                 const MCParticle &lastParticle = handler->particles[lastParticleIndex];
                                 if(lastParticle == particle)
@@ -1336,7 +1337,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                     eo.addEntry("My Rank", this->rank_world);
                                     eo.addEntry("TH Index 1", lastTHIndex);
                                     eo.addEntry("TH Index 2", i);
-                                    eo.addEntry("Length of Transfer List", TransferParticlesVecOfRank.size());
+                                    eo.addEntry("Length of Transfer List", transferParticlesVec[index].size());
                                     eo.addEntry("In Rank Buffer", _rank);
                                     eo.addEntry("Sent to Rank", otherRank);
                                     throw eo;

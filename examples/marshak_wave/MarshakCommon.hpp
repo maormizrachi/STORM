@@ -248,6 +248,23 @@ inline std::vector<double> BuildGeometricMeshEdges(double xOffset, double xMax)
     return edges;
 }
 
+inline std::vector<double> BuildMarshak4MeshEdges(double xOffset, double xMax)
+{
+    constexpr size_t cellCount = 512;
+    constexpr double firstCellWidth = 7.0e-5;
+    constexpr double growth = 1.0096903847403653;
+
+    std::vector<double> edges(cellCount + 1);
+    edges[0] = xOffset;
+    double width = firstCellWidth;
+    for(size_t i = 0; i < cellCount; ++i)
+    {
+        edges[i + 1] = (i + 1 == cellCount) ? xMax : edges[i] + width;
+        width *= growth;
+    }
+    return edges;
+}
+
 inline int RunMarshakWave(int problem, int argc, char *argv[])
 {
     using IMC = RadiationIMC<Vector3D, MarshakGrid, RadiationCell, SimpleExtensives, MarshakEOS, 1>;
@@ -264,7 +281,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     {
         if(problem == 4)
         {
-            std::vector<double> xEdges = BuildGeometricMeshEdges(0.0, xMax);
+            std::vector<double> xEdges = BuildMarshak4MeshEdges(params.xOffset, xMax);
             double dy = xMax / static_cast<double>(xEdges.size() - 1);
             return MarshakGrid(xEdges, 0.0, dy, 1, 0.0, dy, 1);
         }

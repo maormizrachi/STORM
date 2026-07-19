@@ -430,6 +430,8 @@ public:
     const std::vector<double> &getPlanckOpacities() const { return this->planckOpacities_; }
     const std::vector<double> &getEradTimeAvg() const { return this->Erad_time_avg_; }
     std::vector<double> &getEradTimeAvg() { return this->Erad_time_avg_; }
+    const std::vector<double> &getDebugMaterialEmission() const { return this->debugMaterialEmission_; }
+    const std::vector<double> &getDebugMaterialDeposition() const { return this->debugMaterialDeposition_; }
     const std::vector<GroupArray> &getEgTimeAvg() const { return this->Eg_time_avg_; }
     std::vector<GroupArray> &getEgTimeAvg() { return this->Eg_time_avg_; }
     const GroupBoundaries &getEnergyBoundaries() const { return this->energyBoundaries_; }
@@ -510,6 +512,8 @@ private:
     std::vector<double> planckOpacities_;
     std::vector<double> Erad_time_avg_;
     std::vector<GroupArray> Eg_time_avg_;
+    std::vector<double> debugMaterialEmission_;
+    std::vector<double> debugMaterialDeposition_;
     std::vector<std::size_t> lastSourcePhotonsPerCell_;
     SourceAllocationSummary lastSourceAllocationSummary_;
     GroupSamplingDiagnostics lastGroupSamplingDiagnostics_;
@@ -769,9 +773,7 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::throwIfNegativeInternalEnergy(
-    std::size_t cellIndex,
-    const std::string &where)
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where)
 {
     double &E = this->extensives_[cellIndex].internal_energy;
     if(E >= 0.0)
@@ -787,7 +789,20 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double ratio = std::abs(E) / thermalScale;
     if(ratio < 0.1)
     {
-        E = 0.0;
+        // A small negative excursion is Monte-Carlo roundoff/noise.  Do not
+        // turn it into a zero-temperature cell: that changes the opacity by
+        // many orders of magnitude (the Marshak opacity is proportional to
+        // T^-4.5) and creates isolated hot/cold points in profiles.
+        // RadiationCell keeps the material energy from before this step, so
+        // use it as the positivity floor when available.
+        if constexpr(radiation_imc_detail::has_member_internal_energy_density<CellT>::value)
+        {
+            E = std::max(0.0, this->cells_[cellIndex].internalEnergy);
+        }
+        else
+        {
+            E = 0.0;
+        }
         return;
     }
 
@@ -1147,7 +1162,9 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double rwExp = std::expm1(-dt * rwAbsRate);
     if(!this->parameters_.noHydroFeedback)
     {
-        this->extensives_[cellIndex].internal_energy += -rwExp * particle.weight;
+        const double materialDeposit = -rwExp * particle.weight;
+        this->extensives_[cellIndex].internal_energy += materialDeposit;
+        this->debugMaterialDeposition_[cellIndex] += materialDeposit;
     }
     if(rwAbsRate > 0.0)
     {
@@ -1171,6 +1188,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         if(!this->parameters_.noHydroFeedback)
         {
             this->extensives_[cellIndex].internal_energy += particle.weight;
+            this->debugMaterialDeposition_[cellIndex] += particle.weight;
         }
         return true;
     }
@@ -1463,7 +1481,9 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 
     if(!this->parameters_.noHydroFeedback)
     {
-        this->extensives_[cellIndex].internal_energy += -expFactor * oldWeight;
+        const double materialDeposit = -expFactor * oldWeight;
+        this->extensives_[cellIndex].internal_energy += materialDeposit;
+        this->debugMaterialDeposition_[cellIndex] += materialDeposit;
     }
 
     double integratedForTally = (absRate > 0.0)
@@ -1489,6 +1509,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         if(!this->parameters_.noHydroFeedback)
         {
             this->extensives_[cellIndex].internal_energy += particle.weight;
+            this->debugMaterialDeposition_[cellIndex] += particle.weight;
         }
         ++this->ddmcStepCount_;
         return true;
@@ -1612,6 +1633,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     this->planckOpacities_.assign(Ncells, 0.0);
     this->factorFleck_.assign(Ncells, 1.0);
     this->Erad_time_avg_.assign(Ncells, 0.0);
+    this->debugMaterialEmission_.assign(Ncells, 0.0);
+    this->debugMaterialDeposition_.assign(Ncells, 0.0);
     if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
     {
         GroupArray zeros{};
@@ -1779,6 +1802,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     {
         double const materialDeposit = -expFactor2 * particle.weight;
         this->extensives_[cellIndex].internal_energy += materialDeposit;
+        this->debugMaterialDeposition_[cellIndex] += materialDeposit;
         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
         {
             if(this->parameters_.withHydro && !this->parameters_.diffusionPressureGradient)
@@ -1804,6 +1828,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         if(!this->parameters_.noHydroFeedback)
         {
             this->extensives_[cellIndex].internal_energy += particle.weight;
+            this->debugMaterialDeposition_[cellIndex] += particle.weight;
         }
         return functionality;
     }
@@ -2045,6 +2070,11 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         }
         gammaVec[i] = gamma;
         energyToCreateVec[i] = this->factorFleck_[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities_[i] * fullDt * units::clight;
+        if(std::getenv("STORM_DISABLE_MATERIAL_EMISSION")
+           || (std::getenv("STORM_SUPPRESS_COLD_EMISSION") && cell.temperature <= 2.0e4))
+        {
+            energyToCreateVec[i] = 0.0;
+        }
         localTotalEnergy += energyToCreateVec[i];
     }
 
@@ -2069,8 +2099,10 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         std::size_t proportionalShare = (globalTotalEnergy > 0)
             ? static_cast<std::size_t>(energyToCreateVec[i] / globalTotalEnergy * totalParticles)
             : this->parameters_.newPhotonsPerCell;
-        nPhotonsVec[i] = std::max(this->parameters_.newPhotonsPerCell,
-                                  std::min(proportionalShare, this->parameters_.newPhotonsPerCell * 20));
+        nPhotonsVec[i] = energyToCreateVec[i] > 0.0
+            ? std::max(this->parameters_.newPhotonsPerCell,
+                       std::min(proportionalShare, this->parameters_.newPhotonsPerCell * 20))
+            : 0;
     }
 
     if(this->sourceEmissionControlEnabled_)
@@ -2180,6 +2212,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         if(!this->parameters_.noHydroFeedback)
         {
             this->extensives_[i].internal_energy -= energyToCreate;
+            this->debugMaterialEmission_[i] += energyToCreate;
             if constexpr(radiation_imc_detail::has_member_total_energy<ExtensivesT>::value)
             {
                 this->extensives_[i].energy -= energyToCreate * gamma;

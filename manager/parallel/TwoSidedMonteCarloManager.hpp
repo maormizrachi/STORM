@@ -397,7 +397,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         throw eo;
                     }
                 }
-                if(abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
+                if(std::abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
                 {
                     STORMError eo("Particle is in Wrong Location After Transfer");
                     eo.addEntry("My Rank", this->rank_world);
