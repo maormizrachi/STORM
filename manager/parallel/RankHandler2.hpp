@@ -11,16 +11,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <cstdlib>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <sstream>
 #include <stdexcept>
-#include <string>
-#include <type_traits>
 #include <vector>
 #include <mpi.h>
 #include <mpi_utils/mpi_commands.hpp>
@@ -92,11 +86,6 @@ private:
     void SynchronizeLocalQueueForRead(void) const;
     void SynchronizeLocalParticlesForRead(void) const;
     void PublishLocalQueueCounter(void);
-    static uint64_t AuditParticleHash(const MCParticle &particle);
-    void AuditParticles(const char *event, rank_t sourceRank, rank_t destinationRank,
-                        uint64_t firstTicket, const MCParticle *particleData,
-                        size_t count, size_t ringSize) const;
-    uint64_t audit_epoch;
 
 public:
     volatile uint64_t &head;
@@ -150,7 +139,7 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
                                     std::shared_ptr<ReallocationAgent> &reallocationAgent,
                                     RDMA_Type rdma_type, size_t minimalBuffSize):
     comm_world(comm_world), comm(private_comm), buffsize(buffsize),
-    particles(nullptr), queue_storage{0, 0}, audit_epoch(0),
+    particles(nullptr), queue_storage{0, 0},
     head(queue_storage[HEAD_INDEX]), tail(queue_storage[TAIL_INDEX]),
     reallocationAgent(reallocationAgent), rdma_type(rdma_type), destroyed(false),
     group_world(MPI_GROUP_NULL), group_internal(MPI_GROUP_NULL),
@@ -216,7 +205,6 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
 template<typename T, typename Grid>
 void RankHandler2<T, Grid>::Reset(void)
 {
-    this->audit_epoch++;
     this->head = 0;
     this->tail = 0;
     this->PublishLocalQueueCounter();
@@ -288,131 +276,6 @@ void RankHandler2<T, Grid>::PublishLocalQueueCounter(void)
     {
         this->lengths_agent->SyncLocal();
     }
-}
-
-template<typename T, typename Grid>
-uint64_t RankHandler2<T, Grid>::AuditParticleHash(const MCParticle &particle)
-{
-    uint64_t hash = 1469598103934665603ULL;
-    auto append = [&hash](const auto &value)
-    {
-        using value_t = typename std::decay<decltype(value)>::type;
-        static_assert(std::is_trivially_copyable<value_t>::value,
-                      "RMA audit fields must be trivially copyable");
-        const unsigned char *bytes = reinterpret_cast<const unsigned char*>(&value);
-        for(size_t i = 0; i < sizeof(value_t); i++)
-        {
-            hash ^= static_cast<uint64_t>(bytes[i]);
-            hash *= 1099511628211ULL;
-        }
-    };
-
-    append(particle.rank);
-    append(particle.id);
-    append(particle.cellID);
-    append(particle.sourceCellID);
-    append(particle.location.x);
-    append(particle.location.y);
-    append(particle.location.z);
-    append(particle.velocity.x);
-    append(particle.velocity.y);
-    append(particle.velocity.z);
-    append(particle.cellIndex);
-    append(particle.timeLeft);
-    append(particle.frequency);
-    append(particle.weight);
-    append(particle.initialWeight);
-    append(particle.steps);
-    append(particle.on_track);
-    append(particle.sent);
-#ifdef STORM_DEBUG
-    append(particle.nextRank);
-    append(particle.sentByRank);
-    append(particle.removedFromRank);
-#endif
-    return hash;
-}
-
-template<typename T, typename Grid>
-void RankHandler2<T, Grid>::AuditParticles(const char *event, rank_t sourceRank,
-                                            rank_t destinationRank, uint64_t firstTicket,
-                                            const MCParticle *particleData, size_t count,
-                                            size_t ringSize) const
-{
-    const char *enabled = std::getenv("STORM_RMA_AUDIT");
-    if(not enabled or enabled[0] == '\0' or std::strcmp(enabled, "0") == 0 or count == 0)
-    {
-        return;
-    }
-
-    auto matchesFilter = [](const char *name, long long value)
-    {
-        const char *text = std::getenv(name);
-        if(not text or text[0] == '\0')
-        {
-            return true;
-        }
-        char *end = nullptr;
-        long long filter = std::strtoll(text, &end, 10);
-        return end == text or filter < 0 or filter == value;
-    };
-
-    if(not matchesFilter("STORM_RMA_AUDIT_SRC", sourceRank) or
-       not matchesFilter("STORM_RMA_AUDIT_DST", destinationRank) or
-       not matchesFilter("STORM_RMA_AUDIT_EPOCH", static_cast<long long>(this->audit_epoch)))
-    {
-        return;
-    }
-
-    static uint64_t emittedLines = 0;
-    uint64_t maxLines = 2000000;
-    if(const char *text = std::getenv("STORM_RMA_AUDIT_MAX_LINES"))
-    {
-        char *end = nullptr;
-        unsigned long long parsed = std::strtoull(text, &end, 10);
-        if(end != text)
-        {
-            maxLines = static_cast<uint64_t>(parsed);
-        }
-    }
-
-    static std::ofstream stream;
-    if(not stream.is_open())
-    {
-        const char *prefix = std::getenv("STORM_RMA_AUDIT_PREFIX");
-        std::ostringstream filename;
-        filename << ((prefix and prefix[0] != '\0') ? prefix : "storm_rma_audit")
-                 << "_rank" << this->rank_world << ".csv";
-        stream.open(filename.str(), std::ios::out | std::ios::app);
-        if(not stream)
-        {
-            throw std::runtime_error("RankHandler2: failed to open RMA audit log " + filename.str());
-        }
-        if(stream.tellp() == std::streampos(0))
-        {
-            stream << "event,epoch,logger_rank,src,dst,ticket,slot,hash,particle_origin,id,cell_index,x,y,z,weight,frequency,time_left\n";
-        }
-        stream << std::setprecision(17);
-    }
-
-    for(size_t i = 0; i < count; i++)
-    {
-        if(maxLines != 0 and emittedLines >= maxLines)
-        {
-            break;
-        }
-        const MCParticle &particle = particleData[i];
-        uint64_t ticket = firstTicket + static_cast<uint64_t>(i);
-        size_t slot = ringSize == 0 ? 0 : static_cast<size_t>(ticket % ringSize);
-        stream << event << ',' << this->audit_epoch << ',' << this->rank_world << ','
-               << sourceRank << ',' << destinationRank << ',' << ticket << ',' << slot << ','
-               << std::hex << AuditParticleHash(particle) << std::dec << ','
-               << particle.rank << ',' << particle.id << ',' << particle.cellIndex << ','
-               << particle.location.x << ',' << particle.location.y << ',' << particle.location.z << ','
-               << particle.weight << ',' << particle.frequency << ',' << particle.timeLeft << '\n';
-        emittedLines++;
-    }
-    stream.flush();
 }
 
 template<typename T, typename Grid>
@@ -503,8 +366,6 @@ void RankHandler2<T, Grid>::DetachLocalParticles(std::vector<MCParticle> &result
     {
         std::memcpy(result.data() + first, this->particles, (count - first) * sizeof(MCParticle));
     }
-    this->AuditParticles("RECV", this->peer_rank_world, this->rank_world,
-                         localHead, result.data(), count, this->buffsize);
     this->head = localTail;
     this->PublishLocalQueueCounter();
 }
@@ -657,7 +518,6 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
         this->peer_buffsize = this->buffsize;
     }
 
-    this->audit_epoch++;
     this->PublishLocalQueueCounter();
     this->requestedFactor = 1;
 }
@@ -719,7 +579,6 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
         }
         this->head = 0;
         this->tail = static_cast<uint64_t>(localCount);
-        this->audit_epoch++;
         this->PublishLocalQueueCounter();
 
         this->UnlockSelfBuffer();
@@ -752,7 +611,6 @@ void RankHandler2<T, Grid>::UpdatePeerRemoteInfo(const ReallocationMetadata &met
     this->particles_agent->UpdateRemoteInfo(this->other_rank, metadata.particles);
     this->lengths_agent->UpdateRemoteInfo(this->other_rank, metadata.lengths);
     this->peer_buffsize = metadata.new_buffsize;
-    this->audit_epoch++;
 }
 
 template<typename T, typename Grid>
@@ -902,8 +760,6 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
 
         uint64_t newTail = remoteTail + static_cast<uint64_t>(Np);
         this->lengths_agent->Put(&newTail, 1, this->other_rank, TAIL_INDEX, true);
-        this->AuditParticles("SEND", this->rank_world, this->peer_rank_world,
-                             remoteTail, particles, Np, this->peer_buffsize);
         this->remoteListMutex->Unlock();
     }
     else

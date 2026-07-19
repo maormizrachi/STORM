@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <stdexcept>
 #ifdef STORM_WITH_MPI
 #include <mpi.h>
 #include <mpi_utils/mpi_collectives.hpp>
@@ -74,21 +73,6 @@ std::uint64_t EnvUInt64(const char *name, std::uint64_t fallback)
     return value ? static_cast<std::uint64_t>(std::stoull(value)) : fallback;
 }
 
-double SumParticleEnergy(const std::vector<ParticleT> &particles)
-{
-    double result = 0.0;
-    for(const ParticleT &particle : particles)
-    {
-        result += particle.weight;
-    }
-    return result;
-}
-
-bool IsWatchedPosition(double x)
-{
-    return (x >= 0.58 && x <= 0.69) || (x >= 0.74 && x <= 0.83);
-}
-
 } // namespace
 
 int main(int argc, char *argv[])
@@ -110,19 +94,9 @@ int main(int argc, char *argv[])
 
     size_t newPhotonsPerCell = (argc >= 2) ? std::stoul(argv[1]) : 15;
     size_t boundaryPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 100;
-    if(const char *value = std::getenv("STORM_NEW_PHOTONS"))
-    {
-        newPhotonsPerCell = std::stoul(value);
-    }
-    if(const char *value = std::getenv("STORM_BOUNDARY_PHOTONS"))
-    {
-        boundaryPhotonsPerCell = std::stoul(value);
-    }
 
     const std::string managerMode = EnvString("STORM_MANAGER", "auto");
     const bool useRandomWalk = EnvFlag("STORM_RW", true);
-    const bool diagnosticsEnabled = EnvFlag("STORM_DIAG", false);
-    const bool fixMeshOffset = EnvFlag("STORM_FIX_X_OFFSET", true);
     const std::uint64_t seed = EnvUInt64("STORM_SEED", 42);
 
 #ifdef STORM_WITH_MPI
@@ -130,11 +104,9 @@ int main(int argc, char *argv[])
 #endif
     ProblemParams params = GetProblemParams(4);
     double xMax = params.xOffset + params.domainLength;
-    const double meshXMin = fixMeshOffset ? params.xOffset : 0.0;
-
-    std::vector<double> xEdges = BuildMarshak4MeshEdges(meshXMin, xMax);
+    std::vector<double> xEdges = BuildMarshak4MeshEdges(params.xOffset, xMax);
     size_t globalNx = xEdges.size() - 1;
-    double dy = (xMax - meshXMin) / static_cast<double>(globalNx);
+    double dy = (xMax - params.xOffset) / static_cast<double>(globalNx);
 
     Grid grid(xEdges, 0.0, dy, 1, 0.0, dy, 1);
 
@@ -236,35 +208,6 @@ int main(int argc, char *argv[])
     MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 #endif
 
-    std::ofstream cellDiagnostics;
-    std::ofstream cycleDiagnostics;
-    if(diagnosticsEnabled)
-    {
-        const std::string rankSuffix = std::to_string(rank) + ".csv";
-        cellDiagnostics.open("marshak_cell_diag_rank_" + rankSuffix);
-        cycleDiagnostics.open("marshak_cycle_diag_rank_" + rankSuffix);
-        std::ofstream partition("marshak_partition_rank_" + rankSuffix);
-        if(!cellDiagnostics || !cycleDiagnostics || !partition)
-        {
-            throw std::runtime_error("Failed to open Marshak diagnostic output files");
-        }
-
-        cellDiagnostics << "cycle,time_start,time_end,dt,rank,local_i,x,volume,rho,"
-                        << "energy_before,energy_after,energy_delta,emitted,deposited,balance,"
-                        << "Tgas,T_from_E,T_rel_error,Trad,source_packets,begin_packets,"
-                        << "transport_steps,fleck,kappaP,kappaTotal,rw_steps\n";
-        cycleDiagnostics << "cycle,time_start,time_end,dt,rank,material_before,material_after,"
-                         << "material_delta,particle_before,particle_after,particle_delta,"
-                         << "particle_count_before,particle_count_after,rw_steps\n";
-        partition << "rank,local_i,x,volume,rho\n";
-        partition << std::scientific << std::setprecision(17);
-        for(size_t i = 0; i < Ncells; ++i)
-        {
-            partition << rank << ',' << i << ',' << grid.GetMeshPoint(i).x << ','
-                      << grid.GetVolume(i) << ',' << densities[i] << '\n';
-        }
-    }
-
     std::vector<ParticleT> particles;
 
     double dt = params.initialDt;
@@ -280,8 +223,6 @@ int main(int argc, char *argv[])
         std::cout << "manager=" << (nprocs == 1 ? "single-rank/" : "") << managerMode
                   << ", random_walk=" << (useRandomWalk ? "on" : "off")
                   << ", seed=" << seed
-                  << ", diagnostics=" << (diagnosticsEnabled ? "on" : "off")
-                  << ", mesh_offset=" << (fixMeshOffset ? params.xOffset : 0.0)
                   << std::endl;
         std::cout << std::endl;
     }
@@ -309,84 +250,7 @@ int main(int argc, char *argv[])
                       << "  maxT=" << maxT_keV << " keV  T_bath=" << T_bath / keV_K << " keV" << std::endl;
         }
 
-        std::vector<double> materialEnergyBefore;
-        double materialBeforeTotal = 0.0;
-        double particleBeforeTotal = 0.0;
-        size_t particleCountBefore = particles.size();
-        if(diagnosticsEnabled)
-        {
-            materialEnergyBefore.resize(Ncells);
-            for(size_t i = 0; i < Ncells; ++i)
-            {
-                materialEnergyBefore[i] = extensives[i].internal_energy;
-                materialBeforeTotal += materialEnergyBefore[i];
-            }
-            particleBeforeTotal = SumParticleEnergy(particles);
-        }
-
         particles = manager.step(std::move(particles), dt);
-
-        if(diagnosticsEnabled)
-        {
-            const std::vector<double> &EradStep = physics->getEradTimeAvg();
-            const std::vector<double> &fleck = physics->getFactorFleck();
-            const std::vector<double> &kappaP = physics->getPlanckOpacities();
-            const std::vector<size_t> &sourcePackets = physics->getLastSourcePhotonsPerCell();
-            const std::vector<size_t> &beginPackets = manager.GetBeginningParticleCount();
-            const std::vector<size_t> &transportSteps = manager.GetCellsStepsCounters();
-            const std::vector<double> &emitted = physics->getDebugMaterialEmission();
-            const std::vector<double> &deposited = physics->getDebugMaterialDeposition();
-            const size_t rwSteps = physics->getRandomWalkStepCount();
-
-            double materialAfterTotal = 0.0;
-            for(size_t i = 0; i < Ncells; ++i)
-            {
-                materialAfterTotal += extensives[i].internal_energy;
-                const double x = grid.GetMeshPoint(i).x;
-                if(!IsWatchedPosition(x))
-                {
-                    continue;
-                }
-
-                const double volume = grid.GetVolume(i);
-                const double energyBefore = materialEnergyBefore[i];
-                const double energyAfter = extensives[i].internal_energy;
-                const double emittedCell = (i < emitted.size()) ? emitted[i] : 0.0;
-                const double depositedCell = (i < deposited.size()) ? deposited[i] : 0.0;
-                const double balance = energyAfter - energyBefore + emittedCell - depositedCell;
-                const double TfromE = EOS_T_from_E(params, energyAfter / volume, densities[i]);
-                const double TrelError = (TfromE - cells[i].temperature)
-                    / std::max(cells[i].temperature, 1.0);
-                const double Trad = std::pow(std::max(EradStep[i], 0.0) / arad, 0.25);
-                const double totalOpacity = kappaP[i] + opacityModel->CalcScatteringOpacity(cells[i]);
-
-                cellDiagnostics << std::scientific << std::setprecision(17)
-                    << cycle << ',' << simTime << ',' << (simTime + dt) << ',' << dt << ','
-                    << rank << ',' << i << ',' << x << ',' << volume << ',' << densities[i] << ','
-                    << energyBefore << ',' << energyAfter << ',' << (energyAfter - energyBefore) << ','
-                    << emittedCell << ',' << depositedCell << ',' << balance << ','
-                    << cells[i].temperature << ',' << TfromE << ',' << TrelError << ',' << Trad << ','
-                    << ((i < sourcePackets.size()) ? sourcePackets[i] : 0) << ','
-                    << ((i < beginPackets.size()) ? beginPackets[i] : 0) << ','
-                    << ((i < transportSteps.size()) ? transportSteps[i] : 0) << ','
-                    << fleck[i] << ',' << kappaP[i] << ',' << totalOpacity << ',' << rwSteps << '\n';
-            }
-
-            const double particleAfterTotal = SumParticleEnergy(particles);
-            cycleDiagnostics << std::scientific << std::setprecision(17)
-                << cycle << ',' << simTime << ',' << (simTime + dt) << ',' << dt << ',' << rank << ','
-                << materialBeforeTotal << ',' << materialAfterTotal << ','
-                << (materialAfterTotal - materialBeforeTotal) << ','
-                << particleBeforeTotal << ',' << particleAfterTotal << ','
-                << (particleAfterTotal - particleBeforeTotal) << ','
-                << particleCountBefore << ',' << particles.size() << ',' << rwSteps << '\n';
-
-            if((cycle % 100) == 0)
-            {
-                cellDiagnostics.flush();
-                cycleDiagnostics.flush();
-            }
-        }
 
         simTime += dt;
         cycle++;
