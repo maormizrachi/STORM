@@ -231,6 +231,10 @@ if(STORM_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_executable(storm_ddmc_math_tests tests/DDMCMathTests.cpp)
     target_link_libraries(storm_ddmc_math_tests PRIVATE storm)
     add_test(NAME storm_ddmc_math_tests COMMAND storm_ddmc_math_tests)
+
+    add_executable(storm_compton_observer_tests tests/ComptonObserverTests.cpp)
+    target_link_libraries(storm_compton_observer_tests PRIVATE storm)
+    add_test(NAME storm_compton_observer_tests COMMAND storm_compton_observer_tests)
   endif()
 endif()
 
