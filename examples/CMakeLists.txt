@@ -160,6 +160,12 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
   set_target_properties("${_storm_example_name}" PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${_storm_example_dir}")
 
+  if(NOT _storm_example_requires_mpi AND STORM_WITH_MPI)
+    target_compile_options("${_storm_example_name}" PRIVATE
+      -USTORM_WITH_MPI -UMADVORO_WITH_MPI -URICH_MPI
+      -USPATIAL_DS_WITH_MPI -U__WITH_MPI)
+  endif()
+
   if(_storm_example_name STREQUAL "cartesian_parallel_check" AND
      BUILD_TESTING AND MPIEXEC_EXECUTABLE)
     add_test(NAME cartesian_parallel_check
