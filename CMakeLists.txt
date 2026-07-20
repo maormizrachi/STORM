@@ -189,7 +189,7 @@ if(STORM_WITH_MPI)
 endif()
 
 set(STORM_CMMC_DIR "${STORM_DEPS_DIR}/CMMC/src" CACHE PATH
-  "Pinned CMMC source directory")
+  "Pinned CMMC source directory" FORCE)
 set(STORM_CMMC_REVISION
   "091281f09257c4a5127fa5c3af237d4caf8ebfad")
 message(STATUS "STORM CMMC revision: ${STORM_CMMC_REVISION}")
