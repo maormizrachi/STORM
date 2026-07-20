@@ -1,0 +1,4 @@
+# STORM regression test configuration
+TAGS="serial"
+CHECK_FUNCTION="check_till_compton_case"
+TIMEOUT=7200

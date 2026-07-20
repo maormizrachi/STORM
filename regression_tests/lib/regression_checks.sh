@@ -200,3 +200,42 @@ check_serial_cartesian_case() {
     REGRESSION_CHECK_MSG="PASS (completed without fatal errors)"
     return 0
 }
+
+# Till-Compton equilibration benchmark.  The comparison is diagnostic because
+# the reference is digitized and the STORM run is Monte Carlo; require the
+# profile and the reported comparison/energy diagnostics, but do not impose a
+# numerical pass threshold on the noisy temperature curves here.
+check_till_compton_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+
+    local profile="${run_dir}/till_compton_profile.txt"
+    is_nonempty_and_newer "$profile" "$start_epoch" || return 1
+
+    local rows
+    rows="$(awk '
+        NF && $1 !~ /^#/ {
+            if (NF != 4) exit 1
+            count++
+        }
+        END {
+            if (count < 2) exit 1
+            print count
+        }
+    ' "$profile" 2>/dev/null)" || {
+        REGRESSION_CHECK_MSG="Malformed Till-Compton profile: ${profile}"
+        return 1
+    }
+
+    if ! grep -q "TILL_COMPTON_TOTAL_ENERGY_REL_DRIFT" "$stdout_log" 2>/dev/null; then
+        REGRESSION_CHECK_MSG="Till-Compton comparison diagnostics missing from stdout"
+        return 1
+    fi
+
+    REGRESSION_CHECK_MSG="PASS (profile generated with ${rows} samples; comparison diagnostics reported)"
+    return 0
+}
