@@ -244,6 +244,16 @@ if(STORM_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     endif()
     target_link_libraries(storm_polarization_tests PRIVATE storm)
     add_test(NAME storm_polarization_tests COMMAND storm_polarization_tests)
+
+    if(STORM_WITH_MPI)
+      add_executable(storm_ddmc_ghost_exchange_tests tests/DDMCGhostExchangeTests.cpp)
+      target_link_libraries(storm_ddmc_ghost_exchange_tests PRIVATE storm)
+      add_test(
+        NAME storm_ddmc_ghost_exchange_tests
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROCS_FLAG} 2
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:storm_ddmc_ghost_exchange_tests>
+                ${MPIEXEC_POSTFLAGS})
+    endif()
   endif()
 endif()
 

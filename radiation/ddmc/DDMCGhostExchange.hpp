@@ -26,11 +26,18 @@ struct HasExchangeMaps : std::false_type {};
 
 template<typename GridT>
 struct HasExchangeMaps<GridT, std::void_t<
-    decltype(std::declval<const GridT &>().GetSentProcs()),
-    decltype(std::declval<const GridT &>().GetSentPoints()),
     decltype(std::declval<const GridT &>().GetDuplicatedProcs()),
+    decltype(std::declval<const GridT &>().GetDuplicatedPoints()),
     decltype(std::declval<const GridT &>().GetGhostIndeces())>>
     : std::true_type {};
+
+template<typename T>
+T decodeValue(const std::vector<std::byte> &buffer, std::size_t offset)
+{
+    T value{};
+    std::memcpy(&value, buffer.data() + offset, sizeof(T));
+    return value;
+}
 
 } // namespace detail
 #endif
@@ -44,8 +51,10 @@ struct HasExchangeMaps<GridT, std::void_t<
  * therefore participate in the same Alltoallv exchange here.
  *
  * The grid contract is the same one used by the existing exchange helper:
- * GetSentPoints()/GetSentProcs() describe outgoing values, while
- * GetDuplicatedProcs()/GetGhostIndeces() describe the incoming ghost slots.
+ * GetDuplicatedProcs()/GetDuplicatedPoints() describe the halo exchange
+ * peers and owned values which those peers request; the received values are
+ * placed into GetGhostIndeces().  GetSentPoints()/GetSentProcs() describe a
+ * different migration operation and must not be used here.
  */
 template<typename T, typename GridT>
 void ExchangePointMetadata(const GridT &grid, std::vector<T> &data)
@@ -78,20 +87,23 @@ void ExchangePointMetadata(const GridT &grid, std::vector<T> &data)
     int rankCount = 0;
     MPI_Comm_size(MPI_COMM_WORLD, &rankCount);
 
-    const auto &sentRanks = grid.GetSentProcs();
-    const auto &sentPoints = grid.GetSentPoints();
-    if(sentRanks.size() != sentPoints.size())
+    const auto &duplicatedRanks = grid.GetDuplicatedProcs();
+    const auto &duplicatedPoints = grid.GetDuplicatedPoints();
+    const auto &ghostIndices = grid.GetGhostIndeces();
+    if(duplicatedRanks.size() != duplicatedPoints.size() ||
+       duplicatedRanks.size() != ghostIndices.size())
     {
-        StormError error("DDMC metadata exchange has mismatched outgoing maps");
-        error.addEntry("Ranks", sentRanks.size());
-        error.addEntry("Point lists", sentPoints.size());
+        StormError error("DDMC metadata exchange has inconsistent halo maps");
+        error.addEntry("Ranks", duplicatedRanks.size());
+        error.addEntry("Point lists", duplicatedPoints.size());
+        error.addEntry("Ghost lists", ghostIndices.size());
         throw error;
     }
 
     std::vector<std::vector<T>> outgoing(static_cast<std::size_t>(rankCount));
-    for(std::size_t correspondent = 0; correspondent < sentRanks.size(); ++correspondent)
+    for(std::size_t correspondent = 0; correspondent < duplicatedRanks.size(); ++correspondent)
     {
-        int const destination = sentRanks[correspondent];
+        int const destination = duplicatedRanks[correspondent];
         if(destination < 0 || destination >= rankCount)
         {
             StormError error("DDMC metadata exchange has an invalid destination rank");
@@ -100,7 +112,7 @@ void ExchangePointMetadata(const GridT &grid, std::vector<T> &data)
             throw error;
         }
         std::vector<T> &values = outgoing[static_cast<std::size_t>(destination)];
-        for(std::size_t point : sentPoints[correspondent])
+        for(std::size_t point : duplicatedPoints[correspondent])
         {
             if(point >= data.size())
             {
@@ -173,16 +185,6 @@ void ExchangePointMetadata(const GridT &grid, std::vector<T> &data)
                   receiveBytes.data(), receiveDisplacements.data(), MPI_BYTE,
                   MPI_COMM_WORLD);
 
-    const auto &duplicatedRanks = grid.GetDuplicatedProcs();
-    const auto &ghostIndices = grid.GetGhostIndeces();
-    if(duplicatedRanks.size() != ghostIndices.size())
-    {
-        StormError error("DDMC metadata exchange has mismatched incoming maps");
-        error.addEntry("Ranks", duplicatedRanks.size());
-        error.addEntry("Ghost lists", ghostIndices.size());
-        throw error;
-    }
-
     data.resize(grid.GetTotalPointNumber(), T{});
     for(std::size_t incoming = 0; incoming < duplicatedRanks.size(); ++incoming)
     {
@@ -205,8 +207,6 @@ void ExchangePointMetadata(const GridT &grid, std::vector<T> &data)
             error.addEntry("Ghost entries", ghostIndices[incoming].size());
             throw error;
         }
-        auto const *values = reinterpret_cast<const T *>(
-            receiveBuffer.data() + receiveDisplacements[static_cast<std::size_t>(source)]);
         for(std::size_t j = 0; j < ghostIndices[incoming].size(); ++j)
         {
             std::size_t const ghost = ghostIndices[incoming][j];
@@ -217,7 +217,10 @@ void ExchangePointMetadata(const GridT &grid, std::vector<T> &data)
                 error.addEntry("Metadata size", data.size());
                 throw error;
             }
-            data[ghost] = values[j];
+            data[ghost] = detail::decodeValue<T>(
+                receiveBuffer,
+                static_cast<std::size_t>(receiveDisplacements[static_cast<std::size_t>(source)]) +
+                    j * sizeof(T));
         }
     }
     }
@@ -343,15 +346,16 @@ void ReducePointContributions(const GridT &grid, std::vector<T> &data)
             if(bytes % sizeof(T) != 0 ||
                bytes / sizeof(T) != ownerIndices[slot].size())
                 throw StormError("DDMC contribution reduction count mismatch");
-            auto const *values = reinterpret_cast<const T *>(
-                receiveBuffer.data() + receiveDisplacements[static_cast<std::size_t>(source)]);
             for(std::size_t j = 0; j < ownerIndices[slot].size(); ++j)
             {
                 std::size_t const owner = ownerIndices[slot][j];
                 std::size_t const ghost = ghostIndices[slot][j];
                 if(owner >= data.size() || ghost >= data.size())
                     throw StormError("DDMC contribution reduction index is out of range");
-                data[owner] += values[j];
+                data[owner] += detail::decodeValue<T>(
+                    receiveBuffer,
+                    static_cast<std::size_t>(receiveDisplacements[static_cast<std::size_t>(source)]) +
+                        j * sizeof(T));
                 data[ghost] = T{};
             }
         }

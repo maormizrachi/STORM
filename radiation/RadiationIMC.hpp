@@ -2154,42 +2154,103 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     MCParticle &particle, Functionality &functionality)
 {
     std::size_t cellIndex = particle.cellIndex;
+    bool const packetInDDMC = particle.radiationState.isDDMC();
+    bool convertedIncomingToComoving = false;
+    bool useComovingFrame = false;
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        useComovingFrame =
+            (this->parameters_.withHydro && !this->parameters_.MMC) ||
+            (this->parameters_.postProcess.enabled &&
+             this->parameters_.postProcess.useCellVelocities);
+    }
+
+    auto finalizePolarization = [&](const PointT &finalVelocity)
+    {
+#ifdef MONTECARLO_POLARIZATION
+        if(this->polarizationEnabled())
+        {
+            polarization::finalizeAcceleratedPolarizationHistory<PointT>(
+                particle, finalVelocity,
+                this->parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
+                this->parameters_.postProcess.polarization.depolarizationScatterings,
+                this->rng_, this->dist_);
+        }
+#else
+        (void) finalVelocity;
+#endif
+    };
+
+    // A DDMC packet is represented in the cell-comoving frame and has no
+    // usable microscopic ray while resident.  Every fallback must restore a
+    // complete lab-frame IMC packet before returning false to the caller.
+    auto exitDDMCToTransport = [&](bool sampleDirection)
+    {
+        if(!packetInDDMC && !convertedIncomingToComoving)
+            return;
+
+        bool const wasResident = particle.radiationState.isResident();
+        bool const wasComoving = particle.radiationState.isComoving();
+        if(wasResident || packetInDDMC)
+        {
+            particle.location = this->grid.GetMeshPoint(cellIndex);
+            if(sampleDirection)
+            {
+                particle.velocity = this->opacity_->getRandomVelocity(
+                    this->cells_[cellIndex], this->rng_, this->dist_);
+            }
+#ifdef MONTECARLO_POLARIZATION
+            finalizePolarization(particle.velocity);
+#endif
+        }
+
+        if((wasComoving || convertedIncomingToComoving) && useComovingFrame)
+        {
+            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+            {
+                radiation_imc_detail::lorentzTransformToLab<PointT>(
+                    particle, this->cells_[cellIndex]);
+            }
+        }
+        particle.radiationState.clearDDMC();
+        particle.initialWeight = std::abs(particle.weight);
+#ifdef MONTECARLO_POLARIZATION
+        if(this->polarizationEnabled())
+        {
+            polarization::initializeIfNeeded<PointT>(particle);
+            particle.polarizationBasis = polarization::projectBasisToDirection(
+                particle.polarizationBasis, particle.velocity);
+        }
+#endif
+    };
+
     if(!std::isfinite(particle.weight) || particle.weight == 0.0)
     {
         particle.radiationState.clearDDMC();
         functionality.change = ParticleStatus::REMOVE;
         return true;
     }
+    if(packetInDDMC && !this->parameters_.withDDMC)
+    {
+        exitDDMCToTransport(true);
+        functionality.change = ParticleStatus::NO_CELL_MOVE;
+        return true;
+    }
     if(cellIndex >= this->ddmcCellData_.size())
     {
+        exitDDMCToTransport(true);
         return false;
     }
     if(!particle.radiationState.invariantHolds())
     {
-        particle.radiationState.clearDDMC();
+        exitDDMCToTransport(true);
         ++this->ddmcFallbackCount_;
         return false;
     }
     DDMCCellData const &data = this->ddmcCellData_[cellIndex];
     if(!data.eligible || data.totalLeakRate <= 0.0 || data.faceLeaks.empty())
     {
-        if(particle.radiationState.isResident())
-        {
-            particle.radiationState.clearDDMC();
-            particle.location = this->grid.GetMeshPoint(cellIndex);
-            particle.velocity = this->opacity_->getRandomVelocity(
-                this->cells_[cellIndex], this->rng_, this->dist_);
-#ifdef MONTECARLO_POLARIZATION
-            if(this->polarizationEnabled())
-            {
-                polarization::finalizeAcceleratedPolarizationHistory<PointT>(
-                    particle, particle.velocity,
-                    this->parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
-                    this->parameters_.postProcess.polarization.depolarizationScatterings,
-                    this->rng_, this->dist_);
-            }
-#endif
-        }
+        exitDDMCToTransport(true);
         return false;
     }
 
@@ -2206,14 +2267,14 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     {
         if(data.groupCutoff == 0 || data.groupCutoff > NumGroups)
         {
+            exitDDMCToTransport(true);
             ++this->ddmcFallbackCount_;
             return false;
         }
         MCParticle frequencyProbe = particle;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if(!particle.radiationState.isResident() &&
-               this->parameters_.withHydro && !this->parameters_.MMC)
+            if(!particle.radiationState.isResident() && useComovingFrame)
             {
                 radiation_imc_detail::lorentzTransformToComoving<PointT>(
                     frequencyProbe, this->cells_[cellIndex]);
@@ -2223,6 +2284,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         this->clampFrequencyToBounds(coFreq);
         if(coFreq >= this->energyBoundaries_[data.groupCutoff])
         {
+            exitDDMCToTransport(true);
             ++this->ddmcFallbackCount_;
             return false;
         }
@@ -2232,11 +2294,12 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     {
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            if(useComovingFrame)
             {
                 radiation_imc_detail::lorentzTransformToComoving<PointT>(
                     particle, this->cells_[cellIndex]);
                 this->clampFrequencyToBounds(particle.frequency);
+                convertedIncomingToComoving = true;
             }
         }
     }
@@ -2254,7 +2317,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     {
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            if(useComovingFrame)
             {
                 radiation_imc_detail::lorentzTransformToLab<PointT>(
                     particle, this->cells_[cellIndex]);
@@ -2273,21 +2336,6 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     };
 
     double f = this->factorFleck_[cellIndex];
-    auto finalizePolarization = [&](const PointT &finalVelocity)
-    {
-#ifdef MONTECARLO_POLARIZATION
-        if(this->polarizationEnabled())
-        {
-            polarization::finalizeAcceleratedPolarizationHistory<PointT>(
-                particle, finalVelocity,
-                this->parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
-                this->parameters_.postProcess.polarization.depolarizationScatterings,
-                this->rng_, this->dist_);
-        }
-#else
-        (void) finalVelocity;
-#endif
-    };
     double upscatterRate = 0.0;
     if(this->parameters_.ddmcUseMultigroupPGRW && data.gamma < 1.0 &&
        data.sigmaEnergyAbs > 0.0 && f > 0.0)
@@ -2298,6 +2346,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double eventRate = data.totalLeakRate + upscatterRate;
     if(eventRate <= 0.0)
     {
+        exitDDMCToTransport(true);
         ++this->ddmcFallbackCount_;
         return false;
     }
@@ -2689,47 +2738,38 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         double const kT = units::k_boltz * cell.temperature;
         double const upperBandMass = ddmc::PlanckBandMass(
             this->energyBoundaries_, kT, data.groupCutoff, NumGroups);
-        if(upperBandMass > 0.0)
+        if(!(upperBandMass > 0.0))
         {
-            double remaining = this->randomUnitOpen() * upperBandMass;
-            std::size_t selectedGroup = data.groupCutoff;
-            for(std::size_t group = data.groupCutoff; group < NumGroups; ++group)
-            {
-                double const groupMass = ddmc::PlanckBandMass(
-                    this->energyBoundaries_, kT, group, group + 1);
-                if(remaining <= groupMass || group + 1 == NumGroups)
-                {
-                    selectedGroup = group;
-                    double const localRandom = groupMass > 0.0
-                        ? std::clamp(remaining / groupMass, 0.0, 1.0)
-                        : this->randomUnitOpen();
-                    particle.frequency = this->opacity_->SampleThermalEnergyInGroup(
-                        cell, selectedGroup, localRandom, this->energyBoundaries_);
-                    break;
-                }
-                remaining -= groupMass;
-            }
+            StormError eo("RadiationIMC DDMC upscatter has no representable upper frequency band");
+            eo.addEntry("Cell index", cellIndex);
+            eo.addEntry("Group cutoff", data.groupCutoff);
+            eo.addEntry("Upper-band Planck mass", upperBandMass);
+            throw eo;
         }
-        else
+        double remaining = this->randomUnitOpen() * upperBandMass;
+        std::size_t selectedGroup = data.groupCutoff;
+        for(std::size_t group = data.groupCutoff; group < NumGroups; ++group)
         {
-            particle.frequency = this->opacity_->GetThermalEnergy(
-                cell, this->randomUnitOpen(), this->energyBoundaries_);
+            double const groupMass = ddmc::PlanckBandMass(
+                this->energyBoundaries_, kT, group, group + 1);
+            if(remaining <= groupMass || group + 1 == NumGroups)
+            {
+                selectedGroup = group;
+                double const localRandom = groupMass > 0.0
+                    ? std::clamp(remaining / groupMass, 0.0, 1.0)
+                    : this->randomUnitOpen();
+                particle.frequency = this->opacity_->SampleThermalEnergyInGroup(
+                    cell, selectedGroup, localRandom, this->energyBoundaries_);
+                break;
+            }
+            remaining -= groupMass;
         }
         this->clampFrequencyToBounds(particle.frequency);
         particle.velocity = this->opacity_->getRandomVelocity(cell, this->rng_, this->dist_);
-#ifdef MONTECARLO_POLARIZATION
-        if(this->polarizationEnabled())
-        {
-            polarization::resetUnpolarized<PointT>(particle);
-        }
-#endif
-        particle.radiationState.set(
-            RadiationTransportState<PointT>::DDMCMode);
-        particle.radiationState.set(
-            RadiationTransportState<PointT>::DDMCCellResident);
-        particle.radiationState.set(
-            RadiationTransportState<PointT>::DDMCComovingFrame);
+        exitDDMCToTransport(false);
+        functionality.change = ParticleStatus::NO_CELL_MOVE;
         ++this->ddmcUpscatterCount_;
+        return true;
     }
     return true;
 }
@@ -3400,16 +3440,19 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     }
 
     double dopplerShift = 1.0;
+    bool useComovingTransportFrame = false;
     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
     {
         if((this->parameters_.withHydro && !this->parameters_.MMC) ||
            (this->parameters_.postProcess.enabled && this->parameters_.postProcess.useCellVelocities))
         {
+            useComovingTransportFrame = true;
             dopplerShift = radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
         }
     }
 
-    if(this->parameters_.withRandomWalk && !this->parameters_.withCompton &&
+    if(!particle.radiationState.isDDMC() &&
+       this->parameters_.withRandomWalk && !this->parameters_.withCompton &&
        this->randomWalk_ && this->rwCellEligible_[cellIndex])
     {
         if(this->tryRandomWalkStep(particle, functionality))
@@ -3419,7 +3462,10 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         }
     }
 
-    if(this->parameters_.withDDMC && cellIndex < this->ddmcCellData_.size() && this->ddmcCellData_[cellIndex].eligible)
+    if(particle.radiationState.isDDMC() ||
+       (this->parameters_.withDDMC &&
+        cellIndex < this->ddmcCellData_.size() &&
+        this->ddmcCellData_[cellIndex].eligible))
     {
         if(this->tryDDMCStep(particle, functionality))
         {
@@ -3599,6 +3645,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         double eventRandom = this->randomUnitOpen() * eventOpacity;
         bool isEffectiveScatter = false;
         bool isComptonScatter = false;
+        bool comptonTransformedToLab = false;
 #ifdef MONTECARLO_POLARIZATION
         MCParticle polarizationMaterialParticle = particle;
         PointT polarizationOldVelocity = particle.velocity;
@@ -3665,15 +3712,43 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                 eo.addEntry("Source group", group);
                 throw eo;
             }
+            // The Compton kernel is defined in the material-comoving frame.
+            // Transform the incoming packet into that frame, perform the
+            // group-changing event there, and transform the result back
+            // before applying the lab-frame material energy ledger.
+            MCParticle comptonParticle = particle;
+            if(useComovingTransportFrame)
+            {
+                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+                {
+                    radiation_imc_detail::lorentzTransformToComoving<PointT>(
+                        comptonParticle, cell);
+                    this->clampFrequencyToBounds(comptonParticle.frequency);
+                }
+            }
             double const meanRatio = this->comptonData_[cellIndex].meanEnergyRatio[group];
-            particle.weight *= meanRatio;
-            this->addComptonMaterialExchange(cellIndex, oldWeight - particle.weight);
-            particle.frequency = this->opacity_->SampleThermalEnergyInGroup(
+            comptonParticle.weight *= meanRatio;
+            comptonParticle.frequency = this->opacity_->SampleThermalEnergyInGroup(
                 cell, targetGroup, this->randomUnitOpen(), this->energyBoundaries_);
-            particle.velocity = this->opacity_->getNewScatterVelocity(
-                cell, oldVelocity, particle.frequency, this->rng_, this->dist_);
+            comptonParticle.velocity = this->opacity_->getNewScatterVelocity(
+                cell, comptonParticle.velocity, comptonParticle.frequency,
+                this->rng_, this->dist_);
+            if(useComovingTransportFrame)
+            {
+                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+                {
+                    radiation_imc_detail::lorentzTransformToLab<PointT>(
+                        comptonParticle, cell);
+                    this->clampFrequencyToBounds(comptonParticle.frequency);
+                }
+            }
+            particle.weight = comptonParticle.weight;
+            particle.frequency = comptonParticle.frequency;
+            particle.velocity = comptonParticle.velocity;
+            this->addComptonMaterialExchange(cellIndex, oldWeight - particle.weight);
             ++this->comptonData_[cellIndex].implicitEvents;
             isComptonScatter = true;
+            comptonTransformedToLab = useComovingTransportFrame;
         }
         if(this->parameters_.withMultigroupOpacity)
         {
@@ -3690,7 +3765,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         }
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if(this->parameters_.withHydro && !this->parameters_.MMC && !isComptonScatter)
+            if(this->parameters_.withHydro && !this->parameters_.MMC &&
+               !isComptonScatter && !comptonTransformedToLab)
             {
                 double weightBefore = particle.weight;
                 particle.weight *= D_lab_to_co;
