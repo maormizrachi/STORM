@@ -13,6 +13,7 @@
 #include "../StormError.hpp"
 #include "ParticleStatus.hpp"
 #include "../elementary/PointOps.hpp"
+#include "RadiationTransportState.hpp"
 
 #define EPSILON 1e-12
 
@@ -74,6 +75,7 @@ struct Particle
     double frequency = std::numeric_limits<double>::max();
     double weight = std::numeric_limits<double>::max();
     double initialWeight = std::numeric_limits<double>::max();
+    RadiationTransportState<T> radiationState{};
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -167,6 +169,21 @@ struct Particle
                        << ", u " << particle.stokesU
                        << ", polInit " << particle.polarizationInitialized;
 #endif
+                if(particle.radiationState.isDDMC())
+                {
+                    stream << ", ddmc resident=" << particle.radiationState.isResident()
+                           << " comoving=" << particle.radiationState.isComoving();
+                    if(particle.radiationState.hasPendingFlux())
+                    {
+                        stream << " pendingFlux=" << particle.radiationState.pendingFlux;
+                    }
+                }
+                if(particle.radiationState.bypassCellID !=
+                   std::numeric_limits<size_t>::max())
+                {
+                    stream << ", ddmcBypassCellID="
+                           << particle.radiationState.bypassCellID;
+                }
                 return stream << ")";
     }
 
@@ -294,11 +311,15 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->frequency);
     bytes += serializer->insert(this->weight);
     bytes += serializer->insert(this->initialWeight);
+    bytes += serializer->insert(this->radiationState.flags);
+    bytes += serializer->insert(this->radiationState.pendingFlux);
+    bytes += serializer->insert(this->radiationState.bypassCellID);
 #ifdef MONTECARLO_POLARIZATION
     bytes += serializer->insert(this->stokesQ);
     bytes += serializer->insert(this->stokesU);
     bytes += serializer->insert(this->polarizationBasis);
     bytes += serializer->insert(this->polarizationInitialized);
+    bytes += serializer->insert(this->radiationState.pendingMeanScatterings);
 #endif
     bytes += serializer->insert(this->steps);
     bytes += serializer->insert(this->on_track);
@@ -349,11 +370,15 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
     bytes += serializer->extract(this->frequency, byteOffset + bytes);
     bytes += serializer->extract(this->weight, byteOffset + bytes);
     bytes += serializer->extract(this->initialWeight, byteOffset + bytes);
+    bytes += serializer->extract(this->radiationState.flags, byteOffset + bytes);
+    bytes += serializer->extract(this->radiationState.pendingFlux, byteOffset + bytes);
+    bytes += serializer->extract(this->radiationState.bypassCellID, byteOffset + bytes);
 #ifdef MONTECARLO_POLARIZATION
     bytes += serializer->extract(this->stokesQ, byteOffset + bytes);
     bytes += serializer->extract(this->stokesU, byteOffset + bytes);
     bytes += serializer->extract(this->polarizationBasis, byteOffset + bytes);
     bytes += serializer->extract(this->polarizationInitialized, byteOffset + bytes);
+    bytes += serializer->extract(this->radiationState.pendingMeanScatterings, byteOffset + bytes);
 #endif
     bytes += serializer->extract(this->steps, byteOffset + bytes);
     bytes += serializer->extract(this->on_track, byteOffset + bytes);
