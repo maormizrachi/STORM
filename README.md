@@ -16,7 +16,7 @@ STORM provides a templated Monte Carlo particle transport engine used by the [RI
 - **Population control** - comb algorithm for photon packet management
 - **Serial and MPI managers** - scale from laptop to supercomputer
 - **Full IMC radiation** - `RadiationIMC` with Random Walk, DDMC, and multigroup support
-- **Benchmark suite** - Hohlraum, Marshak wave (1–4), Densmore 2012, Moving slab
+- **Benchmark suite** - Hohlraum, Marshak wave (1–4), Densmore 2012, Moving slab, Till-Compton
 - **Header-heavy** - most code is inline in headers for easy integration
 
 ## Directory Structure
@@ -73,6 +73,11 @@ Executables are placed inside each example's subdirectory. Each example has its 
 | [`marshak_wave_4`](examples/marshak_wave_4/) | Marshak wave, Derei et al. Test 3 (geometric mesh) | Cartesian | Serial / MPI |
 | [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Cartesian | Serial / MPI |
 | [`moving_slab`](examples/moving_slab/) | McClarren & Gentile (2021) 124-group moving slab | Voronoi | MPI |
+| [`till_compton_mc`](examples/till_compton_mc/) | Till, McGraw & Warsa Compton equilibration | Cartesian | Serial |
+
+The Till-Compton example uses the CMMC submodule at `deps/CMMC`. Clone STORM
+with submodules, or initialize it explicitly with
+`git submodule update --init --recursive`.
 
 ## Building with MPI
 
@@ -96,6 +101,7 @@ The MPI build requires the `mpi_utils`, `MeshDecomposer3D`, and `EasyRMA` depend
 | `STORM_WITH_VTK` | `OFF` | Enable VTK mesh output (requires VTK >= 9.3) |
 | `STORM_WITH_HDF5` | `OFF` | Enable HDF5 I/O |
 | `STORM_DEPS_DIR` | `./deps` | Path to external dependencies |
+| `STORM_CMMC_DIR` | `deps/CMMC/src` | Override the CMMC source directory for Till-Compton |
 
 ### Build Types
 
@@ -142,6 +148,7 @@ All tests are submitted as SLURM batch jobs via `sbatch`. Serial tests run with 
 | `moving_slab` | MPI | 48 tasks, cyclic distribution |
 | `hohlraum_parallel` | MPI | 512 tasks |
 | `cartesian_parallel_check` | MPI | 4 tasks |
+| `till_compton_mc` | serial | 1 task |
 
 ### Options
 

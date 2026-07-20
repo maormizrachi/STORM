@@ -13,6 +13,7 @@ examples/marshak_wave_3/marshak_wave_3
 examples/marshak_wave_4/marshak_wave_4
 examples/densmore2012/densmore2012
 examples/moving_slab/moving_slab
+examples/till_compton_mc/till_compton_mc
 examples/*/output
 *.out
 *.err

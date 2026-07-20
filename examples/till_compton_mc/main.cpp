@@ -3,7 +3,7 @@
  *
  * This is the STORM equivalent of regression_tests/cases/till_compton_mc.
  * It uses the direct STORM IMC driver, the original RICH free-free opacity
- * formula, and an adapter around RICH's CMMC matrix generator.
+ * formula, and an adapter around STORM's CMMC matrix generator.
  *
  * The default settings intentionally follow the old case:
  *   one cell, 32 groups, T_mat = 1 keV, T_rad = 10 keV,

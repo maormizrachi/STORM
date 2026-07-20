@@ -5,7 +5,7 @@ STORM IMC interface. It retains the original 32 logarithmic energy groups,
 free-free absorption formula, Compton/induced-scattering settings, rigid
 boundary, and timestep schedule.
 
-The Compton kernel is an adapter around RICH's CMMC implementation. CMMC
+The Compton kernel is an adapter around STORM's CMMC submodule. CMMC
 produces microscopic group-changing matrices; the adapter applies the
 fully-ionized-hydrogen electron density and supplies the resulting rates to
 STORM. The matrix is rebuilt for each cell and timestep, so the default
