@@ -51,6 +51,9 @@ public:
     virtual void addTimedOutEnergy(double energy) = 0;
     virtual void addCutoffEnergy(double energy) = 0;
     virtual void resetTallies() = 0;
+    // Transport owns the polarization switch.  Observers that expose
+    // polarization tallies may override this; other observers can ignore it.
+    virtual void setPolarizationEnabled(bool) {}
 };
 
 } // namespace STORM

@@ -35,6 +35,7 @@
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/Compton.hpp"
 #include "radiation/Observer.hpp"
+#include "radiation/Polarization.hpp"
 #include "radiation/RandomWalk.hpp"
 #include "radiation/ddmc/DDMCGeometry.hpp"
 #include "radiation/ddmc/DDMCGhostExchange.hpp"
@@ -476,6 +477,10 @@ public:
     void setObserver(std::shared_ptr<Observer> observer)
     {
         this->observer_ = std::move(observer);
+        if(this->observer_)
+        {
+            this->observer_->setPolarizationEnabled(this->polarizationEnabled());
+        }
     }
     const std::shared_ptr<Observer> &getObserver() const { return this->observer_; }
 
@@ -544,6 +549,11 @@ private:
     void validateEnergyBoundaries() const;
     void rejectUnsupportedParameters() const;
     void rejectUnsupportedParameter(const std::string &name) const;
+    bool polarizationEnabled() const
+    {
+        return this->parameters_.withPolarization ||
+               this->parameters_.postProcess.polarization.enabled;
+    }
     void precomputeComptonData(double sourceDt);
     std::vector<MCParticle> generateComptonResidualParticles(double transportDt);
     std::size_t sampleComptonTarget(const ComptonCellData &data, std::size_t sourceGroup);
@@ -844,6 +854,45 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         eo.addEntry("withMultigroupOpacity", false);
         throw eo;
     }
+    if(this->parameters_.postProcess.polarization.enabled &&
+       !this->parameters_.postProcess.enabled &&
+       !this->parameters_.withPolarization)
+    {
+        throw StormError("RadiationIMC post-process polarization requires postProcess.enabled");
+    }
+    if(this->polarizationEnabled())
+    {
+        if(this->parameters_.withCompton)
+        {
+            throw StormError("RadiationIMC polarization does not support Compton transport yet");
+        }
+#ifndef MONTECARLO_POLARIZATION
+        throw StormError("RadiationIMC polarization requires a build with MONTECARLO_POLARIZATION");
+#else
+        auto const &polarization = this->parameters_.postProcess.polarization;
+        if(polarization.manualScatteringsAfterAcceleration < 0 ||
+           polarization.manualScatteringsAfterAcceleration > 128)
+        {
+            StormError eo("RadiationIMC polarization manual scatter count must be in [0, 128]");
+            eo.addEntry("manualScatteringsAfterAcceleration",
+                        polarization.manualScatteringsAfterAcceleration);
+            throw eo;
+        }
+        if(!std::isfinite(polarization.depolarizationScatterings) ||
+           polarization.depolarizationScatterings <= 0.0)
+        {
+            StormError eo("RadiationIMC polarization depolarizationScatterings must be finite and positive");
+            eo.addEntry("depolarizationScatterings", polarization.depolarizationScatterings);
+            throw eo;
+        }
+        if(polarization.acceleratedClosure != "damped_last_scatterings")
+        {
+            StormError eo("RadiationIMC polarization acceleratedClosure is unsupported");
+            eo.addEntry("acceleratedClosure", polarization.acceleratedClosure);
+            throw eo;
+        }
+#endif
+    }
     if(this->parameters_.postProcess.enabled)
     {
         if(!std::isfinite(this->parameters_.postProcess.sourceDt) ||
@@ -858,12 +907,6 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         {
             StormError eo("RadiationIMC post-process transportTime must be finite and positive");
             eo.addEntry("transportTime", this->parameters_.postProcess.transportTime);
-            throw eo;
-        }
-        if(this->parameters_.postProcess.polarization.enabled &&
-           this->parameters_.postProcess.polarization.manualScatteringsAfterAcceleration < 0)
-        {
-            StormError eo("RadiationIMC post-process manual polarization scatter count cannot be negative");
             throw eo;
         }
     }
@@ -1316,7 +1359,6 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     PointT oldVelocity = particle.velocity;
     double oldWeight = particle.weight;
     double f = this->factorFleck_[cellIndex];
-
     double tauLeak = this->randomWalk_->sampleLeakTime(this->randomUnitOpen());
     double tLeak = tauLeak * Ro * Ro / D_phys;
 
@@ -1424,20 +1466,37 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     particle.velocity = this->opacity_->getRandomVelocity(cell, this->rng_, this->dist_);
 
 #ifdef MONTECARLO_POLARIZATION
-    if(this->parameters_.postProcess.polarization.enabled)
+    if(this->polarizationEnabled())
     {
-        PointT direction = normalize(particle.velocity);
-        PointT helper = std::abs(direction.z) < 0.9
-            ? PointT(0.0, 0.0, 1.0) : PointT(0.0, 1.0, 0.0);
-        PointT basis = helper - direction * ScalarProd(helper, direction);
-        if(fastabs(basis) > 0.0)
+        MCParticle polarizationParticle = particle;
+        polarizationParticle.velocity = oldVelocity;
+        double dtCo = dt;
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            particle.polarizationBasis = normalize(basis);
-            particle.polarizationInitialized = true;
+            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            {
+                dtCo *= radiation_imc_detail::computeDopplerShift<PointT>(
+                    polarizationParticle, cell);
+                radiation_imc_detail::lorentzTransformToComoving<PointT>(
+                    polarizationParticle, cell);
+            }
         }
-        particle.stokesQ = 0.0;
-        particle.stokesU = 0.0;
-        particle.radiationState.pendingMeanScatterings = 0.0;
+        polarization::applyAcceleratedPolarizationHistory<PointT>(
+            polarizationParticle, dtCo,
+            std::max(0.0, sigmaT - sigma_a_eff),
+            std::max(0.0, (1.0 - f) * sigma_a_eff),
+            particle.velocity,
+            this->parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
+            this->parameters_.postProcess.polarization.depolarizationScatterings,
+            this->rng_, this->dist_);
+        particle.stokesQ = polarizationParticle.stokesQ;
+        particle.stokesU = polarizationParticle.stokesU;
+        particle.polarizationBasis = polarizationParticle.polarizationBasis;
+        particle.polarizationInitialized = polarizationParticle.polarizationInitialized;
+        particle.radiationState.pendingMeanScatterings =
+            polarizationParticle.radiationState.pendingMeanScatterings;
+        particle.polarizationBasis = polarization::projectBasisToDirection(
+            particle.polarizationBasis, particle.velocity);
     }
 #endif
 
@@ -1470,6 +1529,13 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             {
                 this->clampFrequencyToBounds(particle.frequency);
             }
+#ifdef MONTECARLO_POLARIZATION
+            if(this->polarizationEnabled())
+            {
+                particle.polarizationBasis = polarization::projectBasisToDirection(
+                    particle.polarizationBasis, particle.velocity);
+            }
+#endif
             if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
             {
                 if(!this->parameters_.diffusionPressureGradient && !this->parameters_.noHydroFeedback)
@@ -2113,6 +2179,16 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             particle.location = this->grid.GetMeshPoint(cellIndex);
             particle.velocity = this->opacity_->getRandomVelocity(
                 this->cells_[cellIndex], this->rng_, this->dist_);
+#ifdef MONTECARLO_POLARIZATION
+            if(this->polarizationEnabled())
+            {
+                polarization::finalizeAcceleratedPolarizationHistory<PointT>(
+                    particle, particle.velocity,
+                    this->parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
+                    this->parameters_.postProcess.polarization.depolarizationScatterings,
+                    this->rng_, this->dist_);
+            }
+#endif
         }
         return false;
     }
@@ -2165,6 +2241,15 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
     }
 
+#ifdef MONTECARLO_POLARIZATION
+    if(this->polarizationEnabled())
+    {
+        polarization::initializeIfNeeded<PointT>(particle);
+        particle.polarizationBasis = polarization::projectBasisToDirection(
+            particle.polarizationBasis, particle.velocity);
+    }
+#endif
+
     auto convertResidentToLab = [&]()
     {
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
@@ -2177,9 +2262,32 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 particle.initialWeight = std::abs(particle.weight);
             }
         }
+#ifdef MONTECARLO_POLARIZATION
+        if(this->polarizationEnabled())
+        {
+            polarization::initializeIfNeeded<PointT>(particle);
+            particle.polarizationBasis = polarization::projectBasisToDirection(
+                particle.polarizationBasis, particle.velocity);
+        }
+#endif
     };
 
     double f = this->factorFleck_[cellIndex];
+    auto finalizePolarization = [&](const PointT &finalVelocity)
+    {
+#ifdef MONTECARLO_POLARIZATION
+        if(this->polarizationEnabled())
+        {
+            polarization::finalizeAcceleratedPolarizationHistory<PointT>(
+                particle, finalVelocity,
+                this->parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
+                this->parameters_.postProcess.polarization.depolarizationScatterings,
+                this->rng_, this->dist_);
+        }
+#else
+        (void) finalVelocity;
+#endif
+    };
     double upscatterRate = 0.0;
     if(this->parameters_.ddmcUseMultigroupPGRW && data.gamma < 1.0 &&
        data.sigmaEnergyAbs > 0.0 && f > 0.0)
@@ -2215,6 +2323,22 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double dt = std::min({tEvent, tCensus, tCutoff});
     bool const censusEvent = tCensus <= tEvent && tCensus <= tCutoff;
     bool const cutoffEvent = tCutoff < tEvent && tCutoff < tCensus;
+
+#ifdef MONTECARLO_POLARIZATION
+    if(this->polarizationEnabled())
+    {
+        double const fHistory = this->factorFleck_[cellIndex];
+        double const scatteringOpacity = std::max(0.0,
+            this->opacity_->CalcScatteringOpacity(this->cells_[cellIndex]));
+        double const explicitResetOpacity = upscatterRate / units::clight;
+        polarization::accumulateAcceleratedPolarizationHistory<PointT>(
+            particle, dt,
+            scatteringOpacity,
+            std::max(0.0, (1.0 - fHistory) * data.sigmaEnergyAbs -
+                              explicitResetOpacity),
+            this->rng_, this->dist_);
+    }
+#endif
 
     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
     {
@@ -2325,6 +2449,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             std::numeric_limits<double>::max());
         particle.velocity = this->opacity_->getRandomVelocity(
             this->cells_[cellIndex], this->rng_, this->dist_);
+        finalizePolarization(particle.velocity);
         convertResidentToLab();
         particle.radiationState.clearDDMC();
         functionality.change = ParticleStatus::NO_CELL_MOVE;
@@ -2368,6 +2493,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
         particle.velocity = this->opacity_->getRandomVelocity(
             this->cells_[cellIndex], this->rng_, this->dist_);
+        finalizePolarization(particle.velocity);
         convertResidentToLab();
         functionality.change = ParticleStatus::DONE;
         ++this->ddmcCensusCount_;
@@ -2491,6 +2617,11 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             }
         }
 
+        if(!targetDDMC)
+        {
+            finalizePolarization(particle.velocity);
+        }
+
         double const fluxWeightComoving = particle.weight;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
@@ -2548,6 +2679,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     {
         if(!this->parameters_.ddmcUseMultigroupPGRW)
         {
+            finalizePolarization(particle.velocity);
             particle.radiationState.clearDDMC();
             functionality.change = ParticleStatus::DONE;
             ++this->ddmcCensusCount_;
@@ -2585,6 +2717,12 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
         this->clampFrequencyToBounds(particle.frequency);
         particle.velocity = this->opacity_->getRandomVelocity(cell, this->rng_, this->dist_);
+#ifdef MONTECARLO_POLARIZATION
+        if(this->polarizationEnabled())
+        {
+            polarization::resetUnpolarized<PointT>(particle);
+        }
+#endif
         particle.radiationState.set(
             RadiationTransportState<PointT>::DDMCMode);
         particle.radiationState.set(
@@ -2652,6 +2790,12 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 
     MCParticle faceComoving = particle;
     MCParticle targetComoving = particle;
+#ifdef MONTECARLO_POLARIZATION
+    if(this->polarizationEnabled())
+    {
+        polarization::initializeIfNeeded<PointT>(faceComoving);
+    }
+#endif
     bool useVelocityFrames = false;
     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
     {
@@ -2664,6 +2808,13 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             targetCell.velocity = this->ddmcPointVelocity_[targetCellIndex];
             radiation_imc_detail::lorentzTransformToComoving<PointT>(
                 faceComoving, faceCell);
+#ifdef MONTECARLO_POLARIZATION
+            if(this->polarizationEnabled())
+            {
+                faceComoving.polarizationBasis = polarization::projectBasisToDirection(
+                    faceComoving.polarizationBasis, faceComoving.velocity);
+            }
+#endif
             targetComoving = faceComoving;
             radiation_imc_detail::lorentzTransformToLab<PointT>(
                 targetComoving, faceCell);
@@ -2758,6 +2909,16 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         particle.velocity = faceComoving.velocity;
         particle.frequency = faceComoving.frequency;
         particle.weight = faceComoving.weight;
+#ifdef MONTECARLO_POLARIZATION
+        if(this->polarizationEnabled())
+        {
+            particle.stokesQ = faceComoving.stokesQ;
+            particle.stokesU = faceComoving.stokesU;
+            particle.polarizationBasis = polarization::projectBasisToDirection(
+                faceComoving.polarizationBasis, particle.velocity);
+            particle.polarizationInitialized = faceComoving.polarizationInitialized;
+        }
+#endif
         particle.location = (1.0 - 1.0e-10) * this->grid.FaceCM(faceIndex) +
             1.0e-10 * sourceCenter;
         functionality.change = ParticleStatus::NO_CELL_MOVE;
@@ -2778,11 +2939,27 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 targetComoving, faceCell);
             radiation_imc_detail::lorentzTransformToComoving<PointT>(
                 targetComoving, targetCell);
+#ifdef MONTECARLO_POLARIZATION
+            if(this->polarizationEnabled())
+            {
+                targetComoving.polarizationBasis = polarization::projectBasisToDirection(
+                    targetComoving.polarizationBasis, targetComoving.velocity);
+            }
+#endif
         }
     }
     particle.weight = targetComoving.weight;
     particle.frequency = targetComoving.frequency;
     particle.initialWeight = std::abs(particle.weight);
+#ifdef MONTECARLO_POLARIZATION
+    if(this->polarizationEnabled())
+    {
+        particle.stokesQ = targetComoving.stokesQ;
+        particle.stokesU = targetComoving.stokesU;
+        particle.polarizationBasis = targetComoving.polarizationBasis;
+        particle.polarizationInitialized = targetComoving.polarizationInitialized;
+    }
+#endif
     particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
     particle.radiationState.set(
         RadiationTransportState<PointT>::DDMCCellResident);
@@ -2808,6 +2985,13 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     particle.location = this->grid.FaceCM(faceIndex);
     particle.velocity = this->opacity_->getRandomVelocity(
         this->cells_[sourceCellIndex], this->rng_, this->dist_);
+#ifdef MONTECARLO_POLARIZATION
+    if(this->polarizationEnabled())
+    {
+        particle.polarizationBasis = polarization::projectBasisToDirection(
+            particle.polarizationBasis, particle.velocity);
+    }
+#endif
     functionality.change = ParticleStatus::CELL_MOVE;
     functionality.nextCellIndex = targetCellIndex;
     return true;
@@ -3025,12 +3209,16 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     record.frequency = particle.frequency;
     record.sourceCellID = particle.sourceCellID;
 #ifdef MONTECARLO_POLARIZATION
-    if(this->parameters_.postProcess.polarization.enabled)
+    if(this->polarizationEnabled())
     {
         record.stokesQ = particle.stokesQ;
         record.stokesU = particle.stokesU;
-        record.polarizationBasis = particle.polarizationBasis;
-        record.polarizationInitialized = particle.polarizationInitialized;
+        record.polarizationBasis = particle.polarizationInitialized
+            ? polarization::projectBasisToDirection(
+                particle.polarizationBasis, particle.velocity)
+            : polarization::choosePerpendicularBasis(particle.velocity);
+        record.polarizationInitialized = true;
+        polarization::clampLinearPolarization(record.stokesQ, record.stokesU);
     }
 #endif
     this->observer_->recordCrossing(record);
@@ -3411,9 +3599,48 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         double eventRandom = this->randomUnitOpen() * eventOpacity;
         bool isEffectiveScatter = false;
         bool isComptonScatter = false;
+#ifdef MONTECARLO_POLARIZATION
+        MCParticle polarizationMaterialParticle = particle;
+        PointT polarizationOldVelocity = particle.velocity;
+        if(this->polarizationEnabled())
+        {
+            polarization::initializeIfNeeded<PointT>(polarizationMaterialParticle);
+            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+            {
+                if(this->parameters_.withHydro && !this->parameters_.MMC)
+                {
+                    radiation_imc_detail::lorentzTransformToComoving<PointT>(
+                        polarizationMaterialParticle, cell);
+                    polarizationOldVelocity = polarizationMaterialParticle.velocity;
+                    polarizationMaterialParticle.polarizationBasis =
+                        polarization::projectBasisToDirection(
+                            polarizationMaterialParticle.polarizationBasis,
+                            polarizationOldVelocity);
+                }
+            }
+        }
+#endif
         if(eventRandom < elasticScatteringOpacity)
         {
+#ifdef MONTECARLO_POLARIZATION
+            if(this->polarizationEnabled())
+            {
+                auto u01 = [&]() { return this->randomUnitOpen(); };
+                PointT const newVelocity = polarization::samplePolarizedThomsonDirection(
+                    polarizationMaterialParticle, polarizationOldVelocity, u01);
+                polarization::applyThomsonScatter<PointT>(
+                    polarizationMaterialParticle, polarizationOldVelocity, newVelocity);
+                particle.velocity = polarizationMaterialParticle.velocity;
+                particle.stokesQ = polarizationMaterialParticle.stokesQ;
+                particle.stokesU = polarizationMaterialParticle.stokesU;
+                particle.polarizationBasis = polarizationMaterialParticle.polarizationBasis;
+                particle.polarizationInitialized = true;
+            }
+            else
+#endif
+            {
             particle.velocity = this->opacity_->getNewScatterVelocity(cell, particle.velocity, particle.frequency, this->rng_, this->dist_);
+            }
         }
         else if((eventRandom -= elasticScatteringOpacity) < effectiveAbsorptionOpacity)
         {
@@ -3472,6 +3699,13 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                 {
                     this->clampFrequencyToBounds(particle.frequency);
                 }
+#ifdef MONTECARLO_POLARIZATION
+                if(this->polarizationEnabled())
+                {
+                    particle.polarizationBasis = polarization::projectBasisToDirection(
+                        particle.polarizationBasis, particle.velocity);
+                }
+#endif
                 if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                 {
                     if(!this->parameters_.diffusionPressureGradient && !this->parameters_.noHydroFeedback)
@@ -3482,24 +3716,16 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             }
         }
 #ifdef MONTECARLO_POLARIZATION
-        if(this->parameters_.postProcess.polarization.enabled)
+        if(this->polarizationEnabled())
         {
-            PointT direction = normalize(particle.velocity);
             if(isEffectiveScatter || isComptonScatter)
             {
-                particle.stokesQ = 0.0;
-                particle.stokesU = 0.0;
+                polarization::resetUnpolarized<PointT>(particle);
             }
-            if(particle.polarizationInitialized)
-            {
-                PointT projected = particle.polarizationBasis -
-                    direction * ScalarProd(particle.polarizationBasis, direction);
-                if(fastabs(projected) > 0.0)
-                {
-                    particle.polarizationBasis = normalize(projected);
-                }
-            }
-            particle.radiationState.pendingMeanScatterings = 0.0;
+            polarization::initializeIfNeeded<PointT>(particle);
+            particle.polarizationBasis = polarization::projectBasisToDirection(
+                particle.polarizationBasis, particle.velocity);
+            polarization::clampLinearPolarization(particle.stokesQ, particle.stokesU);
         }
 #endif
         functionality.change = ParticleStatus::NO_CELL_MOVE;
@@ -4208,20 +4434,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     particle.velocity = this->opacity_->getRandomVelocity(cell, this->rng_, this->dist_);
 
 #ifdef MONTECARLO_POLARIZATION
-    if(this->parameters_.postProcess.polarization.enabled)
+    if(this->polarizationEnabled())
     {
-        PointT direction = normalize(particle.velocity);
-        PointT helper = std::abs(direction.z) < 0.9
-            ? PointT(0.0, 0.0, 1.0) : PointT(0.0, 1.0, 0.0);
-        PointT basis = helper - direction * ScalarProd(helper, direction);
-        if(fastabs(basis) > 0.0)
-        {
-            particle.polarizationBasis = normalize(basis);
-            particle.polarizationInitialized = true;
-        }
-        particle.stokesQ = 0.0;
-        particle.stokesU = 0.0;
-        particle.radiationState.pendingMeanScatterings = 0.0;
+        polarization::resetUnpolarized<PointT>(particle);
     }
 #endif
 
@@ -4229,6 +4444,13 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
        (this->parameters_.postProcess.enabled && this->parameters_.postProcess.useCellVelocities))
     {
         radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+#ifdef MONTECARLO_POLARIZATION
+        if(this->polarizationEnabled())
+        {
+            particle.polarizationBasis = polarization::projectBasisToDirection(
+                particle.polarizationBasis, particle.velocity);
+        }
+#endif
     }
 
     particle.timeLeft = 0.0;

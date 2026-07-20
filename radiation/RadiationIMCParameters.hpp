@@ -26,6 +26,9 @@ struct RadiationIMCParameters
     bool ddmcUseMultigroupPGRW = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
+    // Canonical transport-level switch for polarized Thomson scattering.
+    // postProcess.polarization.enabled remains a compatibility alias.
+    bool withPolarization = false;
     bool withCompton = false;
     bool comptonUseInduced = true;
     bool comptonAllowNZeroFallback = true;
@@ -48,9 +51,9 @@ struct RadiationIMCParameters
         struct PolarizationParameters
         {
             bool enabled = false;
-            int manualScatteringsAfterAcceleration = 0;
-            double depolarizationScatterings = 0.0;
-            std::string acceleratedClosure;
+            int manualScatteringsAfterAcceleration = 4;
+            double depolarizationScatterings = 2.0;
+            std::string acceleratedClosure = "damped_last_scatterings";
         } polarization;
     } postProcess;
 };
@@ -68,6 +71,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
     os << "\twith DDMC: " << parameters.withDDMC << '\n';
     os << "\tno hydro feedback: " << parameters.noHydroFeedback << '\n';
     os << "\twith group time averages: " << parameters.withEgTimeAvg << '\n';
+    os << "\twith polarization: " << parameters.withPolarization << '\n';
     os << "\twith Compton: " << parameters.withCompton << '\n';
     if(parameters.withRandomWalk)
     {

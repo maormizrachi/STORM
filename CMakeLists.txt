@@ -235,6 +235,15 @@ if(STORM_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_executable(storm_compton_observer_tests tests/ComptonObserverTests.cpp)
     target_link_libraries(storm_compton_observer_tests PRIVATE storm)
     add_test(NAME storm_compton_observer_tests COMMAND storm_compton_observer_tests)
+
+    add_executable(storm_polarization_tests tests/PolarizationTests.cpp)
+    target_compile_definitions(storm_polarization_tests PRIVATE MONTECARLO_POLARIZATION)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../Radiation/CMMC/src")
+      target_include_directories(storm_polarization_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Radiation/CMMC/src")
+    endif()
+    target_link_libraries(storm_polarization_tests PRIVATE storm)
+    add_test(NAME storm_polarization_tests COMMAND storm_polarization_tests)
   endif()
 endif()
 

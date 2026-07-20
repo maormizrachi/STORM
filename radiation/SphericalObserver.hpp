@@ -234,6 +234,14 @@ public:
     const std::vector<double> &stokesQ() const { return observerStokesQ_; }
     const std::vector<double> &stokesU() const { return observerStokesU_; }
 #endif
+    void setPolarizationEnabled(bool enabled) override
+    {
+#ifdef MONTECARLO_POLARIZATION
+        polarizationEnabled_ = enabled;
+#else
+        (void) enabled;
+#endif
+    }
 
     std::size_t findGroup(double frequency) const
     {
