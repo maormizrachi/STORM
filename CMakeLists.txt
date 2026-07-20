@@ -43,6 +43,7 @@ option(STORM_NO_OFI      "Disable OFI auto-detection (OpenFabrics Interfaces / l
 option(STORM_WITH_VTK    "Build with VTK support for mesh output (requires MadVoro VTK headers)" OFF)
 option(STORM_WITH_HDF5   "Build with HDF5 support" OFF)
 option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
+option(STORM_BUILD_TESTS "Build focused STORM unit tests" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -222,6 +223,15 @@ endif()
 
 if(STORM_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(STORM_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  include(CTest)
+  if(BUILD_TESTING)
+    add_executable(storm_ddmc_math_tests tests/DDMCMathTests.cpp)
+    target_link_libraries(storm_ddmc_math_tests PRIVATE storm)
+    add_test(NAME storm_ddmc_math_tests COMMAND storm_ddmc_math_tests)
+  endif()
 endif()
 
 # ---------- Install & export (skip when embedded) ----------
