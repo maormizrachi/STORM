@@ -37,6 +37,14 @@ public:
 
     virtual ParticleStatus apply(Particle<T, Grid> &particle) = 0;
 
+    // A REMOVE result can mean absorption/thermalization as well as escape;
+    // concrete boundaries identify the latter explicitly.
+    virtual bool isEscape(ParticleStatus status) const
+    {
+        (void) status;
+        return false;
+    }
+
     virtual std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) = 0;
 
     virtual DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(

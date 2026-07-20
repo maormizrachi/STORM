@@ -1250,6 +1250,10 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                                     T preReflectVel = particle.velocity;
                                 #endif // STORM_WITH_TRACING_HISTORY
                                 MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
+                                this->physics->onBoundaryResult(
+                                    particle, status,
+                                    functionality.boundaryCrossing &&
+                                    this->boundaryCondition->isEscape(status));
                                 if(debug)
                                 {
                                     std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;

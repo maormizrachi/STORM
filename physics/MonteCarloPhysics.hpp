@@ -29,6 +29,9 @@ public:
 
     virtual StepResult<T, Grid> step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) = 0;
 
+    virtual void onBoundaryResult(const MCParticle &, ParticleStatus, bool)
+    {}
+
     virtual void postStep(const std::vector<MCParticle> &particles, double fullDt) = 0;
 
     virtual size_t getRandomWalkStepCount() const { return 0; }

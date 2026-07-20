@@ -46,6 +46,15 @@ public:
                                          double maxTime) const = 0;
     virtual void recordCrossing(const CrossingRecord &record) = 0;
     virtual void addEmittedEnergy(double energy) = 0;
+    // Optional decomposition for signed source diagnostics.  The default is
+    // intentionally a no-op so existing observer implementations remain
+    // source-compatible.
+    virtual void addEmittedEnergyComponents(double positiveEnergy,
+                                             double negativeMagnitude)
+    {
+        (void) positiveEnergy;
+        (void) negativeMagnitude;
+    }
     virtual void addAbsorbedEnergy(double energy) = 0;
     virtual void addBoxEscapeEnergy(double energy) = 0;
     virtual void addTimedOutEnergy(double energy) = 0;

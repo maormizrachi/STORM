@@ -23,6 +23,9 @@ struct RadiationIMCParameters
     bool withDDMC = false;
     double ddmcMinCellOpticalDepth = 15.0;
     double ddmcMinParticleOpticalDepth = 5.0;
+    // Moving IMC-to-DDMC interface corrections above this bound bypass DDMC
+    // for that crossing and remain unbiased in ordinary IMC transport.
+    double ddmcMaxMovingInterfaceWeightCorrection = 10.0;
     bool ddmcUseMultigroupPGRW = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
@@ -35,7 +38,10 @@ struct RadiationIMCParameters
     bool comptonDebugParityCheck = false;
     bool comptonCheckSignedTallies = false;
     bool comptonDiagnostics = false;
-    bool comptonAngleDependent = true;
+    // The current Compton kernel is group-only.  Keep angular dependence
+    // opt-in so existing Compton runs remain valid; unsupported opt-in is
+    // rejected during transport construction rather than silently ignored.
+    bool comptonAngleDependent = false;
     double comptonSignedTallyTolerance = 1e-10;
     std::size_t comptonMatrixSamples = 200000;
     std::array<double, NumGroups + 1> energyBoundaries{};
@@ -83,6 +89,8 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
         os << "\tDDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << '\n';
         os << "\tDDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << '\n';
         os << "\tDDMC multigroup PGRW: " << parameters.ddmcUseMultigroupPGRW << '\n';
+        os << "\tDDMC max moving interface weight correction: "
+           << parameters.ddmcMaxMovingInterfaceWeightCorrection << '\n';
     }
     if(parameters.withCompton)
     {

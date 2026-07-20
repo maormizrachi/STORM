@@ -21,6 +21,11 @@ public:
         return ParticleStatus::REMOVE;
     }
 
+    bool isEscape(ParticleStatus status) const override
+    {
+        return status == ParticleStatus::REMOVE;
+    }
+
     std::vector<MCParticle> generateNewBoundaryParticles(double) override
     {
         return {};

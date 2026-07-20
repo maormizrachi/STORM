@@ -332,6 +332,10 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                         T preReflectVel = particle.velocity;
                     #endif
                     ParticleStatus status = this->boundaryCondition->apply(particle);
+                    this->physics->onBoundaryResult(
+                        particle, status,
+                        functionality.boundaryCrossing &&
+                        this->boundaryCondition->isEscape(status));
                     if(status == ParticleStatus::REFLECT)
                     {
                         #ifdef STORM_WITH_TRACING_HISTORY

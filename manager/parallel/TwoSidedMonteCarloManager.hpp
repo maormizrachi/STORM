@@ -499,6 +499,10 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     {
                         // leaving domain
                         MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
+                        this->physics->onBoundaryResult(
+                            particle, status,
+                            functionality.boundaryCrossing &&
+                            this->boundaryCondition->isEscape(status));
                         if(debug)
                         {
                             std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;

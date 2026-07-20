@@ -443,6 +443,9 @@ public:
     std::vector<MCParticle> preStep(double fullDt) override;
     Functionality step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) override;
     void postStep(const std::vector<MCParticle> &particles, double fullDt) override;
+    void onBoundaryResult(const MCParticle &particle,
+                          ParticleStatus status,
+                          bool escaped) override;
 
     MCParticle generateSingleParticle(std::size_t cellIndex, const CellT &cell);
     std::vector<MCParticle> generateInitialParticles(std::size_t particlesPerCell);
@@ -490,6 +493,14 @@ public:
     std::size_t getDDMCCensusCount() const { return this->ddmcCensusCount_; }
     std::size_t getDDMCUpscatterCount() const { return this->ddmcUpscatterCount_; }
     std::size_t getDDMCFallbackCount() const { return this->ddmcFallbackCount_; }
+    std::size_t getDDMCMovingInterfaceBypassCount() const
+    {
+        return this->ddmcMovingInterfaceBypassCount_;
+    }
+    double getDDMCMovingInterfaceMaxFactor() const
+    {
+        return this->ddmcMovingInterfaceMaxFactor_;
+    }
     double getDDMCLeakReciprocityResidualMax() const
     {
         return this->ddmcLeakReciprocityResidualMax_;
@@ -635,6 +646,8 @@ private:
     std::size_t ddmcCensusCount_ = 0;
     std::size_t ddmcUpscatterCount_ = 0;
     std::size_t ddmcFallbackCount_ = 0;
+    std::size_t ddmcMovingInterfaceBypassCount_ = 0;
+    double ddmcMovingInterfaceMaxFactor_ = 0.0;
 
     std::unordered_map<std::size_t, double> adaptiveSourceScores_;
     bool adaptiveSourceScoresEnabled_ = false;
@@ -842,6 +855,15 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         eo.addEntry("ddmcMinParticleOpticalDepth", this->parameters_.ddmcMinParticleOpticalDepth);
         throw eo;
     }
+    if(this->parameters_.withDDMC &&
+       (!std::isfinite(this->parameters_.ddmcMaxMovingInterfaceWeightCorrection) ||
+        this->parameters_.ddmcMaxMovingInterfaceWeightCorrection <= 0.0))
+    {
+        StormError eo("RadiationIMC DDMC moving-interface weight correction cap must be finite and positive");
+        eo.addEntry("ddmcMaxMovingInterfaceWeightCorrection",
+                    this->parameters_.ddmcMaxMovingInterfaceWeightCorrection);
+        throw eo;
+    }
     if(this->parameters_.withDDMC && this->parameters_.ddmcUseMultigroupPGRW &&
        !this->parameters_.withMultigroupOpacity)
     {
@@ -853,6 +875,11 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         eo.addEntry("withCompton", true);
         eo.addEntry("withMultigroupOpacity", false);
         throw eo;
+    }
+    if(this->parameters_.withCompton && this->parameters_.comptonAngleDependent)
+    {
+        rejectUnsupportedParameter(
+            "comptonAngleDependent=true (the current Compton kernel is group-only)");
     }
     if(this->parameters_.postProcess.polarization.enabled &&
        !this->parameters_.postProcess.enabled &&
@@ -2254,6 +2281,24 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         return false;
     }
 
+    if(!particle.radiationState.isResident() &&
+       particle.radiationState.bypassCellID !=
+           std::numeric_limits<std::size_t>::max())
+    {
+        std::size_t const exchangedCellID = cellIndex <
+            this->ddmcPointCellID_.size()
+            ? this->ddmcPointCellID_[cellIndex]
+            : std::numeric_limits<std::size_t>::max();
+        std::size_t const currentCellID = exchangedCellID ==
+            std::numeric_limits<std::size_t>::max()
+            ? cellIndex : exchangedCellID;
+        if(currentCellID == particle.radiationState.bypassCellID)
+        {
+            ++this->ddmcFallbackCount_;
+            return false;
+        }
+    }
+
     double Ro = this->computeMinDistanceToFaces(cellIndex, particle.location);
     if(!particle.radiationState.isResident() &&
        Ro * data.sigmaParticleGate <
@@ -2531,19 +2576,62 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         // Census is a representation boundary.  Reconstruct a valid IMC
         // packet before returning it to the manager; the next time step must
         // not carry a stale DDMC direction or frame.
-        particle.radiationState.clearDDMC();
         particle.location = this->grid.GetMeshPoint(cellIndex);
         if(this->parameters_.withMultigroupOpacity)
         {
-            double const sample = this->randomUnitOpen();
-            particle.frequency = this->opacity_->GetThermalEnergy(
-                this->cells_[cellIndex], sample, this->energyBoundaries_);
+            bool sampledResidentBand = false;
+            if(this->parameters_.ddmcUseMultigroupPGRW &&
+               data.groupCutoff > 0 && data.groupCutoff <= NumGroups)
+            {
+                double const kT = units::k_boltz *
+                    this->cells_[cellIndex].temperature;
+                double const bandMass = ddmc::PlanckBandMass(
+                    this->energyBoundaries_, kT, 0, data.groupCutoff);
+                if(!(bandMass > 0.0))
+                {
+                    StormError eo("RadiationIMC DDMC census has no resident-band Planck mass");
+                    eo.addEntry("Cell index", cellIndex);
+                    eo.addEntry("Group cutoff", data.groupCutoff);
+                    throw eo;
+                }
+                double remaining = this->randomUnitOpen() * bandMass;
+                for(std::size_t group = 0; group < data.groupCutoff; ++group)
+                {
+                    double const groupMass = ddmc::PlanckBandMass(
+                        this->energyBoundaries_, kT, group, group + 1);
+                    if(remaining <= groupMass || group + 1 == data.groupCutoff)
+                    {
+                        double const localRandom = groupMass > 0.0
+                            ? std::clamp(remaining / groupMass, 0.0, 1.0)
+                            : this->randomUnitOpen();
+                        particle.frequency = this->opacity_->SampleThermalEnergyInGroup(
+                            this->cells_[cellIndex], group, localRandom,
+                            this->energyBoundaries_);
+                        double const upperBand =
+                            this->energyBoundaries_[data.groupCutoff];
+                        particle.frequency = std::min(
+                            particle.frequency,
+                            std::nextafter(upperBand,
+                                this->energyBoundaries_[0]));
+                        sampledResidentBand = true;
+                        break;
+                    }
+                    remaining -= groupMass;
+                }
+            }
+            if(!sampledResidentBand)
+            {
+                particle.frequency = this->opacity_->GetThermalEnergy(
+                    this->cells_[cellIndex], this->randomUnitOpen(),
+                    this->energyBoundaries_);
+            }
             this->clampFrequencyToBounds(particle.frequency);
         }
         particle.velocity = this->opacity_->getRandomVelocity(
             this->cells_[cellIndex], this->rng_, this->dist_);
         finalizePolarization(particle.velocity);
         convertResidentToLab();
+        particle.radiationState.clearDDMC();
         functionality.change = ParticleStatus::DONE;
         ++this->ddmcCensusCount_;
         return true;
@@ -2885,6 +2973,13 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         return false;
 
     double movingFactor = 1.0;
+    auto bypassMovingInterface = [&]()
+    {
+        ++this->ddmcMovingInterfaceBypassCount_;
+        functionality.change = ParticleStatus::CELL_MOVE;
+        functionality.nextCellIndex = targetCellIndex;
+        return true;
+    };
     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
     {
         if(useVelocityFrames)
@@ -2894,17 +2989,20 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             if(!std::isfinite(betaNormal) || std::abs(betaNormal) > 0.5)
             {
                 particle.radiationState.bypassCellID = targetID;
-                functionality.change = ParticleStatus::CELL_MOVE;
-                functionality.nextCellIndex = targetCellIndex;
-                return true;
+                return bypassMovingInterface();
             }
             movingFactor = ddmc::MovingFactor(mu, betaNormal);
-            if(!(movingFactor > 0.0) || !std::isfinite(movingFactor))
+            if(std::isfinite(movingFactor))
+            {
+                this->ddmcMovingInterfaceMaxFactor_ = std::max(
+                    this->ddmcMovingInterfaceMaxFactor_, movingFactor);
+            }
+            if(!(movingFactor > 0.0) ||
+               !std::isfinite(movingFactor) ||
+               movingFactor > this->parameters_.ddmcMaxMovingInterfaceWeightCorrection)
             {
                 particle.radiationState.bypassCellID = targetID;
-                functionality.change = ParticleStatus::CELL_MOVE;
-                functionality.nextCellIndex = targetCellIndex;
-                return true;
+                return bypassMovingInterface();
             }
         }
     }
@@ -3147,12 +3245,19 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 }
             }
         }
-        double const kernelFleck = result.hasFleckCorrection
-            ? *std::min_element(result.fleckCorrection.begin(), result.fleckCorrection.end())
-            : 1.0;
-        double const modifiedValue = std::clamp(data.fleck * kernelFleck, 0.0, 1.0);
-        data.modifiedFleck.fill(modifiedValue);
-        data.fleck = modifiedValue;
+        double minimumModifiedFleck = 1.0;
+        for(std::size_t source = 0; source < NumGroups; ++source)
+        {
+            double const kernelFleck = result.hasFleckCorrection
+                ? result.fleckCorrection[source] : 1.0;
+            data.modifiedFleck[source] = std::clamp(
+                data.fleck * kernelFleck, 0.0, 1.0);
+            minimumModifiedFleck = std::min(
+                minimumModifiedFleck, data.modifiedFleck[source]);
+        }
+        // Keep the scalar as a conservative summary for diagnostics and
+        // legacy callers; transport uses modifiedFleck[sourceGroup].
+        data.fleck = minimumModifiedFleck;
         for(double source : data.residualSource)
         {
             data.signedSourceNet += source;
@@ -3265,6 +3370,16 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::onBoundaryResult(
+    const MCParticle &particle, ParticleStatus status, bool escaped)
+{
+    if(escaped && status == ParticleStatus::REMOVE && this->observer_)
+    {
+        this->observer_->addBoxEscapeEnergy(particle.weight);
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
 RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::preStep(double fullDt)
 {
@@ -3364,6 +3479,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         this->ddmcCensusCount_ = 0;
         this->ddmcUpscatterCount_ = 0;
         this->ddmcFallbackCount_ = 0;
+        this->ddmcMovingInterfaceBypassCount_ = 0;
+        this->ddmcMovingInterfaceMaxFactor_ = 0.0;
     }
     else
     {
@@ -3402,14 +3519,23 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     if(this->observer_)
     {
         double emittedEnergy = 0.0;
+        double emittedPositiveEnergy = 0.0;
+        double emittedNegativeEnergy = 0.0;
         for(const MCParticle &particle : newParticles)
         {
-            if(particle.weight > 0.0)
+            emittedEnergy += particle.weight;
+            if(particle.weight >= 0.0)
             {
-                emittedEnergy += particle.weight;
+                emittedPositiveEnergy += particle.weight;
+            }
+            else
+            {
+                emittedNegativeEnergy -= particle.weight;
             }
         }
         this->observer_->addEmittedEnergy(emittedEnergy);
+        this->observer_->addEmittedEnergyComponents(
+            emittedPositiveEnergy, emittedNegativeEnergy);
     }
     this->preStepInitialized_ = true;
     return newParticles;
@@ -3489,11 +3615,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     {
         absorptionOpacity = this->planckOpacities_[cellIndex];
     }
-    double elasticScatteringOpacity = this->parameters_.withCompton
-        ? 0.0
-        : (this->parameters_.withMultigroupOpacity
-            ? this->opacity_->CalcScatteringOpacity(cell, shiftedFrequency)
-            : this->opacity_->CalcScatteringOpacity(cell));
+    double elasticScatteringOpacity = this->parameters_.withMultigroupOpacity
+        ? this->opacity_->CalcScatteringOpacity(cell, shiftedFrequency)
+        : this->opacity_->CalcScatteringOpacity(cell);
     if(!std::isfinite(absorptionOpacity) || absorptionOpacity < 0.0 ||
        !std::isfinite(elasticScatteringOpacity) || elasticScatteringOpacity < 0.0)
     {
@@ -3504,8 +3628,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         eo.addEntry("Scattering opacity", elasticScatteringOpacity);
         throw eo;
     }
-    double const transportFleck = this->parameters_.withCompton
-        ? this->comptonData_[cellIndex].fleck : this->factorFleck_[cellIndex];
+    double const transportFleck = this->parameters_.withCompton && group < NumGroups
+        ? this->comptonData_[cellIndex].modifiedFleck[group]
+        : this->factorFleck_[cellIndex];
     double effectiveAbsorptionOpacity = (1.0 - transportFleck) * absorptionOpacity;
     double comptonOpacity = 0.0;
     if(this->parameters_.withCompton && group < NumGroups)
@@ -3632,10 +3757,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         }
         functionality.change = ParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = nextCellIndex;
-        if(this->observer_ && this->grid.IsPointOutsideBox(nextCellIndex))
-        {
-            this->observer_->addBoxEscapeEnergy(particle.weight);
-        }
+        functionality.boundaryCrossing =
+            this->grid.IsPointOutsideBox(nextCellIndex);
     }
     else if(min.first == SCATTERING)
     {
@@ -3809,7 +3932,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     else if(min.first == OBSERVER)
     {
         this->recordObserverCrossing(particle, observerCrossing.point);
-        particle.location = observerCrossing.point -
+        // Leave the packet outside the observer surface so the same positive
+        // outward root cannot be selected again on the next step.
+        particle.location = observerCrossing.point +
             normalize(particle.velocity) * std::max(1.0e-12, 1.0e-10 *
             std::max(1.0, fastabs(observerCrossing.point)));
         functionality.change = ParticleStatus::NO_CELL_MOVE;

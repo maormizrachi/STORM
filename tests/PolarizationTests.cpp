@@ -2,8 +2,8 @@
 #include "particle/Particle.hpp"
 #include "radiation/Polarization.hpp"
 #include "radiation/SphericalObserver.hpp"
+#include "TestSupport.hpp"
 
-#include <cassert>
 #include <cmath>
 #include <random>
 
@@ -22,10 +22,10 @@ double uniform(std::mt19937_64 &rng)
 
 void assertPhysical(const Particle &p)
 {
-    assert(std::isfinite(p.stokesQ));
-    assert(std::isfinite(p.stokesU));
-    assert(p.stokesQ * p.stokesQ + p.stokesU * p.stokesU <= 1.0 + 1.0e-12);
-    assert(std::abs(STORM::fallback::ScalarProd(
+    STORM_TEST_CHECK(std::isfinite(p.stokesQ));
+    STORM_TEST_CHECK(std::isfinite(p.stokesU));
+    STORM_TEST_CHECK(p.stokesQ * p.stokesQ + p.stokesU * p.stokesU <= 1.0 + 1.0e-12);
+    STORM_TEST_CHECK(std::abs(STORM::fallback::ScalarProd(
         p.velocity, p.polarizationBasis)) <= 1.0e-10 * std::max(1.0, STORM::fallback::abs(p.velocity)));
 }
 
@@ -60,7 +60,7 @@ void testAcceleratedHistory()
     STORM::polarization::applyAcceleratedPolarizationHistory<Point>(
         p, 1.0e-12, 1.0e-10, 0.0, Point(0.0, 1.0, 0.0),
         4, 2.0, rng, dist);
-    assert(p.radiationState.pendingMeanScatterings == 0.0);
+    STORM_TEST_CHECK(p.radiationState.pendingMeanScatterings == 0.0);
     assertPhysical(p);
 }
 
@@ -75,14 +75,37 @@ void testObserverFlag()
     record.crossingPoint = crossing.point;
     record.direction = Point(1.0, 0.0, 0.0);
     record.frequency = 0.5;
-    record.weight = 2.0;
+    record.weight = 1.0;
     record.stokesQ = 0.5;
     record.polarizationBasis = Point(0.0, 1.0, 0.0);
     record.polarizationInitialized = true;
     observer.recordCrossing(record);
-    double totalQ = 0.0;
-    for(double q : observer.stokesQ()) totalQ += q;
-    assert(std::abs(totalQ) > 0.0);
+    double unitQ = 0.0;
+    double unitU = 0.0;
+    for(double q : observer.stokesQ()) unitQ += q;
+    for(double u : observer.stokesU()) unitU += u;
+    STORM_TEST_CHECK(std::abs(unitQ) + std::abs(unitU) > 0.0);
+
+    observer.resetTallies();
+    record.weight = 2.0;
+    observer.recordCrossing(record);
+    double weightedQ = 0.0;
+    double weightedU = 0.0;
+    for(double q : observer.stokesQ()) weightedQ += q;
+    for(double u : observer.stokesU()) weightedU += u;
+    STORM_TEST_CHECK(std::abs(weightedQ - 2.0 * unitQ) < 1.0e-12);
+    STORM_TEST_CHECK(std::abs(weightedU - 2.0 * unitU) < 1.0e-12);
+
+    observer.resetTallies();
+    observer.recordCrossing(record);
+    record.weight = -2.0;
+    observer.recordCrossing(record);
+    double cancelledQ = 0.0;
+    double cancelledU = 0.0;
+    for(double q : observer.stokesQ()) cancelledQ += q;
+    for(double u : observer.stokesU()) cancelledU += u;
+    STORM_TEST_CHECK(std::abs(cancelledQ) < 1.0e-12);
+    STORM_TEST_CHECK(std::abs(cancelledU) < 1.0e-12);
 }
 
 } // namespace

@@ -11,6 +11,10 @@ struct StepResult
 {
     ParticleStatus change = ParticleStatus::NO_CELL_MOVE;
     size_t nextCellIndex = std::numeric_limits<size_t>::max();
+    // Set when nextCellIndex is an actual outside-box boundary.  The manager
+    // combines this with the boundary-condition outcome before accounting
+    // escape energy.
+    bool boundaryCrossing = false;
 };
 
 } // namespace STORM

@@ -38,6 +38,8 @@ public:
         std::vector<std::vector<double>> groupEnergy;
         std::vector<std::size_t> crossingCount;
         double emittedEnergy = 0.0;
+        double emittedPositiveEnergy = 0.0;
+        double emittedNegativeEnergy = 0.0;
         double absorbedEnergy = 0.0;
         double boxEscapeEnergy = 0.0;
         double timedOutEnergy = 0.0;
@@ -178,6 +180,12 @@ public:
     }
 
     void addEmittedEnergy(double energy) override { emittedEnergy_ += energy; }
+    void addEmittedEnergyComponents(double positiveEnergy,
+                                    double negativeMagnitude) override
+    {
+        emittedPositiveEnergy_ += positiveEnergy;
+        emittedNegativeEnergy_ += negativeMagnitude;
+    }
     void addAbsorbedEnergy(double energy) override { absorbedEnergy_ += energy; }
     void addBoxEscapeEnergy(double energy) override { boxEscapeEnergy_ += energy; }
     void addTimedOutEnergy(double energy) override { timedOutEnergy_ += energy; }
@@ -193,7 +201,8 @@ public:
         for(auto &row : groupCrossingCount_) row.fill(0);
         sourceCellEscape_.clear();
         sourceCellGroupEscape_.clear();
-        emittedEnergy_ = absorbedEnergy_ = boxEscapeEnergy_ = timedOutEnergy_ = cutoffEnergy_ = 0.0;
+        emittedEnergy_ = emittedPositiveEnergy_ = emittedNegativeEnergy_ =
+            absorbedEnergy_ = boxEscapeEnergy_ = timedOutEnergy_ = cutoffEnergy_ = 0.0;
         totalCrossingEnergy_ = 0.0;
 #ifdef MONTECARLO_POLARIZATION
         std::fill(observerStokesQ_.begin(), observerStokesQ_.end(), 0.0);
@@ -204,7 +213,8 @@ public:
     Snapshot snapshot() const
     {
         return Snapshot{observerEnergy_, groupEnergy(), crossingCount_, emittedEnergy_,
-                        absorbedEnergy_, boxEscapeEnergy_, timedOutEnergy_, cutoffEnergy_, totalCrossingEnergy_};
+                        emittedPositiveEnergy_, emittedNegativeEnergy_, absorbedEnergy_,
+                        boxEscapeEnergy_, timedOutEnergy_, cutoffEnergy_, totalCrossingEnergy_};
     }
 
     const std::vector<PointT> &directions() const { return directions_; }
@@ -225,6 +235,8 @@ public:
         return sourceCellGroupEscape_;
     }
     double emittedEnergy() const { return emittedEnergy_; }
+    double emittedPositiveEnergy() const { return emittedPositiveEnergy_; }
+    double emittedNegativeEnergy() const { return emittedNegativeEnergy_; }
     double absorbedEnergy() const { return absorbedEnergy_; }
     double boxEscapeEnergy() const { return boxEscapeEnergy_; }
     double timedOutEnergy() const { return timedOutEnergy_; }
@@ -293,8 +305,10 @@ private:
         double const sine = ScalarProd(CrossProduct(basis, sky), normal);
         double const c2 = cosine * cosine - sine * sine;
         double const s2 = 2.0 * sine * cosine;
-        observerStokesQ_[observer] += record.stokesQ * c2 + record.stokesU * s2;
-        observerStokesU_[observer] += -record.stokesQ * s2 + record.stokesU * c2;
+        observerStokesQ_[observer] += record.weight *
+            (record.stokesQ * c2 + record.stokesU * s2);
+        observerStokesU_[observer] += record.weight *
+            (-record.stokesQ * s2 + record.stokesU * c2);
     }
 #endif
 
@@ -314,6 +328,8 @@ private:
     std::unordered_map<std::size_t, double> sourceCellEscape_;
     std::unordered_map<std::size_t, GroupArray> sourceCellGroupEscape_;
     double emittedEnergy_ = 0.0;
+    double emittedPositiveEnergy_ = 0.0;
+    double emittedNegativeEnergy_ = 0.0;
     double absorbedEnergy_ = 0.0;
     double boxEscapeEnergy_ = 0.0;
     double timedOutEnergy_ = 0.0;
