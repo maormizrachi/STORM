@@ -50,3 +50,23 @@ if(STORM_WITH_MPI)
   target_include_directories(moving_slab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/moving_slab)
   set_target_properties(moving_slab PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/moving_slab")
 endif()
+
+# The Till-Compton example uses the legacy RICH CMMC implementation as a
+# deliberately local adapter.  Keep the target optional so the standalone
+# STORM submodule remains buildable without the parent RICH tree.
+set(TILL_COMPTON_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../Radiation/CMMC/src")
+if(EXISTS "${TILL_COMPTON_CMMC_DIR}/compton_matrix_mc.cpp")
+  add_executable(till_compton_mc
+    till_compton_mc/main.cpp
+    "${TILL_COMPTON_CMMC_DIR}/compton_matrix_mc.cpp")
+  target_link_libraries(till_compton_mc PRIVATE storm)
+  target_include_directories(till_compton_mc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/till_compton_mc
+    ${TILL_COMPTON_CMMC_DIR})
+  target_compile_definitions(till_compton_mc PRIVATE
+    STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/till_compton_mc")
+  set_target_properties(till_compton_mc PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/till_compton_mc")
+else()
+  message(WARNING "Skipping till_compton_mc: CMMC source not found")
+endif()

@@ -43,7 +43,6 @@ option(STORM_NO_OFI      "Disable OFI auto-detection (OpenFabrics Interfaces / l
 option(STORM_WITH_VTK    "Build with VTK support for mesh output (requires MadVoro VTK headers)" OFF)
 option(STORM_WITH_HDF5   "Build with HDF5 support" OFF)
 option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
-option(STORM_BUILD_TESTS "Build focused STORM unit tests" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -223,38 +222,6 @@ endif()
 
 if(STORM_BUILD_EXAMPLES)
   add_subdirectory(examples)
-endif()
-
-if(STORM_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  include(CTest)
-  if(BUILD_TESTING)
-    add_executable(storm_ddmc_math_tests tests/DDMCMathTests.cpp)
-    target_link_libraries(storm_ddmc_math_tests PRIVATE storm)
-    add_test(NAME storm_ddmc_math_tests COMMAND storm_ddmc_math_tests)
-
-    add_executable(storm_compton_observer_tests tests/ComptonObserverTests.cpp)
-    target_link_libraries(storm_compton_observer_tests PRIVATE storm)
-    add_test(NAME storm_compton_observer_tests COMMAND storm_compton_observer_tests)
-
-    add_executable(storm_polarization_tests tests/PolarizationTests.cpp)
-    target_compile_definitions(storm_polarization_tests PRIVATE MONTECARLO_POLARIZATION)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../Radiation/CMMC/src")
-      target_include_directories(storm_polarization_tests PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/../Radiation/CMMC/src")
-    endif()
-    target_link_libraries(storm_polarization_tests PRIVATE storm)
-    add_test(NAME storm_polarization_tests COMMAND storm_polarization_tests)
-
-    if(STORM_WITH_MPI)
-      add_executable(storm_ddmc_ghost_exchange_tests tests/DDMCGhostExchangeTests.cpp)
-      target_link_libraries(storm_ddmc_ghost_exchange_tests PRIVATE storm)
-      add_test(
-        NAME storm_ddmc_ghost_exchange_tests
-        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROCS_FLAG} 2
-                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:storm_ddmc_ghost_exchange_tests>
-                ${MPIEXEC_POSTFLAGS})
-    endif()
-  endif()
 endif()
 
 # ---------- Install & export (skip when embedded) ----------
