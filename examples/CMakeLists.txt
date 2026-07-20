@@ -1,72 +1,145 @@
-add_executable(serial_cartesian serial_cartesian/main.cpp)
-target_link_libraries(serial_cartesian PRIVATE storm)
-set_target_properties(serial_cartesian PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/serial_cartesian")
+# Build one executable for every regression example.
+#
+# REGRESSION_INFO is deliberately the source of truth here as well as for
+# regression_tests/run_all.sh.  A new example therefore only needs a
+# directory containing REGRESSION_INFO and a main source file; every C/C++
+# source file in that directory is compiled into the resulting executable.
 
-set(MADVORO_EXCEPTION_SOURCES
-  ${STORM_DEPS_DIR}/MadVoro/exception/MadVoroException.cpp
-  ${STORM_DEPS_DIR}/MadVoro/exception/InvalidArgumentException.cpp
-  ${STORM_DEPS_DIR}/MadVoro/exception/SizeException.cpp
-)
-if(STORM_WITH_MPI)
-  add_executable(hohlraum_parallel hohlraum_parallel/main.cpp ${MADVORO_EXCEPTION_SOURCES})
-  target_link_libraries(hohlraum_parallel PRIVATE storm)
-  target_include_directories(hohlraum_parallel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/hohlraum_parallel)
-  set_target_properties(hohlraum_parallel PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/hohlraum_parallel")
+set(_storm_example_info_files "")
+file(GLOB _storm_example_info_files CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/*/REGRESSION_INFO")
+list(SORT _storm_example_info_files)
+
+# MadVoro is header-heavy, but examples using its Voronoi implementation also
+# need its exception translation units.  Support both standalone STORM deps
+# and RICH's in-tree MadVoro submodule.
+set(_storm_madvoro_root "")
+if(DEFINED STORM_DEPS_DIR AND
+   EXISTS "${STORM_DEPS_DIR}/MadVoro/exception")
+  set(_storm_madvoro_root "${STORM_DEPS_DIR}/MadVoro")
+elseif(DEFINED MADVORO_DIR AND
+       EXISTS "${MADVORO_DIR}/exception")
+  set(_storm_madvoro_root "${MADVORO_DIR}")
 endif()
 
-foreach(MNUM 1 2 3)
-  add_executable(marshak_wave_${MNUM} marshak_wave_${MNUM}/main.cpp)
-  target_link_libraries(marshak_wave_${MNUM} PRIVATE storm)
-  target_include_directories(marshak_wave_${MNUM} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave)
-  target_compile_definitions(marshak_wave_${MNUM} PRIVATE STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_${MNUM}")
-  set_target_properties(marshak_wave_${MNUM} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_${MNUM}")
-endforeach()
+set(_storm_madvoro_exception_sources "")
+if(_storm_madvoro_root)
+  file(GLOB _storm_madvoro_exception_sources CONFIGURE_DEPENDS
+    "${_storm_madvoro_root}/exception/*.cpp")
+endif()
 
-add_executable(marshak_wave_4 marshak_wave_4/main.cpp)
-target_link_libraries(marshak_wave_4 PRIVATE storm)
-target_include_directories(marshak_wave_4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave)
-target_compile_definitions(marshak_wave_4 PRIVATE STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_4")
-set_target_properties(marshak_wave_4 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/marshak_wave_4")
+# Till-Compton uses the legacy CMMC matrix implementation from the parent RICH
+# tree.  It is discovered from the source include, so this remains an
+# exception-specific dependency rather than another manually enumerated
+# example target.
+set(_storm_cmmc_source
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../Radiation/CMMC/src/compton_matrix_mc.cpp")
+set(_storm_cmmc_include_dir
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../Radiation/CMMC/src")
 
-if(STORM_WITH_MPI)
-  add_executable(cartesian_parallel_check cartesian_parallel_check/main.cpp)
-  target_link_libraries(cartesian_parallel_check PRIVATE storm)
-  set_target_properties(cartesian_parallel_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/cartesian_parallel_check")
-  if(BUILD_TESTING AND MPIEXEC_EXECUTABLE)
-    add_test(NAME cartesian_parallel_check
-      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 $<TARGET_FILE:cartesian_parallel_check>)
+foreach(_storm_info_file IN LISTS _storm_example_info_files)
+  get_filename_component(_storm_example_dir "${_storm_info_file}" DIRECTORY)
+  get_filename_component(_storm_example_name "${_storm_example_dir}" NAME)
+
+  # REGRESSION_INFO is shell-sourceable, but CMake only needs the TAGS value
+  # to decide whether an MPI-only example is available in this build.
+  file(STRINGS "${_storm_info_file}" _storm_tags_lines
+    REGEX "^[ \\t]*TAGS[ \\t]*=")
+  string(TOLOWER "${_storm_tags_lines}" _storm_tags)
+  if(_storm_tags MATCHES "mpi")
+    set(_storm_example_requires_mpi ON)
+  else()
+    set(_storm_example_requires_mpi OFF)
   endif()
-endif()
 
-add_executable(densmore2012 densmore2012/main.cpp)
-target_link_libraries(densmore2012 PRIVATE storm)
-target_include_directories(densmore2012 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/densmore2012)
-target_compile_definitions(densmore2012 PRIVATE STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/densmore2012")
-set_target_properties(densmore2012 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/densmore2012")
+  if(_storm_example_requires_mpi AND NOT STORM_WITH_MPI AND NOT MPI)
+    message(STATUS
+      "Skipping ${_storm_example_name}: REGRESSION_INFO marks it as MPI "
+      "but this build has MPI disabled")
+    continue()
+  endif()
 
-if(STORM_WITH_MPI)
-  add_executable(moving_slab moving_slab/main.cpp ${MADVORO_EXCEPTION_SOURCES})
-  target_link_libraries(moving_slab PRIVATE storm)
-  target_include_directories(moving_slab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/moving_slab)
-  set_target_properties(moving_slab PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/moving_slab")
-endif()
+  file(GLOB _storm_example_sources CONFIGURE_DEPENDS
+    "${_storm_example_dir}/*.c"
+    "${_storm_example_dir}/*.cc"
+    "${_storm_example_dir}/*.cpp"
+    "${_storm_example_dir}/*.cxx")
+  list(SORT _storm_example_sources)
 
-# The Till-Compton example uses the legacy RICH CMMC implementation as a
-# deliberately local adapter.  Keep the target optional so the standalone
-# STORM submodule remains buildable without the parent RICH tree.
-set(TILL_COMPTON_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../Radiation/CMMC/src")
-if(EXISTS "${TILL_COMPTON_CMMC_DIR}/compton_matrix_mc.cpp")
-  add_executable(till_compton_mc
-    till_compton_mc/main.cpp
-    "${TILL_COMPTON_CMMC_DIR}/compton_matrix_mc.cpp")
-  target_link_libraries(till_compton_mc PRIVATE storm)
-  target_include_directories(till_compton_mc PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/till_compton_mc
-    ${TILL_COMPTON_CMMC_DIR})
-  target_compile_definitions(till_compton_mc PRIVATE
-    STORM_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/till_compton_mc")
-  set_target_properties(till_compton_mc PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/till_compton_mc")
-else()
-  message(WARNING "Skipping till_compton_mc: CMMC source not found")
-endif()
+  set(_storm_example_has_main OFF)
+  foreach(_storm_example_source IN LISTS _storm_example_sources)
+    get_filename_component(_storm_example_source_name
+      "${_storm_example_source}" NAME)
+    if(_storm_example_source_name MATCHES "^main\\.(c|cc|cpp|cxx)$")
+      set(_storm_example_has_main ON)
+    endif()
+  endforeach()
+
+  if(NOT _storm_example_has_main)
+    message(WARNING
+      "Skipping ${_storm_example_name}: ${_storm_info_file} exists, but "
+      "the directory has no main source file")
+    continue()
+  endif()
+
+  set(_storm_example_extra_sources "")
+  set(_storm_example_include_dirs "${_storm_example_dir}")
+
+  set(_storm_example_uses_madvoro OFF)
+  set(_storm_example_uses_cmmc OFF)
+  foreach(_storm_example_source IN LISTS _storm_example_sources)
+    file(STRINGS "${_storm_example_source}" _storm_madvoro_includes
+      REGEX "MadVoro/")
+    if(_storm_madvoro_includes)
+      set(_storm_example_uses_madvoro ON)
+    endif()
+
+    file(STRINGS "${_storm_example_source}" _storm_cmmc_includes
+      REGEX "compton_matrix_mc[.]hpp")
+    if(_storm_cmmc_includes)
+      set(_storm_example_uses_cmmc ON)
+    endif()
+  endforeach()
+
+  if(_storm_example_uses_madvoro)
+    list(APPEND _storm_example_extra_sources
+      ${_storm_madvoro_exception_sources})
+  endif()
+
+  if(_storm_example_uses_cmmc)
+    if(EXISTS "${_storm_cmmc_source}")
+      list(APPEND _storm_example_extra_sources "${_storm_cmmc_source}")
+      list(APPEND _storm_example_include_dirs "${_storm_cmmc_include_dir}")
+    else()
+      message(FATAL_ERROR
+        "${_storm_example_name} includes compton_matrix_mc.hpp, but the "
+        "CMMC source is not available at ${_storm_cmmc_source}")
+    endif()
+  endif()
+
+  if(TARGET "${_storm_example_name}")
+    message(FATAL_ERROR
+      "Cannot create STORM example target ${_storm_example_name}: "
+      "the target name is already in use")
+  endif()
+
+  add_executable("${_storm_example_name}"
+    ${_storm_example_sources}
+    ${_storm_example_extra_sources})
+  target_link_libraries("${_storm_example_name}" PRIVATE storm)
+  target_include_directories("${_storm_example_name}" PRIVATE
+    ${_storm_example_include_dirs})
+  target_compile_definitions("${_storm_example_name}" PRIVATE
+    "STORM_DATA_DIR=\"${_storm_example_dir}\"")
+  set_target_properties("${_storm_example_name}" PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${_storm_example_dir}")
+
+  if(_storm_example_name STREQUAL "cartesian_parallel_check" AND
+     BUILD_TESTING AND MPIEXEC_EXECUTABLE)
+    add_test(NAME cartesian_parallel_check
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+              $<TARGET_FILE:cartesian_parallel_check>)
+  endif()
+
+  message(STATUS "STORM regression example: ${_storm_example_name}")
+endforeach()
