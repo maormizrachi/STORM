@@ -95,6 +95,13 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
     #endif
 
     std::vector<MCParticle> result;
+    for(const MCParticle &particle : particles)
+    {
+        if(particle.weight < 0.0)
+        {
+            return std::vector<MCParticle>(particles.begin(), particles.end());
+        }
+    }
 
     size_t Ncells = this->grid.GetPointNo();
     size_t Ntotal = Ncells;
@@ -271,6 +278,13 @@ std::vector<Particle<T, Grid>> StratifiedCombPopulationControl<T, Grid>::activat
     #endif
 
     std::vector<MCParticle> result;
+    for(const MCParticle &particle : particles)
+    {
+        if(particle.weight < 0.0)
+        {
+            return std::vector<MCParticle>(particles.begin(), particles.end());
+        }
+    }
     size_t const Ncells = this->grid.GetPointNo();
     size_t Ntotal = Ncells;
     #ifdef STORM_WITH_MPI

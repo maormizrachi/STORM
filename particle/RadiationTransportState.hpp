@@ -3,7 +3,6 @@
 
 #include <cstdint>
 #include <limits>
-#include <type_traits>
 
 namespace STORM {
 
@@ -14,9 +13,6 @@ namespace STORM {
 template<typename PointT>
 struct RadiationTransportState
 {
-    static_assert(std::is_trivially_copyable_v<PointT>,
-                  "RadiationTransportState requires a trivially copyable point type");
-
     enum Flag : std::uint8_t
     {
         DDMCMode = 1u << 0,

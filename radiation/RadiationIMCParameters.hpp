@@ -9,6 +9,19 @@
 
 namespace STORM {
 
+enum class ComptonInducedMode
+{
+    RadiationField,
+    AdaptivePlanckFallback
+};
+
+enum class ComptonOccupationMode
+{
+    Zero,
+    RadiationField,
+    PlanckFunction
+};
+
 template<std::size_t NumGroups>
 struct RadiationIMCParameters
 {
@@ -34,14 +47,13 @@ struct RadiationIMCParameters
     bool withPolarization = false;
     bool withCompton = false;
     bool comptonUseInduced = true;
+    ComptonInducedMode comptonInducedMode =
+        ComptonInducedMode::AdaptivePlanckFallback;
     bool comptonAllowNZeroFallback = true;
     bool comptonDebugParityCheck = false;
     bool comptonCheckSignedTallies = false;
     bool comptonDiagnostics = false;
-    // The current Compton kernel is group-only.  Keep angular dependence
-    // opt-in so existing Compton runs remain valid; unsupported opt-in is
-    // rejected during transport construction rather than silently ignored.
-    bool comptonAngleDependent = false;
+    bool comptonAngleDependent = true;
     double comptonSignedTallyTolerance = 1e-10;
     std::size_t comptonMatrixSamples = 200000;
     std::array<double, NumGroups + 1> energyBoundaries{};
@@ -95,6 +107,12 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
     if(parameters.withCompton)
     {
         os << "\tCompton induced terms: " << parameters.comptonUseInduced << '\n';
+        os << "\tCompton induced mode: "
+           << (parameters.comptonInducedMode ==
+                       ComptonInducedMode::RadiationField
+                   ? "radiation-field"
+                   : "adaptive-planck-fallback")
+           << '\n';
         os << "\tCompton n=0 fallback: " << parameters.comptonAllowNZeroFallback << '\n';
         os << "\tCompton debug parity check: " << parameters.comptonDebugParityCheck << '\n';
         os << "\tCompton signed tally check: " << parameters.comptonCheckSignedTallies << '\n';

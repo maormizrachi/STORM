@@ -60,6 +60,13 @@ clone_if_missing "planck_integral" "https://github.com/menahemkrief/planck_integ
 # Physical constants (CGS units, required by planck_integral)
 clone_if_missing "units" "https://github.com/menahemkrief/units.git"
 
+# CMMC Compton matrix generator.  Keep this revision aligned with the
+# authoritative RICH Compton implementation, including conditional angle CDFs.
+CMMC_REVISION="091281f09257c4a5127fa5c3af237d4caf8ebfad"
+clone_if_missing "CMMC" "https://github.com/menahemkrief/CMMC.git"
+git -C "$DEST/CMMC" fetch --depth 1 origin "$CMMC_REVISION"
+git -C "$DEST/CMMC" checkout --detach "$CMMC_REVISION"
+
 echo ""
 echo "=== Done ==="
 echo ""

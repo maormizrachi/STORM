@@ -43,6 +43,7 @@ option(STORM_NO_OFI      "Disable OFI auto-detection (OpenFabrics Interfaces / l
 option(STORM_WITH_VTK    "Build with VTK support for mesh output (requires MadVoro VTK headers)" OFF)
 option(STORM_WITH_HDF5   "Build with HDF5 support" OFF)
 option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
+option(STORM_WITH_COMPTON "Build internal CMMC Compton support" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -187,6 +188,36 @@ if(STORM_WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
 endif()
 
+set(STORM_CMMC_DIR "${STORM_DEPS_DIR}/CMMC/src" CACHE PATH
+  "Pinned CMMC source directory")
+set(STORM_CMMC_REVISION
+  "091281f09257c4a5127fa5c3af237d4caf8ebfad")
+message(STATUS "STORM CMMC revision: ${STORM_CMMC_REVISION}")
+add_library(storm_cmmc STATIC
+  radiation/compton/CMMCComptonBackend.cpp)
+target_link_libraries(storm_cmmc PUBLIC Boost::boost)
+
+if(STORM_WITH_COMPTON)
+  if(NOT EXISTS "${STORM_CMMC_DIR}/compton_matrix_mc.cpp")
+    message(FATAL_ERROR
+      "Compton support requires the pinned CMMC submodule at "
+      "${STORM_CMMC_DIR}. Run git submodule update --init --recursive")
+  endif()
+  target_sources(storm_cmmc PRIVATE
+    "${STORM_CMMC_DIR}/compton_matrix_mc.cpp")
+  target_include_directories(storm_cmmc PRIVATE "${STORM_CMMC_DIR}")
+  target_compile_definitions(storm_cmmc PRIVATE STORM_WITH_COMPTON)
+  target_compile_definitions(storm INTERFACE STORM_WITH_COMPTON)
+else()
+  message(STATUS "STORM Compton support disabled")
+endif()
+get_target_property(_storm_type storm TYPE)
+if(_storm_type STREQUAL "INTERFACE_LIBRARY")
+  target_link_libraries(storm INTERFACE storm_cmmc)
+else()
+  target_link_libraries(storm PUBLIC storm_cmmc)
+endif()
+
 if(STORM_WITH_IBV)
   target_compile_definitions(storm PUBLIC __WITH_IBV)
   target_link_libraries(storm PUBLIC ${IBVERBS_LIBRARY})
@@ -237,7 +268,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     PATTERN "cmake" EXCLUDE
   )
 
-  install(TARGETS storm EXPORT STORMTargets)
+  install(TARGETS storm storm_cmmc EXPORT STORMTargets)
   install(EXPORT STORMTargets
     NAMESPACE STORM::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/STORM

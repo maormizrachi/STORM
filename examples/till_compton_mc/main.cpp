@@ -45,12 +45,10 @@
 #include "boundary/RigidBoundary.hpp"
 #include "manager/MonteCarloManagerSerial.hpp"
 #include "population/CombPopulationControl.hpp"
-#include "radiation/Compton.hpp"
 #include "radiation/RadiationIMC.hpp"
 #include <units/units.hpp>
 
 #include "TillComptonOpacity.hpp"
-#include "compton_matrix_mc.hpp"
 
 #ifndef STORM_DATA_DIR
 #define STORM_DATA_DIR "."
@@ -103,66 +101,6 @@ public:
 
 private:
     double cvPerMass_;
-};
-
-class TillComptonKernel final
-    : public STORM::ComptonKernelModel<Vector3D, Grid, TillCell, groups>
-{
-public:
-    using Base = STORM::ComptonKernelModel<Vector3D, Grid, TillCell, groups>;
-    using Result = typename Base::Result;
-    using GroupArray = typename Base::GroupArray;
-    using GroupBoundaries = typename Base::GroupBoundaries;
-
-    TillComptonKernel(const GroupArray &centers,
-                      const GroupBoundaries &boundaries,
-                      std::size_t samples,
-                      int seed)
-        : matrix_(std::vector<double>(centers.begin(), centers.end()),
-                  std::vector<double>(boundaries.begin(), boundaries.end()),
-                  samples,
-                  true,
-                  seed)
-    {}
-
-    Result build(const TillCell &cell,
-                 double density,
-                 double temperature,
-                 const GroupBoundaries &,
-                 const GroupArray &,
-                 double,
-                 std::size_t,
-                 std::mt19937_64 &) const override
-    {
-        Matrix microscopicRates(groups, Vector(groups, 0.0));
-        Matrix microscopicDerivative(groups, Vector(groups, 0.0));
-        matrix_.calculate_S_and_dSdUm_matrices(temperature,
-                                                microscopicRates,
-                                                microscopicDerivative);
-
-        // CMMC's get_tau_matrix convention is rho * N_A * Z / A.  The
-        // case is fully ionized hydrogen (A=1, Z=1); protonMass is used by
-        // the free-free opacity, but must not appear in this conversion.
-        const double electronDensity = std::max(0.0, density) * units::Navogadro;
-        Result result;
-        for(std::size_t source = 0; source < groups; ++source)
-        {
-            for(std::size_t target = 0; target < groups; ++target)
-            {
-                result.rates[source][target] = std::max(
-                    0.0, microscopicRates[source][target] * electronDensity);
-                result.derivative[source][target] =
-                    microscopicDerivative[source][target] * electronDensity;
-            }
-        }
-        return result;
-    }
-
-private:
-    // CMMC's matrix calculation advances its own random engine, while STORM
-    // exposes build as const.  The mutable adapter keeps that state local to
-    // this example without changing either library's API.
-    mutable ComptonMatrixMC matrix_;
 };
 
 struct RuntimeOptions
@@ -369,7 +307,7 @@ double interpolate(const std::vector<double> &x,
     return y[left] + fraction * (y[right] - y[left]);
 }
 
-void compareProfile(const fs::path &referencePath,
+bool compareProfile(const fs::path &referencePath,
                     const std::vector<double> &time,
                     const std::vector<double> &gasTemperature,
                     const std::vector<double> &radiationTemperatureValues,
@@ -380,7 +318,7 @@ void compareProfile(const fs::path &referencePath,
     if(reference.empty())
     {
         std::cout << "No reference data at " << referencePath << "; skipping comparison\n";
-        return;
+        return true;
     }
 
     double gasError = 0.0;
@@ -401,21 +339,25 @@ void compareProfile(const fs::path &referencePath,
     if(compared == 0)
     {
         std::cout << "Reference starts after the simulated interval; skipping comparison\n";
-        return;
+        return true;
     }
 
     gasError /= static_cast<double>(compared);
     radiationError /= static_cast<double>(compared);
     const double energyDrift = initialEnergy != 0.0
-        ? (energy.back() - initialEnergy) / initialEnergy : 0.0;
+        ? (energy.back() - initialEnergy) /
+            std::max(std::abs(initialEnergy), 1.0) : 0.0;
 
     std::cout << std::scientific
               << "TILL_COMPTON_TGAS_REL_L1 = " << gasError << '\n'
               << "TILL_COMPTON_TRAD_REL_L1 = " << radiationError << '\n'
               << "TILL_COMPTON_TOTAL_ENERGY_REL_DRIFT = " << energyDrift << '\n'
               << "Compared reference points = " << compared << '\n';
-    std::cout << "Comparison is diagnostic: Monte Carlo noise and the different STORM driver\n"
-              << "can produce deviations from the digitized IN-FBC reference.\n";
+    constexpr double temperatureErrorLimit = 0.25;
+    bool const accepted = gasError <= temperatureErrorLimit &&
+        radiationError <= temperatureErrorLimit;
+    std::cout << "TILL_COMPTON_REFERENCE_PASS = " << accepted << '\n';
+    return accepted;
 }
 
 } // namespace
@@ -447,7 +389,6 @@ int main(int argc, char **argv)
             std::pow(radiationInitialTemperature, 4) / density;
 
         std::array<double, groups + 1> energyBoundaries{};
-        std::array<double, groups> energyCenters{};
         const double minimumEnergy = units::kev * 1e-4;
         const double maximumEnergy = units::kev * 1e3;
         energyBoundaries[0] = minimumEnergy;
@@ -455,7 +396,6 @@ int main(int argc, char **argv)
         for(std::size_t group = 0; group < groups; ++group)
         {
             energyBoundaries[group + 1] = energyBoundaries[group] * ratio;
-            energyCenters[group] = 0.5 * (energyBoundaries[group] + energyBoundaries[group + 1]);
         }
 
         const Vector3D lower(0.0, -0.5, -0.5);
@@ -500,7 +440,7 @@ int main(int argc, char **argv)
         parameters.comptonUseInduced = true;
         parameters.comptonAllowNZeroFallback = true;
         parameters.comptonMatrixSamples = options.matrixSamples;
-        parameters.comptonAngleDependent = false;
+        parameters.comptonAngleDependent = true;
         parameters.withEgTimeAvg = true;
         parameters.energyBoundaries = energyBoundaries;
         parameters.energyBoundariesProvided = true;
@@ -511,9 +451,6 @@ int main(int argc, char **argv)
                                                  options.includePlasmaCutoff);
         auto physics = std::make_shared<IMC>(grid, boundary, cells, extensives,
                                              eos, opacity, parameters);
-        auto comptonKernel = std::make_shared<TillComptonKernel>(
-            energyCenters, energyBoundaries, options.matrixSamples, 1337);
-        physics->setComptonKernel(comptonKernel);
         auto populationControl = std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(
             grid, 200, 5.0);
         STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(
@@ -575,8 +512,45 @@ int main(int argc, char **argv)
         }
         std::cout << "Wrote profile: " << profilePath << '\n';
 
-        compareProfile(referencePath, time, gasTemperature,
-                       radiationTemperatureValues, energy, initialEnergy);
+        bool const referencePass = compareProfile(
+            referencePath,
+            time,
+            gasTemperature,
+            radiationTemperatureValues,
+            energy,
+            initialEnergy);
+        const std::size_t comptonEvents = physics->getComptonEventCount();
+        const std::size_t angleEvents = physics->getComptonAngleEventCount();
+        std::cout << "TILL_COMPTON_EVENTS = " << comptonEvents << '\n'
+                  << "TILL_COMPTON_ANGLE_EVENTS = " << angleEvents << '\n'
+                  << "TILL_COMPTON_INDUCED_EXERCISED = "
+                  << physics->getComptonInducedTermsExercised() << '\n';
+        if(!referencePass)
+        {
+            throw std::runtime_error(
+                "Till Compton temperature curve exceeded the reference tolerance");
+        }
+        bool const requireTransportCoverage = options.tf >= 1e-10;
+        if(requireTransportCoverage &&
+           (comptonEvents == 0 || angleEvents == 0 ||
+            !physics->getComptonInducedTermsExercised()))
+        {
+            throw std::runtime_error(
+                "Till Compton regression did not exercise the required transport paths");
+        }
+        if(!requireTransportCoverage)
+        {
+            std::cout << "Short smoke interval: event-coverage threshold skipped\n";
+        }
+        double const totalEnergyDrift = initialEnergy != 0.0
+            ? (energy.back() - initialEnergy) /
+                std::max(std::abs(initialEnergy), 1.0) : 0.0;
+        if(!std::isfinite(totalEnergyDrift) ||
+           std::abs(totalEnergyDrift) > 1e-8)
+        {
+            throw std::runtime_error(
+                "Till Compton total-energy drift exceeded the strict threshold");
+        }
 
         const fs::path plotScript = fs::path(STORM_DATA_DIR) / "plot_till_compton.py";
         const std::string plotCommand =

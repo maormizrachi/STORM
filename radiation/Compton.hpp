@@ -4,9 +4,6 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <memory>
 #include <random>
 #include <functional>
 #include <stdexcept>
@@ -15,11 +12,9 @@
 namespace STORM {
 
 /*
- * A frozen Compton kernel is deliberately kept separate from the opacity
- * model.  The opacity model describes ordinary material opacities; this
- * interface describes the group-changing Compton operator and lets an
- * application supply its preferred matrix generator (Monte Carlo tables,
- * analytic Kompaneets rates, or a tabulated kernel).
+ * These result and model types are retained as an advanced test seam.  The
+ * normal RadiationIMC workflow owns and lazily initializes its CMMC backend;
+ * applications do not provide a matrix builder.
  *
  * Rates are macroscopic inverse lengths.  If supplied, fleckCorrection is a
  * kernel-derived multiplicative Fleck correction in (0, 1].  residualSource is an extensive
@@ -65,9 +60,8 @@ public:
                          std::mt19937_64 &rng) const = 0;
 };
 
-// Small adapter for existing matrix generators.  The callback is invoked
-// once per cell in preStep, so callers can wrap CMMC or a table lookup
-// without making the standalone transport library depend on that generator.
+// Advanced adapter for isolated kernel tests and alternate transport
+// experiments.  It is not required by RadiationIMC's normal Compton path.
 template<typename PointT,
          typename GridT,
          typename CellT,
@@ -114,22 +108,70 @@ struct ComptonCellData
 {
     using GroupArray = std::array<double, NumGroups>;
     using GroupMatrix = std::array<GroupArray, NumGroups>;
+    using GroupCdf = std::array<double, NumGroups + 1>;
+    using GroupCdfMatrix = std::array<GroupCdf, NumGroups>;
 
     bool active = false;
     bool signedSourceActive = false;
+    double planckOpacity = 0.0;
+    double volume = 0.0;
+    double temperature = 0.0;
+    double Um = 0.0;
+    double beta = 0.0;
+    double cv = 0.0;
     double fleck = 1.0;
+    double Upsilon = 0.0;
+    double Gamma = 0.0;
+    double betaCdtF = 0.0;
+    bool useNZero = false;
+    bool usePlanckInduced = false;
+    GroupArray absorptionOpacity{};
+    GroupArray planckFraction{};
+    GroupArray baseSourceFraction{};
+    GroupCdf planckCdf{};
+    GroupCdf baseSourceCdf{};
+    GroupArray oldRadiationEnergy{};
+    GroupArray occupation{};
+    GroupArray D{};
+    GroupArray M{};
+    GroupArray rowS{};
+    GroupArray Lambda{};
+    GroupArray Bbase{};
+    GroupArray Bcorr{};
+    GroupArray Btotal{};
+    GroupArray Bpos{};
+    GroupArray Bres{};
+    GroupArray baseEffectiveOpacity{};
     GroupMatrix rates{};
     GroupMatrix derivative{};
+    GroupMatrix tau{};
+    GroupMatrix dtau_dUm{};
+    GroupMatrix S{};
+    GroupMatrix dSdUm{};
+    GroupMatrix segmentKernel{};
+    GroupMatrix residualKernel{};
+    GroupMatrix Ktotal{};
+    GroupMatrix implicitKernel{};
+    GroupMatrix implicitEventRateMatrix{};
     GroupArray outRate{};
-    GroupMatrix targetCdf{};
+    GroupCdfMatrix targetCdf{};
+    GroupCdfMatrix implicitEventCdf{};
     GroupArray groupCenters{};
     GroupArray groupWidths{};
     GroupArray meanEnergyRatio{};
     GroupArray modifiedFleck{};
     GroupArray residualSource{};
+    GroupArray comptonOutRate{};
+    GroupArray comptonMu{};
+    GroupArray comptonMh{};
+    GroupArray implicitEventRate{};
+    GroupArray implicitDiagonalCorrection{};
+    GroupArray riskScore{};
+    std::array<std::size_t, NumGroups> riskTargetPackets{};
     double signedSourceL1 = 0.0;
     double signedSourceNet = 0.0;
     std::size_t implicitEvents = 0;
+    std::size_t angleDependentEvents = 0;
     std::size_t residualPackets = 0;
 };
 

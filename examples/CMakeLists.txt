@@ -28,39 +28,6 @@ if(_storm_madvoro_root)
     "${_storm_madvoro_root}/exception/*.cpp")
 endif()
 
-# Till-Compton uses the legacy CMMC matrix implementation, tracked as a STORM
-# submodule under deps/CMMC.  Keep the cache override for users whose checkout
-# has the submodule elsewhere or has not initialized it yet.
-set(STORM_CMMC_DIR "" CACHE PATH
-  "Directory containing CMMC's compton_matrix_mc.cpp and headers")
-set(_storm_cmmc_dir "")
-set(_storm_cmmc_candidates "")
-if(STORM_CMMC_DIR)
-  list(APPEND _storm_cmmc_candidates "${STORM_CMMC_DIR}")
-elseif(DEFINED STORM_DEPS_DIR)
-  list(APPEND _storm_cmmc_candidates "${STORM_DEPS_DIR}/CMMC/src")
-else()
-  list(APPEND _storm_cmmc_candidates
-    "${CMAKE_CURRENT_SOURCE_DIR}/../deps/CMMC/src")
-endif()
-foreach(_storm_cmmc_candidate IN LISTS _storm_cmmc_candidates)
-  if(EXISTS "${_storm_cmmc_candidate}/compton_matrix_mc.cpp")
-    set(_storm_cmmc_dir "${_storm_cmmc_candidate}")
-    break()
-  endif()
-endforeach()
-
-if(NOT _storm_cmmc_dir AND NOT STORM_CMMC_DIR)
-  message(STATUS
-    "CMMC not found under STORM_DEPS_DIR; Till-Compton will not be built")
-endif()
-
-if(STORM_CMMC_DIR AND NOT _storm_cmmc_dir)
-  message(WARNING
-    "STORM_CMMC_DIR does not contain compton_matrix_mc.cpp: "
-    "${STORM_CMMC_DIR}")
-endif()
-
 foreach(_storm_info_file IN LISTS _storm_example_info_files)
   get_filename_component(_storm_example_dir "${_storm_info_file}" DIRECTORY)
   get_filename_component(_storm_example_name "${_storm_example_dir}" NAME)
@@ -110,7 +77,6 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
   set(_storm_example_include_dirs "${_storm_example_dir}")
 
   set(_storm_example_uses_madvoro OFF)
-  set(_storm_example_uses_cmmc OFF)
   foreach(_storm_example_source IN LISTS _storm_example_sources)
     file(STRINGS "${_storm_example_source}" _storm_madvoro_includes
       REGEX "MadVoro/")
@@ -118,29 +84,11 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
       set(_storm_example_uses_madvoro ON)
     endif()
 
-    file(STRINGS "${_storm_example_source}" _storm_cmmc_includes
-      REGEX "compton_matrix_mc[.]hpp")
-    if(_storm_cmmc_includes)
-      set(_storm_example_uses_cmmc ON)
-    endif()
   endforeach()
 
   if(_storm_example_uses_madvoro)
     list(APPEND _storm_example_extra_sources
       ${_storm_madvoro_exception_sources})
-  endif()
-
-  if(_storm_example_uses_cmmc)
-    if(_storm_cmmc_dir)
-      list(APPEND _storm_example_extra_sources
-        "${_storm_cmmc_dir}/compton_matrix_mc.cpp")
-      list(APPEND _storm_example_include_dirs "${_storm_cmmc_dir}")
-    else()
-      message(WARNING
-        "Skipping ${_storm_example_name}: CMMC is not available. Set "
-        "STORM_CMMC_DIR to CMMC/src to build this example.")
-      continue()
-    endif()
   endif()
 
   if(TARGET "${_storm_example_name}")

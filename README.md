@@ -101,7 +101,7 @@ The MPI build requires the `mpi_utils`, `MeshDecomposer3D`, and `EasyRMA` depend
 | `STORM_WITH_VTK` | `OFF` | Enable VTK mesh output (requires VTK >= 9.3) |
 | `STORM_WITH_HDF5` | `OFF` | Enable HDF5 I/O |
 | `STORM_DEPS_DIR` | `./deps` | Path to external dependencies |
-| `STORM_CMMC_DIR` | `deps/CMMC/src` | Override the CMMC source directory for Till-Compton |
+| `STORM_CMMC_DIR` | `deps/CMMC/src` | Override the pinned CMMC source directory |
 
 ### Build Types
 
@@ -186,6 +186,7 @@ The `install_deps.sh` script clones external dependencies into `deps/` (override
 - **[EasyRMA](https://github.com/maormizrachi/EasyRMA)** - One-sided MPI communication (MPI builds only)
 - **[planck_integral](https://github.com/menahemkrief/planck_integral)** - Planck function integrals (Clark 1987)
 - **[units](https://github.com/menahemkrief/units)** - Physical constants in CGS (required by planck_integral)
+- **[CMMC](https://github.com/menahemkrief/CMMC)** - pinned at `091281f09257c4a5127fa5c3af237d4caf8ebfad`
 
 ## Using Inside RICH
 
