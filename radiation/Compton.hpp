@@ -112,7 +112,6 @@ struct ComptonCellData
     using GroupCdfMatrix = std::array<GroupCdf, NumGroups>;
 
     bool active = false;
-    bool signedSourceActive = false;
     double planckOpacity = 0.0;
     double volume = 0.0;
     double temperature = 0.0;
@@ -168,11 +167,6 @@ struct ComptonCellData
     GroupArray implicitDiagonalCorrection{};
     GroupArray riskScore{};
     std::array<std::size_t, NumGroups> riskTargetPackets{};
-    double signedSourceL1 = 0.0;
-    double signedSourceNet = 0.0;
-    std::size_t implicitEvents = 0;
-    std::size_t angleDependentEvents = 0;
-    std::size_t residualPackets = 0;
 };
 
 template<std::size_t NumGroups>
