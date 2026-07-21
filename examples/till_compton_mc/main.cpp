@@ -108,7 +108,7 @@ struct RuntimeOptions
     std::optional<double> forcedDt;
     bool includePlasmaCutoff = true;
     double tf = 3e-8;
-    std::size_t newPhotonsPerCell = 10000;
+    std::size_t newPhotonsPerCell = 200; // 10000;
     std::size_t initialPhotonsPerCell = 4000;
     std::size_t matrixSamples = 2000000;
     fs::path outputDir = ".";
@@ -430,8 +430,7 @@ int main(int argc, char **argv)
 
         using Opacity = STORM::examples::TillComptonOpacity<
             Vector3D, Grid, TillCell, groups>;
-        using IMC = STORM::RadiationIMC<Vector3D, Grid, TillCell,
-                                        TillExtensives, TillEOS, groups>;
+        using IMC = STORM::RadiationIMC<Vector3D, Grid, TillCell, TillExtensives, TillEOS, groups>;
 
         STORM::RadiationIMCParameters<groups> parameters;
         parameters.newPhotonsPerCell = options.newPhotonsPerCell;
@@ -447,14 +446,12 @@ int main(int argc, char **argv)
 
         auto boundary = std::make_shared<STORM::RigidBoundary<Vector3D, Grid>>(grid);
         auto eos = std::make_shared<TillEOS>();
-        auto opacity = std::make_shared<Opacity>(energyBoundaries,
-                                                 options.includePlasmaCutoff);
-        auto physics = std::make_shared<IMC>(grid, boundary, cells, extensives,
-                                             eos, opacity, parameters);
-        auto populationControl = std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(
-            grid, 200, 5.0);
-        STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(
-            grid, physics, populationControl, boundary);
+        auto opacity = std::make_shared<Opacity>(energyBoundaries, options.includePlasmaCutoff);
+        auto physics = std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacity, parameters);
+        // Match RICH's Till-Compton regression: Nmin equals the per-step
+        // source-packet setting and Comb retains its default factor of 2.0.
+        auto populationControl = std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, options.newPhotonsPerCell);
+        STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, populationControl, boundary);
 
         std::cout << "Running case: Till MC (STORM)\n"
                   << "T_mat = 1 keV, T_rad = 10 keV, Compton = ON, absorption = ON\n"

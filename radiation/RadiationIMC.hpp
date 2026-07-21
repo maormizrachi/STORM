@@ -3423,7 +3423,7 @@ template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, 
 std::vector<double> RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::buildComptonTemperatures() const
 {
     std::vector<double> temperatures;
-    temperatures.reserve(131);
+    temperatures.reserve(109);
     temperatures.push_back(0.0001 * units::kev_kelvin);
     temperatures.push_back(0.001 * units::kev_kelvin);
     temperatures.push_back(0.005 * units::kev_kelvin);
@@ -3431,8 +3431,13 @@ std::vector<double> RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGro
     {
         double const exponent = -2.0 + 6.0 *
             static_cast<double>(index) / 127.0;
-        temperatures.push_back(
-            std::pow(10.0, exponent) * units::kev_kelvin);
+        double const temperature =
+            std::pow(10.0, exponent) * units::kev_kelvin;
+        if(temperature > 1000.0 * units::kev_kelvin)
+        {
+            break;
+        }
+        temperatures.push_back(temperature);
     }
     return temperatures;
 }

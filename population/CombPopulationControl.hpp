@@ -95,14 +95,6 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
     #endif
 
     std::vector<MCParticle> result;
-    for(const MCParticle &particle : particles)
-    {
-        if(particle.weight < 0.0)
-        {
-            return std::vector<MCParticle>(particles.begin(), particles.end());
-        }
-    }
-
     size_t Ncells = this->grid.GetPointNo();
     size_t Ntotal = Ncells;
     #ifdef STORM_WITH_MPI
@@ -179,7 +171,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
                     size_t Nsplit = std::ceil(particle->weight / weight_ideal);
                     double weight_split = particle->weight / Nsplit;
                     particleCpy.weight = weight_split;
-                    particleCpy.initialWeight = weight_split;
+                    particleCpy.initialWeight = std::abs(weight_split);
                     particleCpy.id = std::numeric_limits<size_t>::max();
                     #ifdef STORM_WITH_MPI
                         particleCpy.rank = std::numeric_limits<rank_t>::max();
@@ -200,6 +192,7 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
             continue;
         }
 
+        // sort for reproducibility
         #ifdef STORM_WITH_MPI
             std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){ return (p1->rank) < (p2->rank) or ((p1->rank) == (p2->rank) and p1->id < p2->id); });
         #else
@@ -278,13 +271,6 @@ std::vector<Particle<T, Grid>> StratifiedCombPopulationControl<T, Grid>::activat
     #endif
 
     std::vector<MCParticle> result;
-    for(const MCParticle &particle : particles)
-    {
-        if(particle.weight < 0.0)
-        {
-            return std::vector<MCParticle>(particles.begin(), particles.end());
-        }
-    }
     size_t const Ncells = this->grid.GetPointNo();
     size_t Ntotal = Ncells;
     #ifdef STORM_WITH_MPI
