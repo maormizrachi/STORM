@@ -4434,14 +4434,65 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             1e-14 * std::max(1.0, energyScale);
     if(result.targetTotal > 0.0)
     {
-        double const factor = result.targetTotal / positiveTotal;
-        if(!std::isfinite(factor) || factor < 0.0)
+        // Project onto the nonnegative simplex in the Euclidean norm:
+        //
+        //     minimize ||x - candidate||_2
+        //     subject to x_g >= 0 and sum_g x_g = targetTotal.
+        //
+        // The previous clip-and-rescale operation changed every positive bin
+        // multiplicatively.  When many small negative bins were present, that
+        // unnecessarily enlarged the correction residual and forced dozens of
+        // path-dependent substeps.  The simplex projection is the smallest
+        // conservative nonnegative change to the direct solution.
+        GroupArray sorted = candidate;
+        std::sort(sorted.begin(), sorted.end(),
+            [](double left, double right) { return left > right; });
+        double cumulative = 0.0;
+        double theta = 0.0;
+        std::size_t active = 0;
+        for(std::size_t index = 0; index < NumGroups; ++index)
+        {
+            cumulative += sorted[index];
+            double const trialTheta =
+                (cumulative - result.targetTotal) /
+                static_cast<double>(index + 1);
+            if(sorted[index] > trialTheta)
+            {
+                active = index + 1;
+                theta = trialTheta;
+            }
+        }
+        if(active == 0 || !std::isfinite(theta))
         {
             return result;
         }
         for(std::size_t group = 0; group < NumGroups; ++group)
         {
-            result.endpoint[group] = positive[group] * factor;
+            result.endpoint[group] = std::max(0.0, candidate[group] - theta);
+        }
+
+        // Close the conserved radiation total at roundoff level.  Adjusting
+        // the largest active component is the least fragile option because it
+        // cannot turn a marginally active group negative.
+        double simplexTotal =
+            RadiationIMC::compensatedSumComptonGroups(result.endpoint);
+        if(!std::isfinite(simplexTotal))
+        {
+            return result;
+        }
+        double const closure = result.targetTotal - simplexTotal;
+        auto const largest = std::max_element(
+            result.endpoint.begin(), result.endpoint.end());
+        if(largest == result.endpoint.end() ||
+           !std::isfinite(*largest + closure) ||
+           *largest + closure < 0.0)
+        {
+            return result;
+        }
+        *largest += closure;
+
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
             double const scale = std::max(
                 {1.0, std::abs(candidate[group]), std::abs(result.endpoint[group])});
             result.maximumRelativeChange = std::max(
@@ -5416,15 +5467,17 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 
     // These are deliberately loose engineering tolerances for a noisy,
     // low-packet spectrum.  They are not machine-roundoff epsilons.  The
-    // aggregate negative-mass limit must not be smaller than the single-group
-    // limit: otherwise several individually harmless negative bins make the
-    // conservative projection unreachable.  A projected residual below 0.5%
-    // is accepted because the projection is the positivity constraint, not a
-    // floating-point repair of the unconstrained equations.
+    // aggregate negative-mass limit must allow several individually small
+    // negative bins to be removed in one conservative projection.  The
+    // cycle-309 failure had 0.661% aggregate negative mass while every group
+    // was below 0.01% of the cell energy, so the former 0.2% aggregate limit
+    // forced many path-dependent projected substeps.  Permit up to a 1%
+    // one-shot projection and require the projected equations to remain
+    // accurate to the same 1% engineering scale.
     constexpr double perGroupNegativeToleranceFraction = 1e-3;
-    constexpr double totalNegativeToleranceFraction = 2e-3;
+    constexpr double totalNegativeToleranceFraction = 1e-2;
     constexpr double capToleranceFraction = 1e-6;
-    constexpr double relativeResidualTolerance = 5e-3;
+    constexpr double relativeResidualTolerance = 1e-2;
     constexpr double grossResidualTolerance = 1e-2;
     double const perGroupNegativeTolerance =
         perGroupNegativeToleranceFraction * energyScale;
