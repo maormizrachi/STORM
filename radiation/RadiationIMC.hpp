@@ -3351,6 +3351,16 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             throw eo;
         }
         data.fleck = 1.0 / denominator;
+        if(!std::isfinite(data.fleck) || data.fleck < 0.0 || data.fleck > 1.0)
+        {
+            StormError eo("Invalid Compton-modified Fleck factor");
+            eo.addEntry("Cell index", i);
+            eo.addEntry("Fleck", data.fleck);
+            eo.addEntry("Gamma", data.Gamma);
+            eo.addEntry("Upsilon", data.Upsilon);
+            eo.addEntry("Planck opacity", data.planckOpacity);
+            throw eo;
+        }
         data.betaCdtF = data.beta * cdtEff * data.fleck;
         if(std::abs(data.Gamma) > 1e-200)
         {
@@ -3823,51 +3833,128 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     for(std::size_t cellIndex = 0; cellIndex < this->comptonData_.size(); ++cellIndex)
     {
         ComptonCellData const &data = this->comptonData_[cellIndex];
+        GroupArray sourceEnergy{};
+        GroupArray fractional{};
+        std::array<std::size_t, NumGroups> groupCounts{};
+        double totalSourceEnergy = 0.0;
         std::size_t activeGroups = 0;
-        for(double source : data.Bbase)
+        for(std::size_t group = 0; group < NumGroups; ++group)
         {
-            if(source > 0.0)
+            sourceEnergy[group] = std::max(0.0, data.Bbase[group]);
+            totalSourceEnergy += sourceEnergy[group];
+            if(sourceEnergy[group] > 0.0)
             {
                 ++activeGroups;
             }
         }
         std::size_t const packetCount = std::max(
             this->parameters_.newPhotonsPerCell, activeGroups);
-        if(packetCount == 0)
+        if(packetCount == 0 || !(totalSourceEnergy > 0.0))
         {
             continue;
         }
+
+        std::size_t allocated = 0;
         for(std::size_t group = 0; group < NumGroups; ++group)
         {
-            double const sourceEnergy = data.Bbase[group];
-            if(!(sourceEnergy > 0.0))
+            if(sourceEnergy[group] > 0.0)
+            {
+                groupCounts[group] = 1;
+                ++allocated;
+            }
+        }
+        std::size_t const remainingBudget = packetCount - allocated;
+        std::size_t extraAllocated = 0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(!(sourceEnergy[group] > 0.0))
             {
                 continue;
             }
-            std::size_t const groupPackets = std::max<std::size_t>(
-                1,
-                static_cast<std::size_t>(std::ceil(
-                    static_cast<double>(packetCount) *
-                    sourceEnergy /
-                    std::max(data.signedSourceL1, sourceEnergy))));
+            double const exactExtra = static_cast<double>(remainingBudget) *
+                sourceEnergy[group] / totalSourceEnergy;
+            std::size_t const extra =
+                static_cast<std::size_t>(std::floor(exactExtra));
+            groupCounts[group] += extra;
+            fractional[group] = exactExtra - static_cast<double>(extra);
+            extraAllocated += extra;
+        }
+        while(extraAllocated < remainingBudget)
+        {
+            std::size_t bestGroup = NumGroups;
+            double bestFraction = -1.0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                if(sourceEnergy[group] > 0.0 &&
+                   fractional[group] > bestFraction)
+                {
+                    bestGroup = group;
+                    bestFraction = fractional[group];
+                }
+            }
+            if(bestGroup == NumGroups)
+            {
+                break;
+            }
+            ++groupCounts[bestGroup];
+            fractional[bestGroup] = 0.0;
+            ++extraAllocated;
+        }
+
+        std::size_t riskBudget = std::max<std::size_t>(8, packetCount / 4);
+        std::array<std::size_t, NumGroups> riskOrder{};
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            riskOrder[group] = group;
+        }
+        std::sort(riskOrder.begin(), riskOrder.end(),
+            [&](std::size_t left, std::size_t right)
+            {
+                return data.riskScore[left] > data.riskScore[right];
+            });
+        for(std::size_t order = 0;
+            order < NumGroups && riskBudget > 0; ++order)
+        {
+            std::size_t const group = riskOrder[order];
+            std::size_t const target = data.riskTargetPackets[group];
+            if(target == 0 || !(sourceEnergy[group] > 0.0) ||
+               groupCounts[group] >= target)
+            {
+                continue;
+            }
+            std::size_t const add =
+                std::min(target - groupCounts[group], riskBudget);
+            groupCounts[group] += add;
+            riskBudget -= add;
+        }
+
+        double gamma = 1.0;
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            if(this->parameters_.withHydro && !this->parameters_.MMC)
+            {
+                gamma = 1.0 / std::sqrt(
+                    1.0 - ScalarProd(
+                        this->cells_[cellIndex].velocity,
+                        this->cells_[cellIndex].velocity) *
+                    units::inv_clight2);
+            }
+        }
+
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            std::size_t const groupPackets = groupCounts[group];
+            if(groupPackets == 0 || !(sourceEnergy[group] > 0.0))
+            {
+                continue;
+            }
             if(!this->parameters_.noHydroFeedback)
             {
-                double gamma = 1.0;
-                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-                {
-                    if(this->parameters_.withHydro &&
-                       !this->parameters_.MMC)
-                    {
-                        gamma = 1.0 / std::sqrt(
-                            1.0 - ScalarProd(
-                                this->cells_[cellIndex].velocity,
-                                this->cells_[cellIndex].velocity) *
-                            units::inv_clight2);
-                    }
-                }
-                this->extensives_[cellIndex].internal_energy -= sourceEnergy;
+                this->extensives_[cellIndex].internal_energy -=
+                    sourceEnergy[group];
                 radiation_imc_detail::addTotalEnergyIfPresent(
-                    this->extensives_[cellIndex], -sourceEnergy * gamma);
+                    this->extensives_[cellIndex],
+                    -sourceEnergy[group] * gamma);
                 if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                 {
                     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
@@ -3876,13 +3963,17 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                            !this->parameters_.diffusionPressureGradient)
                         {
                             this->extensives_[cellIndex].momentum -=
-                                sourceEnergy * this->cells_[cellIndex].velocity *
+                                sourceEnergy[group] *
+                                this->cells_[cellIndex].velocity *
                                 units::inv_clight2 * gamma;
                         }
                     }
                 }
             }
-            for(std::size_t packetIndex = 0; packetIndex < groupPackets; ++packetIndex)
+            double const packetEnergy = sourceEnergy[group] /
+                static_cast<double>(groupPackets);
+            for(std::size_t packetIndex = 0;
+                packetIndex < groupPackets; ++packetIndex)
             {
                 MCParticle particle = this->generateSingleParticle(
                     cellIndex, this->cells_[cellIndex]);
@@ -3891,9 +3982,12 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                     particle,
                     this->cells_[cellIndex],
                     this->frequencyForComptonGroup(group),
-                    sourceEnergy / static_cast<double>(groupPackets));
+                    packetEnergy);
                 this->setInitialWeightFromWeight(particle);
-                result.push_back(particle);
+                if(particle.initialWeight > 0.0)
+                {
+                    result.push_back(particle);
+                }
             }
         }
     }
@@ -4573,70 +4667,146 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         {
             continue;
         }
+        if(particle.weight < 0.0)
+        {
+            throw StormError(
+                "Negative particle weight in positive-only Compton reconciliation");
+        }
         double frequency = particle.frequency;
         this->clampFrequencyToBounds(frequency);
-        std::size_t const group =
-            this->opacity_->findGroup(frequency, this->energyBoundaries_);
+        std::size_t const group = this->opacity_->findGroup(
+            frequency, this->energyBoundaries_);
         if(group < NumGroups)
         {
             raw[particle.cellIndex][group] += particle.weight;
         }
     }
-    for(MCParticle &particle : particles)
-    {
-        if(particle.cellIndex >= Ncells)
-        {
-            continue;
-        }
-        double frequency = particle.frequency;
-        this->clampFrequencyToBounds(frequency);
-        std::size_t const group =
-            this->opacity_->findGroup(frequency, this->energyBoundaries_);
-        if(group >= NumGroups || !(raw[particle.cellIndex][group] > 0.0))
-        {
-            continue;
-        }
-        double const target =
-            std::max(0.0, this->extensives_[particle.cellIndex].Eg[group]);
-        if(target < raw[particle.cellIndex][group])
-        {
-            particle.weight *= target /
-                raw[particle.cellIndex][group];
-            this->setInitialWeightFromWeight(particle);
-        }
-    }
+
+    std::vector<GroupArray> scale(Ncells, GroupArray{});
     for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
     {
-        GroupArray represented{};
-        for(const MCParticle &particle : particles)
-        {
-            if(particle.cellIndex >= Ncells)
-            {
-                continue;
-            }
-            double frequency = particle.frequency;
-            this->clampFrequencyToBounds(frequency);
-            std::size_t const group =
-                this->opacity_->findGroup(frequency, this->energyBoundaries_);
-            if(particle.cellIndex == cellIndex && group < NumGroups)
-            {
-                represented[group] += particle.weight;
-            }
-        }
         for(std::size_t group = 0; group < NumGroups; ++group)
         {
             double const target = std::max(
                 0.0, this->extensives_[cellIndex].Eg[group]);
-            double const deficit = target - represented[group];
+            scale[cellIndex][group] =
+                raw[cellIndex][group] > 0.0 && target < raw[cellIndex][group]
+                ? target / raw[cellIndex][group] : 1.0;
+        }
+    }
+
+    auto iterator = particles.begin();
+    while(iterator != particles.end())
+    {
+        MCParticle &particle = *iterator;
+        if(particle.cellIndex < Ncells)
+        {
+            double frequency = particle.frequency;
+            this->clampFrequencyToBounds(frequency);
+            std::size_t const group = this->opacity_->findGroup(
+                frequency, this->energyBoundaries_);
+            if(group < NumGroups)
+            {
+                particle.weight *= scale[particle.cellIndex][group];
+                this->setInitialWeightFromWeight(particle);
+            }
+        }
+        if(!(particle.weight > 0.0))
+        {
+            iterator = particles.erase(iterator);
+        }
+        else
+        {
+            ++iterator;
+        }
+    }
+
+    for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+    {
+        GroupArray deficits{};
+        GroupArray fractional{};
+        std::array<std::size_t, NumGroups> groupCounts{};
+        double totalDeficit = 0.0;
+        std::size_t activeDeficitGroups = 0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            double const target = std::max(
+                0.0, this->extensives_[cellIndex].Eg[group]);
+            double const represented = raw[cellIndex][group] > target
+                ? target : raw[cellIndex][group];
+            double const deficit = target - represented;
             if(deficit <= 1e-12 * std::max(1.0, target))
             {
                 continue;
             }
-            std::size_t packetCount = std::max<std::size_t>(
-                1, this->parameters_.newPhotonsPerCell);
-            packetCount = std::max(
-                packetCount,
-                this->comptonData_[cellIndex].riskTargetPackets[group]);
+            deficits[group] = deficit;
+            totalDeficit += deficit;
+            ++activeDeficitGroups;
+        }
+        if(!(totalDeficit > 0.0))
+        {
+            continue;
+        }
+
+        std::size_t const packetBudget = std::max(
+            this->parameters_.newPhotonsPerCell,
+            activeDeficitGroups);
+        std::size_t allocated = 0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(deficits[group] > 0.0)
+            {
+                groupCounts[group] = 1;
+                ++allocated;
+            }
+        }
+        std::size_t const remainingBudget = packetBudget - allocated;
+        std::size_t extraAllocated = 0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(!(deficits[group] > 0.0))
+            {
+                continue;
+            }
+            double const exactExtra = static_cast<double>(remainingBudget) *
+                deficits[group] / totalDeficit;
+            std::size_t const extra =
+                static_cast<std::size_t>(std::floor(exactExtra));
+            groupCounts[group] += extra;
+            fractional[group] = exactExtra - static_cast<double>(extra);
+            extraAllocated += extra;
+        }
+        while(extraAllocated < remainingBudget)
+        {
+            std::size_t bestGroup = NumGroups;
+            double bestFraction = -1.0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                if(deficits[group] > 0.0 &&
+                   fractional[group] > bestFraction)
+                {
+                    bestGroup = group;
+                    bestFraction = fractional[group];
+                }
+            }
+            if(bestGroup == NumGroups)
+            {
+                break;
+            }
+            ++groupCounts[bestGroup];
+            fractional[bestGroup] = 0.0;
+            ++extraAllocated;
+        }
+
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            std::size_t const packetCount = groupCounts[group];
+            if(packetCount == 0)
+            {
+                continue;
+            }
+            double const packetWeight = deficits[group] /
+                static_cast<double>(packetCount);
             for(std::size_t packetIndex = 0;
                 packetIndex < packetCount; ++packetIndex)
             {
@@ -4646,7 +4816,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                     particle,
                     this->cells_[cellIndex],
                     this->frequencyForComptonGroup(group),
-                    deficit / static_cast<double>(packetCount));
+                    packetWeight);
                 this->setInitialWeightFromWeight(particle);
                 particles.push_back(particle);
             }
