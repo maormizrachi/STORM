@@ -5,6 +5,17 @@
 # directory containing REGRESSION_INFO and a main source file; every C/C++
 # source file in that directory is compiled into the resulting executable.
 
+execute_process(
+  COMMAND git rev-parse HEAD
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  OUTPUT_VARIABLE STORM_GIT_COMMIT
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET
+)
+if(NOT STORM_GIT_COMMIT)
+  set(STORM_GIT_COMMIT "unknown")
+endif()
+
 set(_storm_example_info_files "")
 file(GLOB _storm_example_info_files CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/*/REGRESSION_INFO")
@@ -104,7 +115,8 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
   target_include_directories("${_storm_example_name}" PRIVATE
     ${_storm_example_include_dirs})
   target_compile_definitions("${_storm_example_name}" PRIVATE
-    "STORM_DATA_DIR=\"${_storm_example_dir}\"")
+    "STORM_DATA_DIR=\"${_storm_example_dir}\""
+    "STORM_GIT_COMMIT=\"${STORM_GIT_COMMIT}\"")
   set_target_properties("${_storm_example_name}" PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${_storm_example_dir}")
 

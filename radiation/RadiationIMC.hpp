@@ -6,10 +6,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <random>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -207,6 +211,20 @@ void addRadiationEnergyIfPresent(ExtensivesT &extensives, double energy)
 }
 
 template<typename ExtensivesT>
+void setRadiationEnergyIfPresent(ExtensivesT &extensives, double energy)
+{
+    if constexpr(has_member_radiation_energy<ExtensivesT>::value)
+    {
+        extensives.Erad = energy;
+    }
+    else
+    {
+        (void) extensives;
+        (void) energy;
+    }
+}
+
+template<typename ExtensivesT>
 double radiationEnergyIfPresent(const ExtensivesT &extensives)
 {
     if constexpr(has_member_radiation_energy<ExtensivesT>::value)
@@ -386,6 +404,8 @@ public:
     using BoundaryCond = BoundaryCondition<PointT, GridT>;
     using Parameters = RadiationIMCParameters<NumGroups>;
     using OpacityModel = RadiationOpacityModel<PointT, GridT, CellT, NumGroups>;
+    using Traits = TraitsT;
+    using PositionSampler = PositionSamplerT;
     using GroupArray = std::array<double, NumGroups>;
     using GroupBoundaries = std::array<double, NumGroups + 1>;
     using GroupCdf = std::array<double, NumGroups + 1>;
@@ -425,6 +445,111 @@ public:
         double cappedEnergy = 0.0;
         double cappedEnergyFraction = 0.0;
         bool estimatorPotentiallyBiased = false;
+    };
+
+    enum class ComptonCorrectionPath : unsigned char
+    {
+        None = 0,
+        Direct = 1,
+        MaterialCapFallback = 2,
+        Subcycled = 3,
+        RawFallback = 4
+    };
+
+    enum class ComptonCorrectionFailure : unsigned char
+    {
+        None = 0,
+        DirectLinearSolveFailed,
+        DirectNegativeMass,
+        DirectMaterialCap,
+        DirectProjectedResidual,
+        AdaptiveLinearSolveFailed,
+        AdaptiveMaximumSubsteps,
+        AdaptiveMaximumRejectedTrials,
+        AdaptiveFractionBelowMinimum,
+        AdaptiveNoProgress,
+        AdaptiveIncompleteTau,
+        NonFiniteState,
+        InvalidEnergyBudget,
+        EnergyClosureFailure,
+        ReconciliationMismatch
+    };
+
+    struct ComptonStepDiagnostics
+    {
+        GroupArray rawGroupEnergy{};
+        GroupArray timeAverageGroupEnergy{};
+        GroupArray solveInputGroupEnergy{};
+        GroupArray supportFloorEnergy{};
+        GroupArray drive{};
+        GroupArray rhs{};
+        GroupArray directDelta{};
+        GroupArray directEndpoint{};
+        GroupArray projectedEndpoint{};
+        GroupArray adaptiveDelta{};
+        GroupArray adaptiveEndpoint{};
+        GroupArray negativeAmount{};
+        GroupArray projectionChange{};
+        GroupArray matrixRowNorm{};
+        GroupArray directSolution{};
+        GroupArray finalSolution{};
+        GroupArray reconciledParticleEnergy{};
+        std::array<std::size_t, NumGroups> packetCountsBeforeCorrection{};
+        std::array<std::size_t, NumGroups> packetCountsAfterReconciliation{};
+        ComptonCorrectionPath path = ComptonCorrectionPath::None;
+        ComptonCorrectionFailure failure = ComptonCorrectionFailure::None;
+        bool success = false;
+        bool directSolveOk = false;
+        bool directClampAcceptable = false;
+        bool directMaterialCapOk = false;
+        bool usedProjection = false;
+        bool usedCapRepair = false;
+        std::size_t cycle = 0;
+        double simulationTime = 0.0;
+        std::size_t cellIndex = 0;
+        std::size_t cellID = 0;
+        double totalPreStepRadiation = 0.0;
+        double totalPostTransportRadiation = 0.0;
+        double totalTimeAverageRadiation = 0.0;
+        double bcorrScale = 1.0;
+        double temperature = 0.0;
+        double planckOpacity = 0.0;
+        double fleck = 1.0;
+        double beta = 0.0;
+        double Gamma = 0.0;
+        double Upsilon = 0.0;
+        double betaCdtF = 0.0;
+        double budgetBefore = 0.0;
+        double energyScale = 0.0;
+        double materialEnergyBefore = 0.0;
+        double materialEnergyAfter = 0.0;
+        double materialFloor = 0.0;
+        double materialCap = 0.0;
+        double candidateRadiationTotal = 0.0;
+        double projectedRadiationTotal = 0.0;
+        double materialDelta = 0.0;
+        double projectionTransfer = 0.0;
+        double projectionMaximumRelativeChange = 0.0;
+        double roundoffThermalTransfer = 0.0;
+        double energyClosureResidual = 0.0;
+        double directNegativeMass = 0.0;
+        double directResidual = 0.0;
+        double projectedResidual = 0.0;
+        double minPivot = 0.0;
+        double maxCoefficient = 0.0;
+        double worstNegative = 0.0;
+        std::size_t worstNegativeGroup = NumGroups;
+        std::size_t acceptedSubsteps = 0;
+        std::size_t rejectedTrials = 0;
+        double tau = 0.0;
+        double remainingTau = 1.0;
+        double lastFraction = 0.0;
+        double minimumAcceptedFraction = 0.0;
+        double maximumAcceptedFraction = 0.0;
+        double subcycleConsumedFraction = 0.0;
+        std::size_t subcycles = 0;
+        double correctionDelta = 0.0;
+        double reconciliationMaxRelativeError = 0.0;
     };
 
     using ComptonCellData = STORM::ComptonCellData<NumGroups>;
@@ -467,6 +592,11 @@ public:
     const std::vector<std::size_t> &getLastSourcePhotonsPerCell() const { return this->lastSourcePhotonsPerCell_; }
     GroupSamplingDiagnostics getLastGroupSamplingDiagnostics() const { return this->lastGroupSamplingDiagnostics_; }
     const std::vector<ComptonCellData> &getComptonData() const { return this->comptonData_; }
+    const std::vector<ComptonStepDiagnostics> &
+    getLastComptonStepDiagnostics() const
+    {
+        return this->lastComptonStepDiagnostics_;
+    }
     const GroupArray &getComptonGroupCenters() const { return this->comptonGroupCenters_; }
     const GroupArray &getComptonGroupWidths() const { return this->comptonGroupWidths_; }
     std::size_t getComptonEventCount() const { return this->comptonEventCount_; }
@@ -556,6 +686,42 @@ private:
         Census
     };
 
+    struct ComptonLinearSolveDiagnostics
+    {
+        double minPivot = std::numeric_limits<double>::infinity();
+        double maxCoefficient = 0.0;
+    };
+
+    struct ComptonProjectionResult
+    {
+        GroupArray endpoint{};
+        double targetTotal = 0.0;
+        double inputTotal = 0.0;
+        double negativeMass = 0.0;
+        double worstNegative = 0.0;
+        std::size_t worstNegativeGroup = NumGroups;
+        double maximumRelativeChange = 0.0;
+        bool usedProjection = false;
+        bool usedCapRepair = false;
+        bool success = false;
+    };
+
+    struct ComptonCorrectionResult
+    {
+        GroupArray endpoint{};
+        GroupArray delta{};
+        double radiationTotal = 0.0;
+        double materialEnergyBefore = 0.0;
+        double materialEnergyAfter = 0.0;
+        double budgetBefore = 0.0;
+        double energyClosureResidual = 0.0;
+        bool usedProjection = false;
+        bool usedCapRepair = false;
+        bool success = false;
+        ComptonCorrectionFailure failure =
+            ComptonCorrectionFailure::None;
+    };
+
     std::vector<MCParticle> generateParticles(double fullDt);
     void validateGridSizedState() const;
     void validateEnergyBoundaries() const;
@@ -580,6 +746,7 @@ private:
     void computeComptonRiskForCell(double fullDt, ComptonCellData &data) const;
     std::vector<MCParticle> generateComptonParticles(double fullDt);
     void applyComptonEndOfStepCorrection(double fullDt);
+    void applyComptonEndOfStepCorrectionLegacy(double fullDt);
     void reconcileComptonParticles(std::vector<MCParticle> &particles);
     void splitComptonRiskyParticles(std::vector<MCParticle> &particles,
                                     double fullDt);
@@ -588,9 +755,39 @@ private:
     static double minComptonGroup(const GroupArray &values);
     static double maxAbsComptonGroup(const GroupArray &values);
     static double normComptonGroups(const GroupArray &values);
+    static double compensatedSumComptonGroups(const GroupArray &values);
+    static const char *comptonCorrectionFailureName(
+        ComptonCorrectionFailure failure);
     static bool solveComptonGroupSystem(GroupMatrix matrix,
                                          GroupArray rhs,
-                                         GroupArray &solution);
+                                         GroupArray &solution,
+                                         ComptonLinearSolveDiagnostics *diagnostics = nullptr);
+    static GroupArray multiplyComptonMatrix(const GroupMatrix &matrix,
+                                            const GroupArray &values);
+    static double relativeComptonResidual(const GroupMatrix &matrix,
+                                          const GroupArray &solution,
+                                          const GroupArray &rhs,
+                                          double scale);
+    static ComptonProjectionResult projectNonnegativeConservative(
+        const GroupArray &candidate,
+        double targetTotal,
+        double energyScale,
+        double perGroupNegativeTolerance,
+        double totalNegativeTolerance);
+    ComptonCorrectionResult solveComptonCorrection(
+        std::size_t cellIndex,
+        double fullDt,
+        const ComptonCellData &data,
+        const GroupArray &rawGroupEnergy,
+        const GroupArray &timeAvgGroupEnergy,
+        double budgetBefore,
+        double materialFloor,
+        ComptonStepDiagnostics &diagnostics) const;
+    std::string writeComptonCorrectionFailureCsv(
+        std::size_t cellIndex,
+        double fullDt,
+        const ComptonCellData &data,
+        const ComptonStepDiagnostics &diagnostics) const;
     double frequencyForComptonGroup(std::size_t group) const;
     void setPacketFromComovingState(MCParticle &particle,
                                     const CellT &cell,
@@ -656,6 +853,9 @@ private:
     bool comptonDataReusableInPreStep_ = false;
     double comptonRiskPrecomputeDt_ = -1.0;
     std::vector<std::array<std::size_t, NumGroups>> lastComptonPacketCounts_;
+    std::vector<ComptonStepDiagnostics> lastComptonStepDiagnostics_;
+    std::size_t comptonStepCounter_ = 0;
+    double comptonSimulationTime_ = 0.0;
     std::size_t comptonEventCount_ = 0;
     std::size_t comptonAngleEventCount_ = 0;
     bool comptonInducedTermsExercised_ = false;
@@ -4032,7 +4232,63 @@ template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, 
 double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::sumComptonGroups(
     const GroupArray &values)
 {
-    return std::accumulate(values.begin(), values.end(), 0.0);
+    return RadiationIMC::compensatedSumComptonGroups(values);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::compensatedSumComptonGroups(
+    const GroupArray &values)
+{
+    double sum = 0.0;
+    double compensation = 0.0;
+    for(double const value : values)
+    {
+        double const corrected = value - compensation;
+        double const next = sum + corrected;
+        compensation = (next - sum) - corrected;
+        sum = next;
+    }
+    return sum;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+const char *RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::comptonCorrectionFailureName(
+    ComptonCorrectionFailure failure)
+{
+    switch(failure)
+    {
+        case ComptonCorrectionFailure::None:
+            return "None";
+        case ComptonCorrectionFailure::DirectLinearSolveFailed:
+            return "DirectLinearSolveFailed";
+        case ComptonCorrectionFailure::DirectNegativeMass:
+            return "DirectNegativeMass";
+        case ComptonCorrectionFailure::DirectMaterialCap:
+            return "DirectMaterialCap";
+        case ComptonCorrectionFailure::DirectProjectedResidual:
+            return "DirectProjectedResidual";
+        case ComptonCorrectionFailure::AdaptiveLinearSolveFailed:
+            return "AdaptiveLinearSolveFailed";
+        case ComptonCorrectionFailure::AdaptiveMaximumSubsteps:
+            return "AdaptiveMaximumSubsteps";
+        case ComptonCorrectionFailure::AdaptiveMaximumRejectedTrials:
+            return "AdaptiveMaximumRejectedTrials";
+        case ComptonCorrectionFailure::AdaptiveFractionBelowMinimum:
+            return "AdaptiveFractionBelowMinimum";
+        case ComptonCorrectionFailure::AdaptiveNoProgress:
+            return "AdaptiveNoProgress";
+        case ComptonCorrectionFailure::AdaptiveIncompleteTau:
+            return "AdaptiveIncompleteTau";
+        case ComptonCorrectionFailure::NonFiniteState:
+            return "NonFiniteState";
+        case ComptonCorrectionFailure::InvalidEnergyBudget:
+            return "InvalidEnergyBudget";
+        case ComptonCorrectionFailure::EnergyClosureFailure:
+            return "EnergyClosureFailure";
+        case ComptonCorrectionFailure::ReconciliationMismatch:
+            return "ReconciliationMismatch";
+    }
+    return "Unknown";
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
@@ -4067,11 +4323,168 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::GroupArray
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::multiplyComptonMatrix(
+    const GroupMatrix &matrix,
+    const GroupArray &values)
+{
+    GroupArray result{};
+    for(std::size_t row = 0; row < NumGroups; ++row)
+    {
+        for(std::size_t column = 0; column < NumGroups; ++column)
+        {
+            result[row] += matrix[row][column] * values[column];
+        }
+    }
+    return result;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::relativeComptonResidual(
+    const GroupMatrix &matrix,
+    const GroupArray &solution,
+    const GroupArray &rhs,
+    double scale)
+{
+    GroupArray residual = RadiationIMC::multiplyComptonMatrix(matrix, solution);
+    for(std::size_t group = 0; group < NumGroups; ++group)
+    {
+        residual[group] -= rhs[group];
+    }
+    return RadiationIMC::normComptonGroups(residual) /
+        std::max(1.0, std::max(RadiationIMC::normComptonGroups(rhs), scale));
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::ComptonProjectionResult
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::projectNonnegativeConservative(
+    const GroupArray &candidate,
+    double targetTotal,
+    double energyScale,
+    double perGroupNegativeTolerance,
+    double totalNegativeTolerance)
+{
+    ComptonProjectionResult result;
+    result.inputTotal = RadiationIMC::compensatedSumComptonGroups(candidate);
+    result.targetTotal = targetTotal;
+    if(!std::isfinite(result.inputTotal) ||
+       !std::isfinite(targetTotal) ||
+       targetTotal < -totalNegativeTolerance)
+    {
+        return result;
+    }
+    if(targetTotal < 0.0)
+    {
+        result.targetTotal = 0.0;
+    }
+
+    GroupArray positive{};
+    for(std::size_t group = 0; group < NumGroups; ++group)
+    {
+        double const value = candidate[group];
+        if(!std::isfinite(value))
+        {
+            return result;
+        }
+        if(value < 0.0)
+        {
+            double const negative = -value;
+            result.negativeMass += negative;
+            if(negative > result.worstNegative)
+            {
+                result.worstNegative = negative;
+                result.worstNegativeGroup = group;
+            }
+        }
+        positive[group] = std::max(0.0, value);
+    }
+    double const positiveTotal =
+        RadiationIMC::compensatedSumComptonGroups(positive);
+
+    if(result.worstNegative > perGroupNegativeTolerance ||
+       result.negativeMass > totalNegativeTolerance)
+    {
+        return result;
+    }
+    if(result.targetTotal > 0.0 && !(positiveTotal > 0.0))
+    {
+        return result;
+    }
+
+    result.usedProjection = result.negativeMass > 0.0 ||
+        std::abs(result.inputTotal - result.targetTotal) >
+            1e-14 * std::max(1.0, energyScale);
+    if(result.targetTotal > 0.0)
+    {
+        double const factor = result.targetTotal / positiveTotal;
+        if(!std::isfinite(factor) || factor < 0.0)
+        {
+            return result;
+        }
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            result.endpoint[group] = positive[group] * factor;
+            double const scale = std::max(
+                {1.0, std::abs(candidate[group]), std::abs(result.endpoint[group])});
+            result.maximumRelativeChange = std::max(
+                result.maximumRelativeChange,
+                std::abs(result.endpoint[group] - candidate[group]) / scale);
+        }
+    }
+    else
+    {
+        result.endpoint.fill(0.0);
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            result.maximumRelativeChange = std::max(
+                result.maximumRelativeChange,
+                std::abs(candidate[group]));
+        }
+    }
+
+    double const projectedTotal =
+        RadiationIMC::compensatedSumComptonGroups(result.endpoint);
+    if(!std::isfinite(projectedTotal) ||
+       std::abs(projectedTotal - result.targetTotal) >
+           1e-12 * std::max(1.0, energyScale))
+    {
+        return result;
+    }
+    result.success = true;
+    return result;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::solveComptonGroupSystem(
     GroupMatrix matrix,
     GroupArray rhs,
-    GroupArray &solution)
+    GroupArray &solution,
+    ComptonLinearSolveDiagnostics *diagnostics)
 {
+    if(diagnostics)
+    {
+        *diagnostics = ComptonLinearSolveDiagnostics{};
+    }
+    for(std::size_t row = 0; row < NumGroups; ++row)
+    {
+        for(std::size_t column = 0; column < NumGroups; ++column)
+        {
+            if(!std::isfinite(matrix[row][column]))
+            {
+                return false;
+            }
+            if(diagnostics)
+            {
+                diagnostics->maxCoefficient = std::max(
+                    diagnostics->maxCoefficient,
+                    std::abs(matrix[row][column]));
+            }
+        }
+        if(!std::isfinite(rhs[row]))
+        {
+            return false;
+        }
+    }
     for(std::size_t column = 0; column < NumGroups; ++column)
     {
         std::size_t pivot = column;
@@ -4088,6 +4501,11 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         if(!(pivotMagnitude > 1e-200) || !std::isfinite(pivotMagnitude))
         {
             return false;
+        }
+        if(diagnostics)
+        {
+            diagnostics->minPivot = std::min(
+                diagnostics->minPivot, pivotMagnitude);
         }
         if(pivot != column)
         {
@@ -4106,8 +4524,16 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             for(std::size_t j = column + 1; j < NumGroups; ++j)
             {
                 matrix[row][j] -= factor * matrix[column][j];
+                if(!std::isfinite(matrix[row][j]))
+                {
+                    return false;
+                }
             }
             rhs[row] -= factor * rhs[column];
+            if(!std::isfinite(rhs[row]))
+            {
+                return false;
+            }
         }
     }
 
@@ -4270,11 +4696,12 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyComptonEndOfStepCorrection(
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyComptonEndOfStepCorrectionLegacy(
     double fullDt)
 {
     if(!this->parameters_.withCompton)
     {
+        this->lastComptonStepDiagnostics_.clear();
         return;
     }
     if constexpr(!radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
@@ -4284,9 +4711,21 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     else
     {
         const std::size_t Ncells = this->grid.GetPointNo();
+        if(this->parameters_.comptonDiagnostics)
+        {
+            this->lastComptonStepDiagnostics_.assign(
+                Ncells, ComptonStepDiagnostics{});
+        }
+        else
+        {
+            this->lastComptonStepDiagnostics_.clear();
+        }
         for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
         {
             ComptonCellData const &data = this->comptonData_[cellIndex];
+            ComptonStepDiagnostics *diagnostics =
+                this->parameters_.comptonDiagnostics
+                    ? &this->lastComptonStepDiagnostics_[cellIndex] : nullptr;
             GroupArray rawGroupEnergy{};
             GroupArray timeAvgGroupEnergy{};
             GroupArray solveInputGroupEnergy{};
@@ -4360,6 +4799,23 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 ? std::clamp(
                     totalPostTransportErad / preStepExtensive, 0.0, 1.0)
                 : 1.0;
+            if(diagnostics)
+            {
+                diagnostics->rawGroupEnergy = rawGroupEnergy;
+                diagnostics->timeAverageGroupEnergy = timeAvgGroupEnergy;
+                diagnostics->solveInputGroupEnergy = solveInputGroupEnergy;
+                diagnostics->supportFloorEnergy = supportFloorEnergy;
+                diagnostics->totalPreStepRadiation = preStepExtensive;
+                diagnostics->totalPostTransportRadiation =
+                    totalPostTransportErad;
+                diagnostics->totalTimeAverageRadiation = totalTimeAvgErad;
+                diagnostics->bcorrScale = bcorrScale;
+                if(cellIndex < this->lastComptonPacketCounts_.size())
+                {
+                    diagnostics->packetCountsBeforeCorrection =
+                        this->lastComptonPacketCounts_[cellIndex];
+                }
+            }
             for(std::size_t row = 0; row < NumGroups; ++row)
             {
                 rhs[row] = solveInputGroupEnergy[row] +
@@ -4376,6 +4832,12 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             GroupArray directSolution{};
             bool const directOk = RadiationIMC::solveComptonGroupSystem(
                 residualMatrix, rhs, directSolution);
+            if(diagnostics)
+            {
+                diagnostics->rhs = rhs;
+                diagnostics->directSolution = directSolution;
+                diagnostics->directSolveOk = directOk;
+            }
             double const cellEnergyScale = std::max({
                 1.0,
                 totalPostTransportErad,
@@ -4469,10 +4931,20 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             bool const directCapOk = !std::isfinite(materialCap) ||
                 RadiationIMC::sumComptonGroups(directClamped) <=
                     materialCap + materialCapTolerance;
+            if(diagnostics)
+            {
+                diagnostics->directClampAcceptable = directClampAcceptable;
+                diagnostics->directMaterialCapOk = directCapOk;
+                diagnostics->directNegativeMass = totalNegativeMass;
+            }
 
             if(directClampAcceptable && directCapOk)
             {
                 solution = directClamped;
+                if(diagnostics)
+                {
+                    diagnostics->path = ComptonCorrectionPath::Direct;
+                }
             }
             else
             {
@@ -4504,6 +4976,11 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                        materialCap + materialCapTolerance)
                 {
                     solution = rawGroupEnergy;
+                    if(diagnostics)
+                    {
+                        diagnostics->path =
+                            ComptonCorrectionPath::MaterialCapFallback;
+                    }
                 }
                 else
                 {
@@ -4625,8 +5102,17 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                     }
 
                     constexpr double minimumUsefulConsumedFraction = 1e-6;
-                    solution = consumed >= minimumUsefulConsumedFraction
-                        ? current : rawGroupEnergy;
+                    bool const usefulSubcycle =
+                        consumed >= minimumUsefulConsumedFraction;
+                    solution = usefulSubcycle ? current : rawGroupEnergy;
+                    if(diagnostics)
+                    {
+                        diagnostics->subcycleConsumedFraction = consumed;
+                        diagnostics->subcycles = subcycles;
+                        diagnostics->path = usefulSubcycle
+                            ? ComptonCorrectionPath::Subcycled
+                            : ComptonCorrectionPath::RawFallback;
+                    }
                 }
             }
 
@@ -4635,6 +5121,11 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             {
                 delta += solution[group] - rawGroupEnergy[group];
                 this->extensives_[cellIndex].Eg[group] = solution[group];
+            }
+            if(diagnostics)
+            {
+                diagnostics->finalSolution = solution;
+                diagnostics->correctionDelta = delta;
             }
             radiation_imc_detail::addRadiationEnergyIfPresent(
                 this->extensives_[cellIndex], delta);
@@ -4647,6 +5138,910 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                     cellIndex, "Compton end-of-step correction");
             }
         }
+    } // else (has_member_group_energy_mutable)
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::ComptonCorrectionResult
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::solveComptonCorrection(
+    std::size_t cellIndex,
+    double fullDt,
+    const ComptonCellData &data,
+    const GroupArray &rawGroupEnergy,
+    const GroupArray &timeAvgGroupEnergy,
+    double budgetBefore,
+    double materialFloor,
+    ComptonStepDiagnostics &diagnostics) const
+{
+    ComptonCorrectionResult result;
+    result.materialEnergyBefore =
+        this->extensives_[cellIndex].internal_energy;
+    result.budgetBefore = budgetBefore;
+
+    auto fail = [&](ComptonCorrectionFailure failure)
+    {
+        result.failure = failure;
+        result.success = false;
+        diagnostics.failure = failure;
+        diagnostics.success = false;
+        return result;
+    };
+
+    double const rawTotal =
+        RadiationIMC::compensatedSumComptonGroups(rawGroupEnergy);
+    double const timeAverageTotal =
+        RadiationIMC::compensatedSumComptonGroups(timeAvgGroupEnergy);
+    if(!std::isfinite(rawTotal) ||
+       !std::isfinite(timeAverageTotal) ||
+       !std::isfinite(budgetBefore) ||
+       !std::isfinite(materialFloor) ||
+       materialFloor < 0.0)
+    {
+        return fail(ComptonCorrectionFailure::InvalidEnergyBudget);
+    }
+
+    for(std::size_t group = 0; group < NumGroups; ++group)
+    {
+        if(!std::isfinite(rawGroupEnergy[group]) ||
+           rawGroupEnergy[group] < 0.0 ||
+           !std::isfinite(timeAvgGroupEnergy[group]) ||
+           timeAvgGroupEnergy[group] < 0.0 ||
+           !std::isfinite(data.Bcorr[group]))
+        {
+            return fail(ComptonCorrectionFailure::NonFiniteState);
+        }
+    }
+    if(rawTotal < 0.0)
+    {
+        return fail(ComptonCorrectionFailure::InvalidEnergyBudget);
+    }
+
+    double const preStepExtensive = diagnostics.totalPreStepRadiation;
+    double const totalPostTransportRadiation = rawTotal;
+    if(!std::isfinite(preStepExtensive) ||
+       preStepExtensive < 0.0)
+    {
+        return fail(ComptonCorrectionFailure::NonFiniteState);
+    }
+    double const bcorrScale = preStepExtensive > 0.0
+        ? std::clamp(
+            totalPostTransportRadiation / preStepExtensive, 0.0, 1.0)
+        : 1.0;
+    diagnostics.totalPostTransportRadiation = totalPostTransportRadiation;
+    diagnostics.totalTimeAverageRadiation = timeAverageTotal;
+    diagnostics.bcorrScale = bcorrScale;
+    diagnostics.budgetBefore = budgetBefore;
+    diagnostics.materialEnergyBefore =
+        this->extensives_[cellIndex].internal_energy;
+    diagnostics.materialFloor = materialFloor;
+    diagnostics.materialCap = this->parameters_.noHydroFeedback
+        ? std::numeric_limits<double>::infinity()
+        : budgetBefore - materialFloor;
+    if(!this->parameters_.noHydroFeedback &&
+       diagnostics.materialEnergyBefore < materialFloor)
+    {
+        return fail(ComptonCorrectionFailure::InvalidEnergyBudget);
+    }
+
+    GroupArray drive{};
+    GroupMatrix matrix{};
+    for(std::size_t row = 0; row < NumGroups; ++row)
+    {
+        double rowDrive = bcorrScale * data.Bcorr[row];
+        double rowNorm = 0.0;
+        for(std::size_t column = 0; column < NumGroups; ++column)
+        {
+            double const Lrc = fullDt * units::clight *
+                data.residualKernel[column][row];
+            if(!std::isfinite(Lrc))
+            {
+                return fail(ComptonCorrectionFailure::NonFiniteState);
+            }
+            rowDrive += Lrc * timeAvgGroupEnergy[column];
+            matrix[row][column] =
+                (row == column ? 1.0 : 0.0) - Lrc;
+            rowNorm += std::abs(matrix[row][column]);
+        }
+        drive[row] = rowDrive;
+        diagnostics.matrixRowNorm[row] = rowNorm;
+        if(!std::isfinite(rowDrive) || !std::isfinite(rowNorm))
+        {
+            return fail(ComptonCorrectionFailure::NonFiniteState);
+        }
+    }
+    diagnostics.drive = drive;
+    diagnostics.rhs = drive;
+
+    double energyScale = std::max({
+        1.0,
+        std::abs(budgetBefore),
+        std::abs(rawTotal),
+        std::abs(timeAverageTotal),
+        RadiationIMC::maxAbsComptonGroup(rawGroupEnergy),
+        RadiationIMC::maxAbsComptonGroup(timeAvgGroupEnergy),
+        RadiationIMC::normComptonGroups(drive),
+        RadiationIMC::maxAbsComptonGroup(drive)});
+    if(!std::isfinite(energyScale))
+    {
+        return fail(ComptonCorrectionFailure::NonFiniteState);
+    }
+    double const materialCap = diagnostics.materialCap;
+
+    ComptonLinearSolveDiagnostics directLinearDiagnostics;
+    GroupArray directDelta{};
+    bool const directOk = RadiationIMC::solveComptonGroupSystem(
+        matrix, drive, directDelta, &directLinearDiagnostics);
+    diagnostics.directSolveOk = directOk;
+    diagnostics.directDelta = directDelta;
+    if(std::isfinite(directLinearDiagnostics.minPivot))
+    {
+        diagnostics.minPivot = std::min(
+            diagnostics.minPivot, directLinearDiagnostics.minPivot);
+    }
+    diagnostics.maxCoefficient = std::max(
+        diagnostics.maxCoefficient,
+        directLinearDiagnostics.maxCoefficient);
+
+    GroupArray directEndpoint{};
+    double directTotal = 0.0;
+    ComptonProjectionResult directProjection;
+    bool directCandidateFinite = directOk;
+    if(directOk)
+    {
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            directEndpoint[group] =
+                rawGroupEnergy[group] + directDelta[group];
+            if(!std::isfinite(directEndpoint[group]))
+            {
+                directCandidateFinite = false;
+            }
+        }
+        diagnostics.directEndpoint = directEndpoint;
+        diagnostics.directSolution = directEndpoint;
+        diagnostics.directResidual =
+            RadiationIMC::relativeComptonResidual(
+                matrix, directDelta, drive, energyScale);
+        directTotal =
+            RadiationIMC::compensatedSumComptonGroups(directEndpoint);
+        diagnostics.candidateRadiationTotal = directTotal;
+        if(!std::isfinite(directTotal))
+        {
+            directCandidateFinite = false;
+        }
+        if(directCandidateFinite)
+        {
+            energyScale = std::max(
+                energyScale,
+                std::max(
+                    std::abs(directTotal),
+                    RadiationIMC::maxAbsComptonGroup(directEndpoint)));
+        }
+    }
+
+    double const perGroupNegativeTolerance = 1e-3 * energyScale;
+    double const totalNegativeTolerance = 1e-4 * energyScale;
+    double const capTolerance = 1e-6 * energyScale;
+    double const relativeResidualTolerance = 1e-4;
+    double const grossResidualTolerance = 1e-2;
+    diagnostics.energyScale = energyScale;
+    bool const directCapWithinTolerance =
+        directCandidateFinite &&
+        (!std::isfinite(materialCap) ||
+         directTotal <= materialCap + capTolerance);
+    bool const directCapRepair =
+        directCandidateFinite &&
+        std::isfinite(materialCap) &&
+        directTotal > materialCap &&
+        directTotal <= materialCap + capTolerance;
+    double directTargetTotal = directTotal;
+    if(directCapRepair)
+    {
+        directTargetTotal = materialCap;
+    }
+    if(directCandidateFinite)
+    {
+        directProjection = RadiationIMC::projectNonnegativeConservative(
+            directEndpoint,
+            directTargetTotal,
+            energyScale,
+            perGroupNegativeTolerance,
+            totalNegativeTolerance);
+        directProjection.usedCapRepair = directCapRepair;
+        diagnostics.directNegativeMass =
+            directProjection.negativeMass;
+        diagnostics.worstNegative = directProjection.worstNegative;
+        diagnostics.worstNegativeGroup =
+            directProjection.worstNegativeGroup;
+        diagnostics.negativeAmount.fill(0.0);
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(directEndpoint[group] < 0.0)
+            {
+                diagnostics.negativeAmount[group] =
+                    -directEndpoint[group];
+            }
+        }
+    }
+    diagnostics.directClampAcceptable = directCandidateFinite &&
+        directProjection.worstNegative <= perGroupNegativeTolerance &&
+        directProjection.negativeMass <= totalNegativeTolerance;
+    diagnostics.directMaterialCapOk = directCapWithinTolerance;
+
+    if(directCandidateFinite && directProjection.success)
+    {
+        diagnostics.projectedEndpoint = directProjection.endpoint;
+        GroupArray projectedDelta{};
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            projectedDelta[group] =
+                directProjection.endpoint[group] - rawGroupEnergy[group];
+            diagnostics.projectionChange[group] =
+                directProjection.endpoint[group] - directEndpoint[group];
+        }
+        diagnostics.projectedResidual =
+            RadiationIMC::relativeComptonResidual(
+                matrix, projectedDelta, drive, energyScale);
+        bool const residualAcceptable =
+            diagnostics.directResidual <= grossResidualTolerance &&
+            diagnostics.projectedResidual <= relativeResidualTolerance;
+        bool const endpointAcceptable =
+            diagnostics.directClampAcceptable &&
+            diagnostics.directMaterialCapOk &&
+            residualAcceptable;
+        if(endpointAcceptable)
+        {
+            diagnostics.usedProjection = directProjection.usedProjection;
+            diagnostics.usedCapRepair = directProjection.usedCapRepair;
+            diagnostics.projectionMaximumRelativeChange =
+                directProjection.maximumRelativeChange;
+            result.endpoint = directProjection.endpoint;
+            result.delta = projectedDelta;
+            result.radiationTotal =
+                RadiationIMC::compensatedSumComptonGroups(result.endpoint);
+            result.materialEnergyBefore =
+                this->extensives_[cellIndex].internal_energy;
+            result.materialEnergyAfter = this->parameters_.noHydroFeedback
+                ? result.materialEnergyBefore
+                : budgetBefore - result.radiationTotal;
+            result.budgetBefore = budgetBefore;
+            result.usedProjection = directProjection.usedProjection;
+            result.usedCapRepair = directProjection.usedCapRepair;
+            result.energyClosureResidual =
+                this->parameters_.noHydroFeedback
+                ? 0.0
+                : budgetBefore - (result.materialEnergyAfter +
+                    result.radiationTotal);
+            double const closureTolerance =
+                128.0 * std::numeric_limits<double>::epsilon() *
+                std::max(1.0, std::abs(budgetBefore));
+            if(!this->parameters_.noHydroFeedback &&
+               std::isfinite(result.energyClosureResidual) &&
+               std::abs(result.energyClosureResidual) <= closureTolerance)
+            {
+                diagnostics.roundoffThermalTransfer =
+                    result.energyClosureResidual;
+                result.materialEnergyAfter +=
+                    result.energyClosureResidual;
+                result.energyClosureResidual =
+                    budgetBefore - (result.materialEnergyAfter +
+                        result.radiationTotal);
+            }
+            if(!std::isfinite(result.materialEnergyAfter) ||
+               result.materialEnergyAfter < materialFloor - capTolerance)
+            {
+                diagnostics.failure =
+                    ComptonCorrectionFailure::InvalidEnergyBudget;
+            }
+            else if(!std::isfinite(result.energyClosureResidual) ||
+                    std::abs(result.energyClosureResidual) >
+                        closureTolerance)
+            {
+                diagnostics.failure =
+                    ComptonCorrectionFailure::EnergyClosureFailure;
+            }
+            else
+            {
+                result.success = true;
+                diagnostics.success = true;
+                diagnostics.failure = ComptonCorrectionFailure::None;
+                diagnostics.path = directProjection.usedCapRepair
+                    ? ComptonCorrectionPath::MaterialCapFallback
+                    : ComptonCorrectionPath::Direct;
+                diagnostics.finalSolution = result.endpoint;
+                diagnostics.correctionDelta =
+                    RadiationIMC::compensatedSumComptonGroups(result.delta);
+                diagnostics.projectedRadiationTotal =
+                    result.radiationTotal;
+                diagnostics.materialEnergyAfter =
+                    result.materialEnergyAfter;
+                diagnostics.materialDelta =
+                    result.materialEnergyAfter -
+                    result.materialEnergyBefore;
+                diagnostics.projectionTransfer =
+                    directProjection.targetTotal - directTotal;
+                diagnostics.energyClosureResidual =
+                    result.energyClosureResidual;
+                return result;
+            }
+        }
+    }
+
+    GroupArray currentEndpoint = rawGroupEnergy;
+    GroupArray currentDelta{};
+    double tau = 0.0;
+    double fraction = 1.0;
+    std::size_t acceptedSubsteps = 0;
+    std::size_t rejectedTrials = 0;
+    double minimumAcceptedFraction =
+        std::numeric_limits<double>::infinity();
+    double maximumAcceptedFraction = 0.0;
+    ComptonCorrectionFailure lastFailure =
+        directOk ? ComptonCorrectionFailure::DirectProjectedResidual
+                 : ComptonCorrectionFailure::DirectLinearSolveFailed;
+
+    constexpr std::size_t maxAcceptedSubsteps = 32;
+    constexpr std::size_t maxRejectedTrials = 64;
+    constexpr double minimumFraction = 1e-12;
+    constexpr double completionTolerance = 1e-12;
+
+    while(tau < 1.0 - completionTolerance &&
+          acceptedSubsteps < maxAcceptedSubsteps &&
+          rejectedTrials < maxRejectedTrials)
+    {
+        fraction = std::min(fraction, 1.0 - tau);
+        diagnostics.lastFraction = fraction;
+        if(fraction < minimumFraction)
+        {
+            lastFailure = ComptonCorrectionFailure::AdaptiveFractionBelowMinimum;
+            break;
+        }
+
+        GroupMatrix fractionalMatrix{};
+        GroupArray fractionalRhs{};
+        for(std::size_t row = 0; row < NumGroups; ++row)
+        {
+            fractionalRhs[row] =
+                currentDelta[row] + fraction * drive[row];
+            for(std::size_t column = 0; column < NumGroups; ++column)
+            {
+                double const Lrc = fullDt * units::clight *
+                    data.residualKernel[column][row];
+                fractionalMatrix[row][column] =
+                    (row == column ? 1.0 : 0.0) - fraction * Lrc;
+            }
+        }
+
+        GroupArray trialDelta{};
+        ComptonLinearSolveDiagnostics trialLinearDiagnostics;
+        bool const trialSolveOk = RadiationIMC::solveComptonGroupSystem(
+            fractionalMatrix,
+            fractionalRhs,
+            trialDelta,
+            &trialLinearDiagnostics);
+        if(std::isfinite(trialLinearDiagnostics.minPivot))
+        {
+            diagnostics.minPivot = std::min(
+                diagnostics.minPivot, trialLinearDiagnostics.minPivot);
+        }
+        diagnostics.maxCoefficient = std::max(
+            diagnostics.maxCoefficient,
+            trialLinearDiagnostics.maxCoefficient);
+        if(!trialSolveOk)
+        {
+            ++rejectedTrials;
+            lastFailure =
+                ComptonCorrectionFailure::AdaptiveLinearSolveFailed;
+            fraction *= 0.5;
+            continue;
+        }
+
+        GroupArray trialEndpoint{};
+        bool finiteTrial = true;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            trialEndpoint[group] =
+                rawGroupEnergy[group] + trialDelta[group];
+            if(!std::isfinite(trialEndpoint[group]))
+            {
+                finiteTrial = false;
+            }
+        }
+        if(!finiteTrial)
+        {
+            ++rejectedTrials;
+            lastFailure = ComptonCorrectionFailure::NonFiniteState;
+            fraction *= 0.5;
+            continue;
+        }
+
+        double const trialTotal =
+            RadiationIMC::compensatedSumComptonGroups(trialEndpoint);
+        double const capOvershoot = std::isfinite(materialCap)
+            ? trialTotal - materialCap : 0.0;
+        bool const capTooLarge = std::isfinite(materialCap) &&
+            capOvershoot > capTolerance;
+        bool const targetIsNegative =
+            trialTotal < -totalNegativeTolerance;
+        double trialTargetTotal = trialTotal;
+        bool const trialCapRepair = std::isfinite(materialCap) &&
+            capOvershoot > 0.0 && !capTooLarge;
+        if(trialCapRepair)
+        {
+            trialTargetTotal = materialCap;
+        }
+
+        ComptonProjectionResult trialProjection =
+            RadiationIMC::projectNonnegativeConservative(
+                trialEndpoint,
+                trialTargetTotal,
+                energyScale,
+                perGroupNegativeTolerance,
+                totalNegativeTolerance);
+        trialProjection.usedCapRepair = trialCapRepair;
+        diagnostics.adaptiveDelta = trialDelta;
+        diagnostics.adaptiveEndpoint = trialEndpoint;
+        diagnostics.projectionChange.fill(0.0);
+        diagnostics.negativeAmount.fill(0.0);
+        diagnostics.worstNegative = trialProjection.worstNegative;
+        diagnostics.worstNegativeGroup =
+            trialProjection.worstNegativeGroup;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(trialEndpoint[group] < 0.0)
+            {
+                diagnostics.negativeAmount[group] =
+                    -trialEndpoint[group];
+            }
+        }
+        GroupArray projectedDelta{};
+        if(trialProjection.success)
+        {
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                projectedDelta[group] =
+                    trialProjection.endpoint[group] -
+                    rawGroupEnergy[group];
+                diagnostics.projectionChange[group] =
+                    trialProjection.endpoint[group] -
+                    trialEndpoint[group];
+            }
+        }
+        double fractionalResidual = std::numeric_limits<double>::infinity();
+        if(trialProjection.success)
+        {
+            fractionalResidual =
+                RadiationIMC::relativeComptonResidual(
+                    fractionalMatrix,
+                    projectedDelta,
+                    fractionalRhs,
+                    energyScale);
+        }
+        bool const trialAcceptable =
+            !capTooLarge &&
+            !targetIsNegative &&
+            trialProjection.success &&
+            fractionalResidual <= relativeResidualTolerance &&
+            trialProjection.worstNegative <=
+                perGroupNegativeTolerance &&
+            trialProjection.negativeMass <= totalNegativeTolerance;
+        if(trialAcceptable)
+        {
+            currentEndpoint = trialProjection.endpoint;
+            currentDelta = projectedDelta;
+            tau += fraction;
+            ++acceptedSubsteps;
+            minimumAcceptedFraction = std::min(
+                minimumAcceptedFraction, fraction);
+            maximumAcceptedFraction = std::max(
+                maximumAcceptedFraction, fraction);
+            diagnostics.projectedEndpoint = currentEndpoint;
+            diagnostics.projectedResidual = fractionalResidual;
+            diagnostics.usedProjection =
+                diagnostics.usedProjection ||
+                trialProjection.usedProjection;
+            diagnostics.usedCapRepair =
+                diagnostics.usedCapRepair ||
+                trialProjection.usedCapRepair;
+            diagnostics.projectionMaximumRelativeChange = std::max(
+                diagnostics.projectionMaximumRelativeChange,
+                trialProjection.maximumRelativeChange);
+            diagnostics.adaptiveDelta = currentDelta;
+            diagnostics.adaptiveEndpoint = currentEndpoint;
+            diagnostics.tau = tau;
+            diagnostics.remainingTau = std::max(0.0, 1.0 - tau);
+            diagnostics.acceptedSubsteps = acceptedSubsteps;
+            diagnostics.rejectedTrials = rejectedTrials;
+            fraction = std::min(1.5 * fraction, 1.0 - tau);
+            continue;
+        }
+
+        ++rejectedTrials;
+        lastFailure = capTooLarge
+            ? ComptonCorrectionFailure::DirectMaterialCap
+            : ComptonCorrectionFailure::AdaptiveNoProgress;
+        double theta = 1.0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(trialEndpoint[group] < 0.0)
+            {
+                double const denominator =
+                    currentEndpoint[group] - trialEndpoint[group];
+                theta = denominator > 0.0
+                    ? std::min(theta,
+                        currentEndpoint[group] / denominator)
+                    : 0.0;
+            }
+        }
+        if(std::isfinite(materialCap) && trialTotal > materialCap)
+        {
+            double const currentTotal =
+                RadiationIMC::compensatedSumComptonGroups(currentEndpoint);
+            double const totalChange = trialTotal - currentTotal;
+            if(totalChange > 0.0)
+            {
+                theta = std::min(theta,
+                    (materialCap - currentTotal) / totalChange);
+            }
+            else
+            {
+                theta = 0.0;
+            }
+        }
+        double const newFraction = std::clamp(
+            0.8 * theta * fraction,
+            0.1 * fraction,
+            0.7 * fraction);
+        if(newFraction < minimumFraction ||
+           newFraction >= 0.99 * fraction)
+        {
+            lastFailure = ComptonCorrectionFailure::AdaptiveNoProgress;
+            break;
+        }
+        fraction = newFraction;
+    }
+
+    diagnostics.tau = tau;
+    diagnostics.remainingTau = std::max(0.0, 1.0 - tau);
+    diagnostics.acceptedSubsteps = acceptedSubsteps;
+    diagnostics.rejectedTrials = rejectedTrials;
+    diagnostics.minimumAcceptedFraction =
+        std::isfinite(minimumAcceptedFraction)
+        ? minimumAcceptedFraction : 0.0;
+    diagnostics.maximumAcceptedFraction =
+        maximumAcceptedFraction;
+    diagnostics.subcycleConsumedFraction = tau;
+    diagnostics.subcycles = acceptedSubsteps;
+    if(tau < 1.0 - completionTolerance)
+    {
+        if(acceptedSubsteps >= maxAcceptedSubsteps)
+        {
+            lastFailure =
+                ComptonCorrectionFailure::AdaptiveMaximumSubsteps;
+        }
+        else if(rejectedTrials >= maxRejectedTrials)
+        {
+            lastFailure =
+                ComptonCorrectionFailure::AdaptiveMaximumRejectedTrials;
+        }
+        else if(fraction < minimumFraction)
+        {
+            lastFailure =
+                ComptonCorrectionFailure::AdaptiveFractionBelowMinimum;
+        }
+        diagnostics.failure = lastFailure;
+        return fail(lastFailure);
+    }
+
+    result.endpoint = currentEndpoint;
+    result.delta = currentDelta;
+    result.radiationTotal =
+        RadiationIMC::compensatedSumComptonGroups(result.endpoint);
+    result.materialEnergyBefore =
+        this->extensives_[cellIndex].internal_energy;
+    result.materialEnergyAfter = this->parameters_.noHydroFeedback
+        ? result.materialEnergyBefore
+        : budgetBefore - result.radiationTotal;
+    result.budgetBefore = budgetBefore;
+    result.usedProjection = diagnostics.usedProjection;
+    result.usedCapRepair = diagnostics.usedCapRepair;
+    result.energyClosureResidual =
+        this->parameters_.noHydroFeedback
+        ? 0.0
+        : budgetBefore - (result.materialEnergyAfter +
+            result.radiationTotal);
+    double const closureTolerance =
+        128.0 * std::numeric_limits<double>::epsilon() *
+        std::max(1.0, std::abs(budgetBefore));
+    if(!this->parameters_.noHydroFeedback &&
+       std::isfinite(result.energyClosureResidual) &&
+       std::abs(result.energyClosureResidual) <= closureTolerance)
+    {
+        diagnostics.roundoffThermalTransfer =
+            result.energyClosureResidual;
+        result.materialEnergyAfter +=
+            result.energyClosureResidual;
+        result.energyClosureResidual =
+            budgetBefore - (result.materialEnergyAfter +
+                result.radiationTotal);
+    }
+    if(!std::isfinite(result.materialEnergyAfter) ||
+       result.materialEnergyAfter < materialFloor - capTolerance)
+    {
+        return fail(ComptonCorrectionFailure::InvalidEnergyBudget);
+    }
+    if(!std::isfinite(result.energyClosureResidual) ||
+       std::abs(result.energyClosureResidual) > closureTolerance)
+    {
+        return fail(ComptonCorrectionFailure::EnergyClosureFailure);
+    }
+    result.success = true;
+    diagnostics.success = true;
+    diagnostics.failure = ComptonCorrectionFailure::None;
+    diagnostics.path = ComptonCorrectionPath::Subcycled;
+    diagnostics.finalSolution = result.endpoint;
+    diagnostics.correctionDelta =
+        RadiationIMC::compensatedSumComptonGroups(result.delta);
+    diagnostics.projectedRadiationTotal = result.radiationTotal;
+    diagnostics.materialEnergyAfter = result.materialEnergyAfter;
+    diagnostics.materialDelta =
+        result.materialEnergyAfter - result.materialEnergyBefore;
+    diagnostics.projectionTransfer = 0.0;
+    diagnostics.energyClosureResidual = result.energyClosureResidual;
+    return result;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::writeComptonCorrectionFailureCsv(
+    std::size_t cellIndex,
+    double fullDt,
+    const ComptonCellData &data,
+    const ComptonStepDiagnostics &diagnostics) const
+{
+    std::ostringstream filename;
+    filename << this->parameters_.comptonFailureOutputDirectory;
+    if(!this->parameters_.comptonFailureOutputDirectory.empty() &&
+       this->parameters_.comptonFailureOutputDirectory.back() != '/')
+    {
+        filename << '/';
+    }
+    filename << "compton_correction_failure_cycle_"
+             << diagnostics.cycle << "_cell_" << cellIndex << ".csv";
+    std::string const path = filename.str();
+    if(!this->parameters_.comptonFailureOutputDirectory.empty())
+    {
+        std::error_code error;
+        std::filesystem::create_directories(
+            this->parameters_.comptonFailureOutputDirectory, error);
+        if(error)
+        {
+            return {};
+        }
+    }
+    std::ofstream output(path);
+    if(!output)
+    {
+        return {};
+    }
+    output << std::setprecision(17);
+    output << "# run_id=" << this->parameters_.comptonRunIdentifier << '\n';
+    output << "# failure="
+           << RadiationIMC::comptonCorrectionFailureName(
+               diagnostics.failure)
+           << ",tau=" << diagnostics.tau
+           << ",remaining_tau=" << diagnostics.remainingTau
+           << ",accepted_substeps=" << diagnostics.acceptedSubsteps
+           << ",rejected_trials=" << diagnostics.rejectedTrials
+           << ",temperature=" << diagnostics.temperature
+           << ",planck_opacity=" << diagnostics.planckOpacity
+           << ",fleck=" << diagnostics.fleck
+           << ",beta=" << diagnostics.beta
+           << ",Gamma=" << diagnostics.Gamma
+           << ",Upsilon=" << diagnostics.Upsilon
+           << ",betaCdtF=" << diagnostics.betaCdtF << '\n';
+    output << "cycle,time,dt,cell,cell_id,group,center,packet_count,"
+              "raw_endpoint,time_average,Bcorr,residual_drive,direct_delta,"
+              "direct_endpoint,projected_endpoint,adaptive_delta,"
+              "adaptive_endpoint,negative_amount,projection_change,"
+              "matrix_row_norm\n";
+    for(std::size_t group = 0; group < NumGroups; ++group)
+    {
+        output << diagnostics.cycle << ','
+               << diagnostics.simulationTime << ','
+               << fullDt << ','
+               << cellIndex << ','
+               << diagnostics.cellID << ','
+               << group << ','
+               << this->comptonGroupCenters_[group] << ','
+               << diagnostics.packetCountsBeforeCorrection[group] << ','
+               << diagnostics.rawGroupEnergy[group] << ','
+               << diagnostics.timeAverageGroupEnergy[group] << ','
+               << data.Bcorr[group] << ','
+               << diagnostics.drive[group] << ','
+               << diagnostics.directDelta[group] << ','
+               << diagnostics.directEndpoint[group] << ','
+               << diagnostics.projectedEndpoint[group] << ','
+               << diagnostics.adaptiveDelta[group] << ','
+               << diagnostics.adaptiveEndpoint[group] << ','
+               << diagnostics.negativeAmount[group] << ','
+               << diagnostics.projectionChange[group] << ','
+               << diagnostics.matrixRowNorm[group] << '\n';
+    }
+    output.flush();
+    return path;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyComptonEndOfStepCorrection(
+    double fullDt)
+{
+    if(!this->parameters_.withCompton)
+    {
+        this->lastComptonStepDiagnostics_.clear();
+        return;
+    }
+    if constexpr(!radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
+    {
+        return;
+    }
+    else
+    {
+        const std::size_t Ncells = this->grid.GetPointNo();
+        if(this->parameters_.comptonDiagnostics)
+        {
+            this->lastComptonStepDiagnostics_.assign(
+                Ncells, ComptonStepDiagnostics{});
+        }
+        else
+        {
+            this->lastComptonStepDiagnostics_.clear();
+        }
+
+        std::vector<ComptonCorrectionResult> results(Ncells);
+        for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+        {
+            ComptonCellData const &data = this->comptonData_[cellIndex];
+            ComptonStepDiagnostics diagnostics;
+            diagnostics.cycle = this->comptonStepCounter_ + 1;
+            diagnostics.simulationTime =
+                this->comptonSimulationTime_ + fullDt;
+            diagnostics.cellIndex = cellIndex;
+            diagnostics.cellID =
+                radiation_imc_detail::cellID(this->cells_[cellIndex]);
+            if(diagnostics.cellID == std::numeric_limits<std::size_t>::max())
+            {
+                diagnostics.cellID = cellIndex;
+            }
+
+            GroupArray rawGroupEnergy{};
+            GroupArray timeAvgGroupEnergy{};
+            double totalPreStepRadiation = 0.0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                rawGroupEnergy[group] =
+                    this->extensives_[cellIndex].Eg[group];
+                if(cellIndex < this->Eg_time_avg_.size())
+                {
+                    timeAvgGroupEnergy[group] = std::max(
+                        0.0,
+                        this->Eg_time_avg_[cellIndex][group] *
+                            data.volume);
+                }
+                totalPreStepRadiation += data.oldRadiationEnergy[group];
+            }
+            diagnostics.rawGroupEnergy = rawGroupEnergy;
+            diagnostics.timeAverageGroupEnergy = timeAvgGroupEnergy;
+            diagnostics.solveInputGroupEnergy = rawGroupEnergy;
+            if(cellIndex < this->lastComptonPacketCounts_.size())
+            {
+                diagnostics.packetCountsBeforeCorrection =
+                    this->lastComptonPacketCounts_[cellIndex];
+            }
+            diagnostics.totalPreStepRadiation =
+                totalPreStepRadiation * data.volume;
+            diagnostics.temperature = data.temperature;
+            diagnostics.planckOpacity = data.planckOpacity;
+            diagnostics.fleck = data.fleck;
+            diagnostics.beta = data.beta;
+            diagnostics.Gamma = data.Gamma;
+            diagnostics.Upsilon = data.Upsilon;
+            diagnostics.betaCdtF = data.betaCdtF;
+            diagnostics.materialEnergyBefore =
+                this->extensives_[cellIndex].internal_energy;
+            double const rawTotal =
+                RadiationIMC::compensatedSumComptonGroups(rawGroupEnergy);
+            double const budgetBefore = this->parameters_.noHydroFeedback
+                ? rawTotal
+                : diagnostics.materialEnergyBefore + rawTotal;
+            ComptonCorrectionResult result =
+                this->solveComptonCorrection(
+                    cellIndex,
+                    fullDt,
+                    data,
+                    rawGroupEnergy,
+                    timeAvgGroupEnergy,
+                    budgetBefore,
+                    0.0,
+                    diagnostics);
+
+            if(!result.success)
+            {
+                diagnostics.failure = result.failure;
+                diagnostics.success = false;
+                if(this->parameters_.comptonDiagnostics)
+                {
+                    this->lastComptonStepDiagnostics_[cellIndex] =
+                        diagnostics;
+                }
+                std::string const csvPath =
+                    this->writeComptonCorrectionFailureCsv(
+                        cellIndex, fullDt, data, diagnostics);
+                StormError eo(
+                    "Compton correction failed to integrate the complete timestep; "
+                    "no partial correction was committed");
+                eo.addEntry("Cell index", cellIndex);
+                eo.addEntry("Cell ID", diagnostics.cellID);
+                eo.addEntry("Cycle", diagnostics.cycle);
+                eo.addEntry("Simulation time", diagnostics.simulationTime);
+                eo.addEntry("Full dt", fullDt);
+                eo.addEntry("Tau", diagnostics.tau);
+                eo.addEntry("Remaining tau", diagnostics.remainingTau);
+                eo.addEntry("Accepted substeps", diagnostics.acceptedSubsteps);
+                eo.addEntry("Rejected trials", diagnostics.rejectedTrials);
+                eo.addEntry("Last fraction", diagnostics.lastFraction);
+                eo.addEntry("Direct residual", diagnostics.directResidual);
+                eo.addEntry("Projected residual", diagnostics.projectedResidual);
+                eo.addEntry("Energy scale", diagnostics.energyScale);
+                eo.addEntry("Budget before", diagnostics.budgetBefore);
+                eo.addEntry("Material energy before",
+                            diagnostics.materialEnergyBefore);
+                eo.addEntry("Material cap", diagnostics.materialCap);
+                eo.addEntry("Roundoff thermal transfer",
+                            diagnostics.roundoffThermalTransfer);
+                eo.addEntry("Failure code",
+                            static_cast<int>(diagnostics.failure));
+                eo.addEntry(
+                    "Failure",
+                    RadiationIMC::comptonCorrectionFailureName(
+                        diagnostics.failure));
+                eo.addEntry("Failure CSV", csvPath.empty()
+                    ? std::string("unavailable") : csvPath);
+                throw eo;
+            }
+            diagnostics.finalSolution = result.endpoint;
+            diagnostics.correctionDelta =
+                RadiationIMC::compensatedSumComptonGroups(result.delta);
+            diagnostics.success = true;
+            diagnostics.failure = ComptonCorrectionFailure::None;
+            results[cellIndex] = result;
+            if(this->parameters_.comptonDiagnostics)
+            {
+                this->lastComptonStepDiagnostics_[cellIndex] = diagnostics;
+            }
+        }
+
+        for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+        {
+            ComptonCorrectionResult const &result = results[cellIndex];
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                this->extensives_[cellIndex].Eg[group] =
+                    result.endpoint[group];
+            }
+            radiation_imc_detail::setRadiationEnergyIfPresent(
+                this->extensives_[cellIndex], result.radiationTotal);
+            if(!this->parameters_.noHydroFeedback)
+            {
+                this->extensives_[cellIndex].internal_energy =
+                    result.materialEnergyAfter;
+                radiation_imc_detail::addTotalEnergyIfPresent(
+                    this->extensives_[cellIndex],
+                    result.materialEnergyAfter -
+                        result.materialEnergyBefore);
+            }
+        }
+        ++this->comptonStepCounter_;
+        this->comptonSimulationTime_ += fullDt;
     } // else (has_member_group_energy_mutable)
 }
 
@@ -4826,6 +6221,122 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 particles.push_back(particle);
             }
             ++this->comptonData_[cellIndex].residualPackets;
+        }
+    }
+
+    if(this->parameters_.comptonDiagnostics &&
+       this->lastComptonStepDiagnostics_.size() == Ncells)
+    {
+        std::vector<GroupArray> represented(Ncells, GroupArray{});
+        std::vector<std::array<std::size_t, NumGroups>> counts(
+            Ncells, std::array<std::size_t, NumGroups>{});
+        for(const MCParticle &particle : particles)
+        {
+            if(particle.cellIndex >= Ncells)
+            {
+                continue;
+            }
+            double frequency = particle.frequency;
+            this->clampFrequencyToBounds(frequency);
+            std::size_t const group = this->opacity_->findGroup(
+                frequency, this->energyBoundaries_);
+            if(group < NumGroups)
+            {
+                represented[particle.cellIndex][group] += particle.weight;
+                ++counts[particle.cellIndex][group];
+            }
+        }
+        for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+        {
+            ComptonStepDiagnostics &diagnostics =
+                this->lastComptonStepDiagnostics_[cellIndex];
+            diagnostics.reconciledParticleEnergy = represented[cellIndex];
+            diagnostics.packetCountsAfterReconciliation = counts[cellIndex];
+            double maxRelativeError = 0.0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                double const target = std::max(
+                    0.0, this->extensives_[cellIndex].Eg[group]);
+                double const actual = represented[cellIndex][group];
+                double const scale = std::max(
+                    {1.0, std::abs(target), std::abs(actual)});
+                maxRelativeError = std::max(
+                    maxRelativeError, std::abs(actual - target) / scale);
+            }
+            diagnostics.reconciliationMaxRelativeError = maxRelativeError;
+        }
+    }
+
+    std::vector<GroupArray> representedAfter(Ncells, GroupArray{});
+    for(const MCParticle &particle : particles)
+    {
+        if(particle.cellIndex >= Ncells)
+        {
+            continue;
+        }
+        double frequency = particle.frequency;
+        this->clampFrequencyToBounds(frequency);
+        std::size_t const group = this->opacity_->findGroup(
+            frequency, this->energyBoundaries_);
+        if(group < NumGroups)
+        {
+            representedAfter[particle.cellIndex][group] += particle.weight;
+        }
+    }
+    constexpr double reconciliationTolerance = 1e-8;
+    for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+    {
+        double maxRelativeError = 0.0;
+        double targetTotal = 0.0;
+        double actualTotal = 0.0;
+        std::size_t worstGroup = NumGroups;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            double const target = std::max(
+                0.0, this->extensives_[cellIndex].Eg[group]);
+            double const actual = representedAfter[cellIndex][group];
+            targetTotal += target;
+            actualTotal += actual;
+            double const scale = std::max(
+                {1.0, std::abs(target), std::abs(actual)});
+            double const relativeError =
+                std::abs(actual - target) / scale;
+            if(relativeError > maxRelativeError)
+            {
+                maxRelativeError = relativeError;
+                worstGroup = group;
+            }
+        }
+        double const totalScale = std::max(
+            {1.0, std::abs(targetTotal), std::abs(actualTotal)});
+        double const totalRelativeError =
+            std::abs(actualTotal - targetTotal) / totalScale;
+        maxRelativeError = std::max(maxRelativeError, totalRelativeError);
+        if(maxRelativeError > reconciliationTolerance)
+        {
+            if(this->parameters_.comptonDiagnostics &&
+               cellIndex < this->lastComptonStepDiagnostics_.size())
+            {
+                ComptonStepDiagnostics &diagnostics =
+                    this->lastComptonStepDiagnostics_[cellIndex];
+                diagnostics.failure =
+                    ComptonCorrectionFailure::ReconciliationMismatch;
+                diagnostics.success = false;
+                diagnostics.reconciliationMaxRelativeError =
+                    maxRelativeError;
+            }
+            StormError eo(
+                "Compton particle reconciliation did not reproduce the "
+                "accepted deterministic endpoint");
+            eo.addEntry("Cell index", cellIndex);
+            eo.addEntry("Cell ID",
+                        radiation_imc_detail::cellID(this->cells_[cellIndex]));
+            eo.addEntry("Worst group", worstGroup);
+            eo.addEntry("Maximum relative error", maxRelativeError);
+            eo.addEntry("Target total", targetTotal);
+            eo.addEntry("Actual total", actualTotal);
+            eo.addEntry("Tolerance", reconciliationTolerance);
+            throw eo;
         }
     }
     } // else (has_member_group_energy_mutable)

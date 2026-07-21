@@ -53,6 +53,8 @@ struct RadiationIMCParameters
     bool comptonDebugParityCheck = false;
     bool comptonCheckSignedTallies = false;
     bool comptonDiagnostics = false;
+    std::string comptonFailureOutputDirectory = ".";
+    std::string comptonRunIdentifier;
     bool comptonAngleDependent = true;
     double comptonSignedTallyTolerance = 1e-10;
     std::size_t comptonMatrixSamples = 200000;
@@ -117,6 +119,10 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
         os << "\tCompton debug parity check: " << parameters.comptonDebugParityCheck << '\n';
         os << "\tCompton signed tally check: " << parameters.comptonCheckSignedTallies << '\n';
         os << "\tCompton diagnostics: " << parameters.comptonDiagnostics << '\n';
+        os << "\tCompton failure output directory: "
+           << parameters.comptonFailureOutputDirectory << '\n';
+        os << "\tCompton run identifier: "
+           << parameters.comptonRunIdentifier << '\n';
         os << "\tCompton angle dependent: " << parameters.comptonAngleDependent << '\n';
         os << "\tCompton signed tally tolerance: " << parameters.comptonSignedTallyTolerance << '\n';
         os << "\tCompton matrix samples: " << parameters.comptonMatrixSamples << '\n';
