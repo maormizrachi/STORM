@@ -491,6 +491,9 @@ public:
         GroupArray negativeAmount{};
         GroupArray projectionChange{};
         GroupArray matrixRowNorm{};
+        GroupArray residualColumnSum{};
+        GroupArray conservativeTimeAverageDrive{};
+        GroupArray materialCouplingDrive{};
         GroupArray directSolution{};
         GroupArray finalSolution{};
         GroupArray reconciledParticleEnergy{};
@@ -535,6 +538,21 @@ public:
         double directNegativeMass = 0.0;
         double directResidual = 0.0;
         double projectedResidual = 0.0;
+        double directProjectedResidual =
+            std::numeric_limits<double>::infinity();
+        double adaptiveProjectedResidual =
+            std::numeric_limits<double>::infinity();
+        double rawOperatorNetDrive = 0.0;
+        double timeAverageOperatorNetDrive = 0.0;
+        double oldOperatorNetDrive = 0.0;
+        double conservativeDriveNet = 0.0;
+        double materialCouplingNetDrive = 0.0;
+        double directCapOvershoot = 0.0;
+        double adaptiveCapOvershoot = 0.0;
+        double perGroupNegativeTolerance = 0.0;
+        double totalNegativeTolerance = 0.0;
+        double capTolerance = 0.0;
+        double projectedResidualTolerance = 0.0;
         double minPivot = 0.0;
         double maxCoefficient = 0.0;
         double worstNegative = 0.0;
@@ -5223,11 +5241,28 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         return fail(ComptonCorrectionFailure::InvalidEnergyBudget);
     }
 
+    GroupArray oldGroupEnergy{};
+    for(std::size_t group = 0; group < NumGroups; ++group)
+    {
+        oldGroupEnergy[group] = std::max(
+            0.0, data.oldRadiationEnergy[group] * data.volume);
+        if(!std::isfinite(oldGroupEnergy[group]))
+        {
+            return fail(ComptonCorrectionFailure::NonFiniteState);
+        }
+    }
+
     GroupArray drive{};
+    GroupArray rawOperatorDrive{};
+    GroupArray timeAverageOperatorDrive{};
+    GroupArray oldOperatorDrive{};
+    GroupArray conservativeTimeAverageDrive{};
+    GroupArray materialCouplingDrive{};
+    GroupArray residualColumnSum{};
+    GroupMatrix residualOperator{};
     GroupMatrix matrix{};
     for(std::size_t row = 0; row < NumGroups; ++row)
     {
-        double rowDrive = bcorrScale * data.Bcorr[row];
         double rowNorm = 0.0;
         for(std::size_t column = 0; column < NumGroups; ++column)
         {
@@ -5237,18 +5272,75 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             {
                 return fail(ComptonCorrectionFailure::NonFiniteState);
             }
-            rowDrive += Lrc * timeAvgGroupEnergy[column];
+            residualOperator[row][column] = Lrc;
+            residualColumnSum[column] += Lrc;
             matrix[row][column] =
                 (row == column ? 1.0 : 0.0) - Lrc;
             rowNorm += std::abs(matrix[row][column]);
         }
-        drive[row] = rowDrive;
         diagnostics.matrixRowNorm[row] = rowNorm;
-        if(!std::isfinite(rowDrive) || !std::isfinite(rowNorm))
+        if(!std::isfinite(rowNorm))
         {
             return fail(ComptonCorrectionFailure::NonFiniteState);
         }
     }
+
+    // The path-length estimator has far better group support than the
+    // endpoint census, but applying it to the full residual operator also
+    // changes the operator's column-sum component and therefore the net
+    // radiation/material exchange.  That destroys the well-balanced state
+    // used to build Bcorr and the modified Fleck factor.  Separate
+    //
+    //     L = C + diag(1^T L),       1^T C = 0,
+    //
+    // use E_avg only in C E_avg, and evaluate the net coupling with the
+    // pre-step state used to construct the Compton coefficients.  Scale that
+    // net source together with Bcorr so transport depletion cannot break the
+    // balance between the two terms.
+    for(std::size_t row = 0; row < NumGroups; ++row)
+    {
+        for(std::size_t column = 0; column < NumGroups; ++column)
+        {
+            double const Lrc = residualOperator[row][column];
+            rawOperatorDrive[row] += Lrc * rawGroupEnergy[column];
+            timeAverageOperatorDrive[row] +=
+                Lrc * timeAvgGroupEnergy[column];
+            oldOperatorDrive[row] += Lrc * oldGroupEnergy[column];
+            double const conservativeLrc = Lrc -
+                (row == column ? residualColumnSum[column] : 0.0);
+            conservativeTimeAverageDrive[row] +=
+                conservativeLrc * timeAvgGroupEnergy[column];
+        }
+        materialCouplingDrive[row] = bcorrScale *
+            (data.Bcorr[row] +
+             residualColumnSum[row] * oldGroupEnergy[row]);
+        drive[row] = conservativeTimeAverageDrive[row] +
+            materialCouplingDrive[row];
+        if(!std::isfinite(drive[row]) ||
+           !std::isfinite(conservativeTimeAverageDrive[row]) ||
+           !std::isfinite(materialCouplingDrive[row]) ||
+           !std::isfinite(residualColumnSum[row]))
+        {
+            return fail(ComptonCorrectionFailure::NonFiniteState);
+        }
+    }
+    diagnostics.residualColumnSum = residualColumnSum;
+    diagnostics.conservativeTimeAverageDrive =
+        conservativeTimeAverageDrive;
+    diagnostics.materialCouplingDrive = materialCouplingDrive;
+    diagnostics.rawOperatorNetDrive =
+        RadiationIMC::compensatedSumComptonGroups(rawOperatorDrive);
+    diagnostics.timeAverageOperatorNetDrive =
+        RadiationIMC::compensatedSumComptonGroups(
+            timeAverageOperatorDrive);
+    diagnostics.oldOperatorNetDrive =
+        RadiationIMC::compensatedSumComptonGroups(oldOperatorDrive);
+    diagnostics.conservativeDriveNet =
+        RadiationIMC::compensatedSumComptonGroups(
+            conservativeTimeAverageDrive);
+    diagnostics.materialCouplingNetDrive =
+        RadiationIMC::compensatedSumComptonGroups(
+            materialCouplingDrive);
     diagnostics.drive = drive;
     diagnostics.rhs = drive;
 
@@ -5259,6 +5351,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         std::abs(timeAverageTotal),
         RadiationIMC::maxAbsComptonGroup(rawGroupEnergy),
         RadiationIMC::maxAbsComptonGroup(timeAvgGroupEnergy),
+        RadiationIMC::maxAbsComptonGroup(oldGroupEnergy),
+        RadiationIMC::normComptonGroups(conservativeTimeAverageDrive),
+        RadiationIMC::normComptonGroups(materialCouplingDrive),
         RadiationIMC::normComptonGroups(drive),
         RadiationIMC::maxAbsComptonGroup(drive)});
     if(!std::isfinite(energyScale))
@@ -5319,16 +5414,34 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         }
     }
 
-    double const perGroupNegativeTolerance = 1e-3 * energyScale;
-    double const totalNegativeTolerance = 1e-4 * energyScale;
-    double const capTolerance = 1e-6 * energyScale;
-    double const relativeResidualTolerance = 1e-4;
-    double const grossResidualTolerance = 1e-2;
+    // These are deliberately loose engineering tolerances for a noisy,
+    // low-packet spectrum.  They are not machine-roundoff epsilons.  In
+    // particular, do not silently tighten them back to the original
+    // near-roundoff proposal: doing so makes a physically acceptable
+    // conservative projection fail because of Monte Carlo sampling noise.
+    constexpr double perGroupNegativeToleranceFraction = 1e-3;
+    constexpr double totalNegativeToleranceFraction = 1e-4;
+    constexpr double capToleranceFraction = 1e-6;
+    constexpr double relativeResidualTolerance = 1e-4;
+    constexpr double grossResidualTolerance = 1e-2;
+    double const perGroupNegativeTolerance =
+        perGroupNegativeToleranceFraction * energyScale;
+    double const totalNegativeTolerance =
+        totalNegativeToleranceFraction * energyScale;
+    double const capTolerance = capToleranceFraction * energyScale;
+    diagnostics.perGroupNegativeTolerance = perGroupNegativeTolerance;
+    diagnostics.totalNegativeTolerance = totalNegativeTolerance;
+    diagnostics.capTolerance = capTolerance;
+    diagnostics.projectedResidualTolerance = relativeResidualTolerance;
     diagnostics.energyScale = energyScale;
     bool const directCapWithinTolerance =
         directCandidateFinite &&
         (!std::isfinite(materialCap) ||
          directTotal <= materialCap + capTolerance);
+    diagnostics.directCapOvershoot =
+        directCandidateFinite && std::isfinite(materialCap)
+        ? std::max(0.0, directTotal - materialCap)
+        : 0.0;
     bool const directCapRepair =
         directCandidateFinite &&
         std::isfinite(materialCap) &&
@@ -5382,6 +5495,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         diagnostics.projectedResidual =
             RadiationIMC::relativeComptonResidual(
                 matrix, projectedDelta, drive, energyScale);
+        diagnostics.directProjectedResidual =
+            diagnostics.projectedResidual;
         bool const residualAcceptable =
             diagnostics.directResidual <= grossResidualTolerance &&
             diagnostics.projectedResidual <= relativeResidualTolerance;
@@ -5476,9 +5591,27 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     double minimumAcceptedFraction =
         std::numeric_limits<double>::infinity();
     double maximumAcceptedFraction = 0.0;
-    ComptonCorrectionFailure lastFailure =
-        directOk ? ComptonCorrectionFailure::DirectProjectedResidual
-                 : ComptonCorrectionFailure::DirectLinearSolveFailed;
+    ComptonCorrectionFailure lastFailure;
+    if(!directOk)
+    {
+        lastFailure = ComptonCorrectionFailure::DirectLinearSolveFailed;
+    }
+    else if(!directCandidateFinite)
+    {
+        lastFailure = ComptonCorrectionFailure::NonFiniteState;
+    }
+    else if(!directCapWithinTolerance)
+    {
+        lastFailure = ComptonCorrectionFailure::DirectMaterialCap;
+    }
+    else if(!directProjection.success || !diagnostics.directClampAcceptable)
+    {
+        lastFailure = ComptonCorrectionFailure::DirectNegativeMass;
+    }
+    else
+    {
+        lastFailure = ComptonCorrectionFailure::DirectProjectedResidual;
+    }
 
     constexpr std::size_t maxAcceptedSubsteps = 32;
     constexpr std::size_t maxRejectedTrials = 64;
@@ -5559,6 +5692,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             RadiationIMC::compensatedSumComptonGroups(trialEndpoint);
         double const capOvershoot = std::isfinite(materialCap)
             ? trialTotal - materialCap : 0.0;
+        diagnostics.adaptiveCapOvershoot =
+            std::max(0.0, capOvershoot);
         bool const capTooLarge = std::isfinite(materialCap) &&
             capOvershoot > capTolerance;
         bool const targetIsNegative =
@@ -5617,6 +5752,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                     fractionalRhs,
                     energyScale);
         }
+        diagnostics.adaptiveProjectedResidual = fractionalResidual;
         bool const trialAcceptable =
             !capTooLarge &&
             !targetIsNegative &&
@@ -5652,7 +5788,11 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             diagnostics.remainingTau = std::max(0.0, 1.0 - tau);
             diagnostics.acceptedSubsteps = acceptedSubsteps;
             diagnostics.rejectedTrials = rejectedTrials;
-            fraction = std::min(1.5 * fraction, 1.0 - tau);
+            // With a hard limit on accepted substeps, geometric 1.5x growth
+            // can spend the entire budget climbing back from a rejected
+            // fraction.  Always test the complete remaining interval next;
+            // the rejection path will safely shrink it when necessary.
+            fraction = 1.0 - tau;
             continue;
         }
 
@@ -5838,12 +5978,38 @@ std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, Tra
            << ",beta=" << diagnostics.beta
            << ",Gamma=" << diagnostics.Gamma
            << ",Upsilon=" << diagnostics.Upsilon
-           << ",betaCdtF=" << diagnostics.betaCdtF << '\n';
+           << ",betaCdtF=" << diagnostics.betaCdtF
+           << ",raw_operator_net_drive="
+           << diagnostics.rawOperatorNetDrive
+           << ",time_average_operator_net_drive="
+           << diagnostics.timeAverageOperatorNetDrive
+           << ",old_operator_net_drive="
+           << diagnostics.oldOperatorNetDrive
+           << ",conservative_drive_net="
+           << diagnostics.conservativeDriveNet
+           << ",material_coupling_net_drive="
+           << diagnostics.materialCouplingNetDrive
+           << ",direct_cap_overshoot="
+           << diagnostics.directCapOvershoot
+           << ",adaptive_cap_overshoot="
+           << diagnostics.adaptiveCapOvershoot
+           << ",direct_projected_residual="
+           << diagnostics.directProjectedResidual
+           << ",adaptive_projected_residual="
+           << diagnostics.adaptiveProjectedResidual
+           << ",per_group_negative_tolerance="
+           << diagnostics.perGroupNegativeTolerance
+           << ",total_negative_tolerance="
+           << diagnostics.totalNegativeTolerance
+           << ",cap_tolerance=" << diagnostics.capTolerance
+           << ",projected_residual_tolerance="
+           << diagnostics.projectedResidualTolerance << '\n';
     output << "cycle,time,dt,cell,cell_id,group,center,packet_count,"
               "raw_endpoint,time_average,Bcorr,residual_drive,direct_delta,"
               "direct_endpoint,projected_endpoint,adaptive_delta,"
               "adaptive_endpoint,negative_amount,projection_change,"
-              "matrix_row_norm\n";
+              "matrix_row_norm,residual_column_sum,"
+              "conservative_time_average_drive,material_coupling_drive\n";
     for(std::size_t group = 0; group < NumGroups; ++group)
     {
         output << diagnostics.cycle << ','
@@ -5865,7 +6031,10 @@ std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, Tra
                << diagnostics.adaptiveEndpoint[group] << ','
                << diagnostics.negativeAmount[group] << ','
                << diagnostics.projectionChange[group] << ','
-               << diagnostics.matrixRowNorm[group] << '\n';
+               << diagnostics.matrixRowNorm[group] << ','
+               << diagnostics.residualColumnSum[group] << ','
+               << diagnostics.conservativeTimeAverageDrive[group] << ','
+               << diagnostics.materialCouplingDrive[group] << '\n';
     }
     output.flush();
     return path;
@@ -5991,6 +6160,40 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 eo.addEntry("Last fraction", diagnostics.lastFraction);
                 eo.addEntry("Direct residual", diagnostics.directResidual);
                 eo.addEntry("Projected residual", diagnostics.projectedResidual);
+                eo.addEntry("Direct projected residual",
+                            diagnostics.directProjectedResidual);
+                eo.addEntry("Adaptive projected residual",
+                            diagnostics.adaptiveProjectedResidual);
+                eo.addEntry("Direct negative mass",
+                            diagnostics.directNegativeMass);
+                eo.addEntry("Worst negative",
+                            diagnostics.worstNegative);
+                eo.addEntry("Worst negative group",
+                            diagnostics.worstNegativeGroup);
+                eo.addEntry("Candidate radiation total",
+                            diagnostics.candidateRadiationTotal);
+                eo.addEntry("Direct cap overshoot",
+                            diagnostics.directCapOvershoot);
+                eo.addEntry("Adaptive cap overshoot",
+                            diagnostics.adaptiveCapOvershoot);
+                eo.addEntry("Raw operator net drive",
+                            diagnostics.rawOperatorNetDrive);
+                eo.addEntry("Time-average operator net drive",
+                            diagnostics.timeAverageOperatorNetDrive);
+                eo.addEntry("Old-state operator net drive",
+                            diagnostics.oldOperatorNetDrive);
+                eo.addEntry("Conservative drive net",
+                            diagnostics.conservativeDriveNet);
+                eo.addEntry("Material-coupling net drive",
+                            diagnostics.materialCouplingNetDrive);
+                eo.addEntry("Per-group negative tolerance",
+                            diagnostics.perGroupNegativeTolerance);
+                eo.addEntry("Total negative tolerance",
+                            diagnostics.totalNegativeTolerance);
+                eo.addEntry("Material-cap tolerance",
+                            diagnostics.capTolerance);
+                eo.addEntry("Projected residual tolerance",
+                            diagnostics.projectedResidualTolerance);
                 eo.addEntry("Energy scale", diagnostics.energyScale);
                 eo.addEntry("Budget before", diagnostics.budgetBefore);
                 eo.addEntry("Material energy before",
