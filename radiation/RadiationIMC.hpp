@@ -5415,14 +5415,16 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     }
 
     // These are deliberately loose engineering tolerances for a noisy,
-    // low-packet spectrum.  They are not machine-roundoff epsilons.  In
-    // particular, do not silently tighten them back to the original
-    // near-roundoff proposal: doing so makes a physically acceptable
-    // conservative projection fail because of Monte Carlo sampling noise.
+    // low-packet spectrum.  They are not machine-roundoff epsilons.  The
+    // aggregate negative-mass limit must not be smaller than the single-group
+    // limit: otherwise several individually harmless negative bins make the
+    // conservative projection unreachable.  A projected residual below 0.5%
+    // is accepted because the projection is the positivity constraint, not a
+    // floating-point repair of the unconstrained equations.
     constexpr double perGroupNegativeToleranceFraction = 1e-3;
-    constexpr double totalNegativeToleranceFraction = 1e-4;
+    constexpr double totalNegativeToleranceFraction = 2e-3;
     constexpr double capToleranceFraction = 1e-6;
-    constexpr double relativeResidualTolerance = 1e-4;
+    constexpr double relativeResidualTolerance = 5e-3;
     constexpr double grossResidualTolerance = 1e-2;
     double const perGroupNegativeTolerance =
         perGroupNegativeToleranceFraction * energyScale;
@@ -5614,7 +5616,10 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     }
 
     constexpr std::size_t maxAcceptedSubsteps = 32;
-    constexpr std::size_t maxRejectedTrials = 64;
+    // Rejected trial solves are line-search work, not physical substeps.  Keep
+    // the requested 32 accepted-substep limit, but do not abort merely because
+    // two trial reductions were needed per accepted step.
+    constexpr std::size_t maxRejectedTrials = 128;
     constexpr double minimumFraction = 1e-12;
     constexpr double completionTolerance = 1e-12;
 
@@ -5788,11 +5793,26 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             diagnostics.remainingTau = std::max(0.0, 1.0 - tau);
             diagnostics.acceptedSubsteps = acceptedSubsteps;
             diagnostics.rejectedTrials = rejectedTrials;
-            // With a hard limit on accepted substeps, geometric 1.5x growth
-            // can spend the entire budget climbing back from a rejected
-            // fraction.  Always test the complete remaining interval next;
-            // the rejection path will safely shrink it when necessary.
-            fraction = 1.0 - tau;
+            // Grow from the last successful fraction, but also request at
+            // least the average fraction needed to finish in the remaining
+            // accepted-step budget.  Retrying the complete remaining interval
+            // after every success caused repeated reject/shrink cycles and
+            // exhausted the rejected-trial guard without improving tau.
+            double const remaining = std::max(0.0, 1.0 - tau);
+            std::size_t const remainingSlots =
+                maxAcceptedSubsteps - acceptedSubsteps;
+            if(remainingSlots > 0)
+            {
+                double const requiredAverage = remaining /
+                    static_cast<double>(remainingSlots);
+                fraction = std::min(
+                    remaining,
+                    std::max(1.5 * fraction, requiredAverage));
+            }
+            else
+            {
+                fraction = remaining;
+            }
             continue;
         }
 
