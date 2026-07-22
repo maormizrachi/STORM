@@ -1,8 +1,7 @@
 /*
  * Moving slab benchmark -- 124-group IMC with DDMC
  *
- * McClarren & Gentile (2021) moving radiating slab problem, adapted
- * from RICH (regression_tests/cases/moving_slab_mc).
+ * McClarren & Gentile (2021) moving radiating slab benchmark.
  *
  * A uniform slab of material (rho = 0.1 g/cm^3, T = 1 keV, L = 0.4 cm)
  * moves at v = 0.5994 cm/ns and radiates into vacuum.  124-group

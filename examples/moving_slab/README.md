@@ -1,7 +1,6 @@
 # Moving Slab Benchmark
 
-McClarren & Gentile (2021) moving radiating slab benchmark, adapted from
-`RICH/regression_tests/cases/moving_slab_mc`.
+McClarren & Gentile (2021) moving radiating slab benchmark.
 
 A uniform slab of material ($\rho = 0.1\;\mathrm{g/cm^3}$, $T = 1$ keV, $L = 0.4$ cm)
 moves at $v = 0.5994$ cm/ns and radiates into vacuum. The simulation uses
