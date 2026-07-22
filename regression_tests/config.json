@@ -36,9 +36,11 @@
   },
   "run": {
     "mode": "slurm",
+    "force_slurm": true,
     "default_command": "{binary}",
     "binary_environment": "STORM_BIN",
-    "timeout": 3600
+    "timeout": 3600,
+    "tasks": 1
   },
   "checks": {
     "library": "regression_tests/lib/regression_checks.sh"
@@ -91,6 +93,18 @@
       "help": "CMake build type",
       "cmake": {
         "CMAKE_BUILD_TYPE": "{value}"
+      }
+    },
+    {
+      "flags": [
+        "--deps-dir"
+      ],
+      "dest": "deps_dir",
+      "type": "string",
+      "default": "{project_root}/deps",
+      "help": "Path to external dependencies (mpi_utils, rma, etc.)",
+      "cmake": {
+        "STORM_DEPS_DIR": "{value}"
       }
     }
   ]
