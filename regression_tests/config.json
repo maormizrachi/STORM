@@ -106,6 +106,18 @@
       "cmake": {
         "STORM_DEPS_DIR": "{value}"
       }
+    },
+    {
+      "flags": [
+        "--extra-include-dirs"
+      ],
+      "dest": "extra_include_dirs",
+      "type": "string",
+      "default": "",
+      "help": "Semicolon-separated list of extra include directories",
+      "cmake": {
+        "STORM_EXTRA_INCLUDE_DIRS": "{value}"
+      }
     }
   ]
 }

@@ -64,6 +64,15 @@ if(IS_DIRECTORY "${STORM_DEPS_DIR}")
   endif()
 endif()
 
+# Additional include directories (semicolon-separated list)
+if(DEFINED STORM_EXTRA_INCLUDE_DIRS)
+  foreach(_extra_dir IN LISTS STORM_EXTRA_INCLUDE_DIRS)
+    if(IS_DIRECTORY "${_extra_dir}")
+      include_directories("${_extra_dir}")
+    endif()
+  endforeach()
+endif()
+
 # ---------- Required dependencies ----------
 find_package(Boost 1.74.0 REQUIRED)
 find_package(OpenMP QUIET)
