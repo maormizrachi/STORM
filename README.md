@@ -112,7 +112,10 @@ cmake .. -DSTORM_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Debug     # debug symbols 
 
 ## Regression Tests
 
-The regression test suite builds STORM, runs benchmarks, and validates results against reference data. Tests are auto-discovered from `examples/*/REGRESSION_INFO` files.
+The regression test suite is provided by the THUNDER submodule, which builds
+STORM, runs benchmarks, and validates results against reference data. Tests
+are auto-discovered from directories under the configured roots containing a
+`REGRESSION_INFO` file.
 
 ### Quick Start
 
@@ -125,6 +128,10 @@ The regression test suite builds STORM, runs benchmarks, and validates results a
 
 # Single test
 ./regression_tests/run_all.sh --with-mpi --test hohlraum_parallel
+
+# Inspect resolved tests and commands
+./regression_tests/run_all.sh --list-tests
+./regression_tests/run_all.sh --dry-run
 ```
 
 ### SLURM Integration
@@ -157,22 +164,22 @@ All tests are submitted as SLURM batch jobs via `sbatch`. Serial tests run with 
 | `--with-mpi` | Include MPI tests and compile with MPI support |
 | `--mode <serial\|mpi\|all>` | Choose which test category to run (default: serial) |
 | `--partition <name>` | SLURM partition for node allocation (default: system default) |
-| `--mpi-np <N>` | Override default MPI task count for parallel tests |
 | `--test <id>` | Run only a specific test |
 | `--build-type <type>` | CMake build type: Release, Debug, RelWithDebInfo |
 | `--nproc <N>` | Override `make -j` parallelism |
-| `--sequential` | Run tests one at a time instead of in parallel |
 | `--keep-artifacts` | Retain logs even when all tests pass |
 | `--verbose` | Stream test output to terminal |
 | `--recheck` | Re-run only the check step for `--test` (no build/run) |
 | `--clean-results` | Delete `regression_results/` and exit |
-| `--nohup` | Do not cancel SLURM jobs on Ctrl+C / signals |
+| `--dry-run` | Print configure, build, and run commands without executing |
 
 By default, pressing Ctrl+C (or sending SIGTERM/SIGHUP) cancels all running SLURM jobs. Use `--nohup` to let submitted jobs continue running after the script is interrupted.
 
 A `summary.txt` file with the pass/fail status of every test is written to the results directory (`regression_results/<timestamp>/summary.txt`).
 
-For instructions on adding a new regression test, see [`examples/REGRESSION_TESTS.md`](examples/REGRESSION_TESTS.md).
+For instructions on adding a new regression test, see
+[`regression_tests/THUNDER/README.md`](regression_tests/THUNDER/README.md) and
+[`examples/REGRESSION_TESTS.md`](examples/REGRESSION_TESTS.md).
 
 ## External Dependencies
 
