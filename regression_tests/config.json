@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "description": "STORM regression tests",
+  "project_root": "..",
+  "artifact_root": "regression_results",
+  "discovery": {
+    "metadata": "REGRESSION_INFO",
+    "test_roots": [
+      {
+        "path": "examples",
+        "namespace": "storm"
+      }
+    ]
+  },
+  "build": {
+    "mode": "grouped",
+    "build_dir": "build_regression",
+    "configure_command": [
+      "cmake",
+      "-S",
+      "{project_root}",
+      "-B",
+      "{build_dir}"
+    ],
+    "configure_args": [
+      "-DSTORM_BUILD_EXAMPLES=ON"
+    ],
+    "build_command": [
+      "cmake",
+      "--build",
+      "{build_dir}",
+      "-j",
+      "{nproc}"
+    ],
+    "binary": "{test_dir}/{build_target}"
+  },
+  "run": {
+    "mode": "slurm",
+    "default_command": "{binary}",
+    "binary_environment": "STORM_BIN",
+    "timeout": 3600
+  },
+  "checks": {
+    "library": "regression_tests/lib/regression_checks.sh"
+  },
+  "defaults": {
+    "mode": "serial"
+  },
+  "options": [
+    {
+      "flags": [
+        "--with-mpi"
+      ],
+      "dest": "with_mpi",
+      "type": "bool",
+      "default": false,
+      "mode_when_true": "all",
+      "help": "Build and include MPI tests",
+      "cmake": {
+        "STORM_WITH_MPI": "ON"
+      },
+      "mode_cmake": {
+        "mpi": "STORM_WITH_MPI=ON",
+        "all": "STORM_WITH_MPI=ON"
+      }
+    },
+    {
+      "flags": [
+        "--no-ibv"
+      ],
+      "dest": "no_ibv",
+      "type": "bool",
+      "default": false,
+      "help": "Disable IBV auto-detection",
+      "cmake": {
+        "STORM_NO_IBV": "ON"
+      }
+    },
+    {
+      "flags": [
+        "--build-type"
+      ],
+      "dest": "build_type",
+      "type": "enum",
+      "choices": [
+        "Release",
+        "Debug",
+        "RelWithDebInfo"
+      ],
+      "default": "Release",
+      "help": "CMake build type",
+      "cmake": {
+        "CMAKE_BUILD_TYPE": "{value}"
+      }
+    }
+  ]
+}

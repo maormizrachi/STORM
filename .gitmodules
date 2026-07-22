@@ -1,3 +1,7 @@
 [submodule "deps/CMMC"]
 	path = deps/CMMC
 	url = https://github.com/menahemkrief/CMMC.git
+[submodule "regression_tests/THUNDER"]
+	path = regression_tests/THUNDER
+	url = git@github.com:maormizrachi/THUNDER.git
+	branch = main
