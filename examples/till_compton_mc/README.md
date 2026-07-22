@@ -4,11 +4,8 @@ Till, McGraw & Warsa Compton equilibration case: a single cell with
 $T_\mathrm{mat} = 1\;\mathrm{keV}$, $T_\mathrm{rad} = 10\;\mathrm{keV}$,
 fully ionized hydrogen at $\rho = 1\;\mathrm{g/cm^3}$.
 
-The gas and radiation temperatures equilibrate through 32-group
-Compton scattering (with induced scattering) and free-free absorption.
-The Compton kernel uses the CMMC submodule to build microscopic
-group-changing matrices, tabulated over a temperature grid and
-interpolated at runtime.
+The gas and radiation temperatures equilibrate through 32-group Compton scattering (with induced scattering) and free-free absorption.
+The Compton kernel uses the CMMC submodule to build microscopic group-changing matrices, tabulated over a temperature grid and interpolated at runtime.
 
 ## Usage
 

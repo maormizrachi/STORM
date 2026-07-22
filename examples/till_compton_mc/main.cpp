@@ -108,7 +108,7 @@ struct RuntimeOptions
     std::optional<double> forcedDt;
     bool includePlasmaCutoff = true;
     double tf = 3e-8;
-    std::size_t newPhotonsPerCell = 200; // 10000;
+    std::size_t newPhotonsPerCell = 100000;
     std::size_t initialPhotonsPerCell = 4000;
     std::size_t matrixSamples = 2000000;
     fs::path outputDir = ".";
@@ -478,6 +478,7 @@ int main(int argc, char **argv)
         std::vector<STORM::Particle<Vector3D, Grid>> particles =
             physics->generateInitialParticles(options.initialPhotonsPerCell);
         const double initialDt = 1e-13;
+        const double maxDt = 1e-10;
         double timestep = options.forcedDt.value_or(initialDt);
         while(time.back() < options.tf)
         {
@@ -489,10 +490,11 @@ int main(int argc, char **argv)
             radiationTemperatureValues.push_back(radiationTemperature(cells.front()));
             energy.push_back(totalEnergy(extensives.front()));
             std::cout << "time = " << std::scientific << time.back()
+                      << ", dt = " << stepDt
                       << ", particles = " << particles.size()
                       << ", Tgas = " << gasTemperature.back() / units::kev_kelvin
                       << " keV\n";
-            timestep = options.forcedDt.value_or(std::min(timestep * 1.2, 1e-10));
+            timestep = options.forcedDt.value_or(std::min(timestep * 1.1, maxDt));
         }
 
         {
