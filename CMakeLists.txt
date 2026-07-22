@@ -188,7 +188,10 @@ if(STORM_WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
 endif()
 
-set(STORM_CMMC_DIR "${STORM_DEPS_DIR}/CMMC/src" CACHE PATH
+if(NOT DEFINED STORM_CMMC_DIR)
+  set(STORM_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CMMC/src")
+endif()
+set(STORM_CMMC_DIR "${STORM_CMMC_DIR}" CACHE PATH
   "Pinned CMMC source directory" FORCE)
 set(STORM_CMMC_REVISION
   "091281f09257c4a5127fa5c3af237d4caf8ebfad")
