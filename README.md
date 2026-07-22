@@ -136,7 +136,11 @@ are auto-discovered from directories under the configured roots containing a
 
 ### SLURM Integration
 
-All tests are submitted as SLURM batch jobs via `sbatch`. Serial tests run with a single task (`-n 1`); MPI tests run with their configured task count. By default the system's default partition is used. Override with:
+All tests are submitted as SLURM batch jobs via `sbatch`. Configuration,
+compilation, and execution happen inside the job, including serial tests.
+Serial tests run with a single task (`-n 1`); MPI tests run with their
+configured task count. By default the system's default partition is used.
+Override with:
 
 ```bash
 ./regression_tests/run_all.sh --with-mpi --partition=my_partition
