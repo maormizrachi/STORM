@@ -608,27 +608,30 @@ int main(int argc, char *argv[])
     auto physics = std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
     auto popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
 
-    STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
-        grid, physics, popControl, boundary);
-    std::vector<STORM::Particle<Vector3D, Grid>> particles;
-
-    if(rank == 0)
+    SimulationResult result;
     {
-        std::cout << "Moving slab MC benchmark: "
-                  << G << " groups, "
-                  << N_TOTAL_PTS << " mesh points (" << N_X_PTS << "x * " << NYZ << "y * " << NYZ << "z), "
-                  << "newPhotonsPerCell=" << newPhotonsPerCell
-                  << ", v_slab=" << vSlab << " cm/s"
-                  << ", L=" << L_slab << " cm"
-                  << ", T=" << T_slab_keV << " keV"
-                  << ", z_O=" << zO << " cm"
-                  << ", t_O=" << tO * 1e9 << " ns"
-                  << ", MPI ranks=" << nprocs
-                  << std::endl;
-    }
+        STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
+            grid, physics, popControl, boundary);
+        std::vector<STORM::Particle<Vector3D, Grid>> particles;
 
-    SimulationResult result = RunSimulation(grid, manager, cells, extensives, particles,
-                                            vSlab, L_slab, xSym, tO, rank, nprocs);
+        if(rank == 0)
+        {
+            std::cout << "Moving slab MC benchmark: "
+                      << G << " groups, "
+                      << N_TOTAL_PTS << " mesh points (" << N_X_PTS << "x * " << NYZ << "y * " << NYZ << "z), "
+                      << "newPhotonsPerCell=" << newPhotonsPerCell
+                      << ", v_slab=" << vSlab << " cm/s"
+                      << ", L=" << L_slab << " cm"
+                      << ", T=" << T_slab_keV << " keV"
+                      << ", z_O=" << zO << " cm"
+                      << ", t_O=" << tO * 1e9 << " ns"
+                      << ", MPI ranks=" << nprocs
+                      << std::endl;
+        }
+
+        result = RunSimulation(grid, manager, cells, extensives, particles,
+                               vSlab, L_slab, xSym, tO, rank, nprocs);
+    }
 
     // --- Find observer cells at x closest to z_O ---
     const auto &EgTA = physics->getEgTimeAvg();

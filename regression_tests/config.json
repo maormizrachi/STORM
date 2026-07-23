@@ -14,7 +14,7 @@
   },
   "build": {
     "mode": "grouped",
-    "build_dir": "build_regression",
+    "build_dir": "../../build/storm_regression",
     "configure_command": [
       "cmake",
       "-S",
@@ -38,6 +38,9 @@
     "mode": "slurm",
     "force_slurm": true,
     "default_command": "{binary}",
+    "default_commands": {
+      "mpi": "mpirun -np ${SLURM_NTASKS} \"{binary}\""
+    },
     "binary_environment": "STORM_BIN",
     "timeout": 3600,
     "tasks": 1
@@ -109,14 +112,38 @@
     },
     {
       "flags": [
-        "--extra-include-dirs"
+        "--madvoro-dir"
       ],
-      "dest": "extra_include_dirs",
+      "dest": "madvoro_dir",
       "type": "string",
-      "default": "",
-      "help": "Semicolon-separated list of extra include directories",
+      "default": "{project_root}/deps/MadVoro",
+      "help": "Path to the MadVoro dependency",
       "cmake": {
-        "STORM_EXTRA_INCLUDE_DIRS": "{value}"
+        "STORM_MADVORO_DIR": "{value}"
+      }
+    },
+    {
+      "flags": [
+        "--madcart-dir"
+      ],
+      "dest": "madcart_dir",
+      "type": "string",
+      "default": "{project_root}/deps/MadCart",
+      "help": "Path to the MadCart dependency",
+      "cmake": {
+        "STORM_MADCART_DIR": "{value}"
+      }
+    },
+    {
+      "flags": [
+        "--mesh-decomposer-dir"
+      ],
+      "dest": "mesh_decomposer_dir",
+      "type": "string",
+      "default": "{project_root}/deps/MeshDecomposer3D",
+      "help": "Path to the MeshDecomposer3D dependency",
+      "cmake": {
+        "STORM_MESH_DECOMPOSER_DIR": "{value}"
       }
     }
   ]

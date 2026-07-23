@@ -11,15 +11,12 @@ file(GLOB _storm_example_info_files CONFIGURE_DEPENDS
 list(SORT _storm_example_info_files)
 
 # MadVoro is header-heavy, but examples using its Voronoi implementation also
-# need its exception translation units.  Support both standalone STORM deps
-# and RICH's in-tree MadVoro submodule.
+# need its exception translation units. STORM_MADVORO_DIR resolves either the
+# standalone dependency or a parent project's in-tree MadVoro checkout.
 set(_storm_madvoro_root "")
-if(DEFINED STORM_DEPS_DIR AND
-   EXISTS "${STORM_DEPS_DIR}/MadVoro/exception")
-  set(_storm_madvoro_root "${STORM_DEPS_DIR}/MadVoro")
-elseif(DEFINED MADVORO_DIR AND
-       EXISTS "${MADVORO_DIR}/exception")
-  set(_storm_madvoro_root "${MADVORO_DIR}")
+if(DEFINED STORM_MADVORO_DIR AND
+   EXISTS "${STORM_MADVORO_DIR}/exception")
+  set(_storm_madvoro_root "${STORM_MADVORO_DIR}")
 endif()
 
 set(_storm_madvoro_exception_sources "")

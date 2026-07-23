@@ -60,9 +60,6 @@ template<typename T, typename GridT>
 void ExchangePointMetadata(const GridT &grid, std::vector<T> &data)
 {
 #ifdef STORM_WITH_MPI
-    static_assert(std::is_trivially_copyable_v<T>,
-                  "DDMC point metadata must be trivially copyable");
-
     int initialized = 0;
     MPI_Initialized(&initialized);
     if(!initialized)
@@ -235,9 +232,6 @@ template<typename T, typename GridT>
 void ReducePointContributions(const GridT &grid, std::vector<T> &data)
 {
 #ifdef STORM_WITH_MPI
-    static_assert(std::is_trivially_copyable_v<T>,
-                  "DDMC point contributions must be trivially copyable");
-
     int initialized = 0;
     MPI_Initialized(&initialized);
     if(!initialized)

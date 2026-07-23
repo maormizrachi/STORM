@@ -56,21 +56,43 @@ endif()
 if(IS_DIRECTORY "${STORM_DEPS_DIR}")
   get_filename_component(_deps "${STORM_DEPS_DIR}" ABSOLUTE)
   include_directories("${_deps}")
-  if(IS_DIRECTORY "${_deps}/MadVoro")
-    include_directories("${_deps}/MadVoro")
-  endif()
-  if(IS_DIRECTORY "${_deps}/MadVoro/range/finders")
-    include_directories("${_deps}/MadVoro/range/finders")
-  endif()
 endif()
 
-# Additional include directories (semicolon-separated list)
-if(DEFINED STORM_EXTRA_INCLUDE_DIRS)
-  foreach(_extra_dir IN LISTS STORM_EXTRA_INCLUDE_DIRS)
-    if(IS_DIRECTORY "${_extra_dir}")
-      include_directories("${_extra_dir}")
-    endif()
-  endforeach()
+if(NOT DEFINED STORM_MADVORO_DIR)
+  set(STORM_MADVORO_DIR "${STORM_DEPS_DIR}/MadVoro")
+endif()
+if(NOT DEFINED STORM_MADCART_DIR)
+  set(STORM_MADCART_DIR "${STORM_DEPS_DIR}/MadCart")
+endif()
+if(NOT DEFINED STORM_MESH_DECOMPOSER_DIR)
+  set(STORM_MESH_DECOMPOSER_DIR "${STORM_DEPS_DIR}/MeshDecomposer3D")
+endif()
+
+# STORM headers use stable dependency prefixes such as MadVoro/... even when
+# a parent project stores the dependency under a different directory name.
+# Build-tree aliases preserve those public include paths without adding
+# symlinks to the parent project's source tree.
+set(_storm_dependency_includes "${CMAKE_CURRENT_BINARY_DIR}/storm_dependency_includes")
+file(MAKE_DIRECTORY "${_storm_dependency_includes}")
+
+function(storm_add_dependency_alias alias_name dependency_dir)
+  if(NOT IS_DIRECTORY "${dependency_dir}")
+    message(FATAL_ERROR "STORM dependency ${alias_name} not found at ${dependency_dir}")
+  endif()
+  set(alias_path "${_storm_dependency_includes}/${alias_name}")
+  if(EXISTS "${alias_path}" OR IS_SYMLINK "${alias_path}")
+    file(REMOVE "${alias_path}")
+  endif()
+  file(CREATE_LINK "${dependency_dir}" "${alias_path}" SYMBOLIC)
+endfunction()
+
+storm_add_dependency_alias("MadVoro" "${STORM_MADVORO_DIR}")
+storm_add_dependency_alias("MadCart" "${STORM_MADCART_DIR}")
+storm_add_dependency_alias("MeshDecomposer3D" "${STORM_MESH_DECOMPOSER_DIR}")
+include_directories("${_storm_dependency_includes}")
+include_directories("${STORM_MADVORO_DIR}")
+if(IS_DIRECTORY "${STORM_MADVORO_DIR}/range/finders")
+  include_directories("${STORM_MADVORO_DIR}/range/finders")
 endif()
 
 # ---------- Required dependencies ----------
@@ -185,6 +207,9 @@ endif()
 
 target_include_directories(storm INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/deps>
+  $<BUILD_INTERFACE:${_storm_dependency_includes}>
+  $<BUILD_INTERFACE:${STORM_MADVORO_DIR}>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(storm INTERFACE Boost::boost)
@@ -197,8 +222,7 @@ if(STORM_WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
 endif()
 
-set(STORM_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CMMC/src" CACHE PATH
-  "Pinned CMMC source directory" FORCE)
+set(STORM_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CMMC/src")
 set(STORM_CMMC_REVISION
   "091281f09257c4a5127fa5c3af237d4caf8ebfad")
 message(STATUS "STORM CMMC revision: ${STORM_CMMC_REVISION}")
@@ -215,7 +239,13 @@ if(STORM_WITH_COMPTON)
   target_sources(storm_cmmc PRIVATE
     "${STORM_CMMC_DIR}/compton_matrix_mc.cpp")
   target_include_directories(storm_cmmc PRIVATE "${STORM_CMMC_DIR}")
+  target_include_directories(storm INTERFACE
+    $<BUILD_INTERFACE:${STORM_CMMC_DIR}>)
   target_compile_definitions(storm_cmmc PRIVATE STORM_WITH_COMPTON)
+  if(STORM_WITH_MPI)
+    target_compile_definitions(storm_cmmc PRIVATE STORM_WITH_MPI)
+    target_link_libraries(storm_cmmc PUBLIC MPI::MPI_CXX)
+  endif()
   target_compile_definitions(storm INTERFACE STORM_WITH_COMPTON)
 else()
   message(STATUS "STORM Compton support disabled")

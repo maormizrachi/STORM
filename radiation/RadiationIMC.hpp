@@ -490,6 +490,9 @@ public:
 
     const std::vector<double> &getFactorFleck() const { return this->factorFleck_; }
     const std::vector<double> &getPlanckOpacities() const { return this->planckOpacities_; }
+    const std::vector<ComptonCellData> &getComptonData() const { return this->comptonData_; }
+    const GroupArray &getComptonGroupCenters() const { return this->comptonGroupCenters_; }
+    const GroupArray &getComptonGroupWidths() const { return this->comptonGroupWidths_; }
     const std::vector<double> &getEradTimeAvg() const { return this->Erad_time_avg_; }
     std::vector<double> &getEradTimeAvg() { return this->Erad_time_avg_; }
     const std::vector<GroupArray> &getEgTimeAvg() const { return this->Eg_time_avg_; }
