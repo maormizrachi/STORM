@@ -120,6 +120,14 @@ private:
     RDMA_Type rdma_type;
     bool destroyed;
     MPI_Group group_world, group_internal;
+    std::vector<index_t> transferAvailIndices;
+    std::vector<MCParticle> transferOrderedParticles;
+    uint32_t transferAvailIndicesLkey = 0;
+    uint64_t transferAvailIndicesRegHandle = 0;
+    const index_t *transferAvailIndicesRegPtr = nullptr;
+    uint32_t transferOrderedParticlesLkey = 0;
+    uint64_t transferOrderedParticlesRegHandle = 0;
+    const MCParticle *transferOrderedParticlesRegPtr = nullptr;
 
     #ifdef ADVANCED_STORM_DEBUG
     void ValidateArraysContents(void) const;
@@ -236,6 +244,16 @@ void RankHandler<T, Grid>::Destroy(void)
     #ifdef STORM_WITH_MPI
     if(this->size_internal > 1)
     {
+        if(this->transferOrderedParticlesRegHandle)
+        {
+            this->particles_agent->DeregisterExternalSource(this->transferOrderedParticlesRegHandle);
+            this->transferOrderedParticlesRegHandle = 0;
+        }
+        if(this->transferAvailIndicesRegHandle)
+        {
+            this->th_agent->DeregisterExternalSource(this->transferAvailIndicesRegHandle);
+            this->transferAvailIndicesRegHandle = 0;
+        }
         this->particles_agent->Free();
         this->av_agent->Free();
         this->th_agent->Free();
@@ -732,10 +750,10 @@ bool RankHandler<T, Grid>::UsesAsyncReallocation(void) const
     {
         return false;
     }
-    RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
-                             ? RMAFactory::ResolveAutoRDMA()
-                             : this->rdma_type;
-    return resolved == RDMA_Type::OFI_RDMA or resolved == RDMA_Type::IBV_RDMA;
+    return this->particles_agent->SupportsAsyncReallocation() and
+           this->av_agent->SupportsAsyncReallocation() and
+           this->th_agent->SupportsAsyncReallocation() and
+           this->lengths_agent->SupportsAsyncReallocation();
 }
 
 template<typename T, typename Grid>
@@ -879,23 +897,28 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             this->requestedFactor = static_cast<double>(peerUsed + Np) /
                                     static_cast<double>(this->peer_buffsize) * 1.5;
 
-            this->remoteTHMutex->Unlock();
             if(this->UsesAsyncReallocation())
             {
+                // The peer may deregister and replace all four regions as soon
+                // as it handles this request. Complete every operation posted
+                // with the old address/key before releasing the resize mutex.
+                this->particles_agent->QuiesceTarget(this->other_rank);
+                this->av_agent->QuiesceTarget(this->other_rank);
+                this->th_agent->QuiesceTarget(this->other_rank);
+                this->lengths_agent->QuiesceTarget(this->other_rank);
+                this->remoteTHMutex->Unlock();
                 this->reallocationAgent->RequestReallocationAsync(this->peer_rank_world, this->requestedFactor);
                 this->requestedFactor = 1;
                 return false;
             }
+            this->remoteTHMutex->Unlock();
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
             this->remoteTHMutex->Lock();
             availLength = getAvailableLength();
         }
         assert(availLength >= Np);
 
-        static thread_local std::vector<index_t> availIndices;
-        static thread_local uint32_t availIndices_lkey = 0;
-        static thread_local uint64_t availIndices_reg_handle = 0;
-        static thread_local const index_t *availIndices_reg_ptr = nullptr;
+        std::vector<index_t> &availIndices = this->transferAvailIndices;
         availIndices.resize(Np);
         this->av_agent->Get(availIndices.data(), Np, this->other_rank, availLength - Np);
 
@@ -930,13 +953,10 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
 
         assert(this->other_rank != this->rank_internal);
         static thread_local std::vector<std::pair<index_t, size_t>> orderedTargets;
-        static thread_local std::vector<MCParticle> orderedParticles;
+        std::vector<MCParticle> &orderedParticles = this->transferOrderedParticles;
         static thread_local std::vector<index_t> orderedIndices;
         using PutBatchEntry = typename RemoteMemoryAgent<MCParticle>::PutBatchEntry;
         static thread_local std::vector<PutBatchEntry> batchEntries;
-        static thread_local uint32_t orderedParticles_lkey = 0;
-        static thread_local uint64_t orderedParticles_reg_handle = 0;
-        static thread_local const MCParticle *orderedParticles_reg_ptr = nullptr;
 
         orderedTargets.resize(Np);
         orderedParticles.clear();
@@ -982,22 +1002,22 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         }
 
 
-        if(orderedParticles.data() != orderedParticles_reg_ptr)
+        if(orderedParticles.data() != this->transferOrderedParticlesRegPtr)
         {
-            if(orderedParticles_reg_handle)
+            if(this->transferOrderedParticlesRegHandle)
             {
-                this->particles_agent->DeregisterExternalSource(orderedParticles_reg_handle);
+                this->particles_agent->DeregisterExternalSource(this->transferOrderedParticlesRegHandle);
             }
             auto reg = this->particles_agent->RegisterExternalSource(
                 orderedParticles.data(), orderedParticles.capacity() * sizeof(MCParticle));
-            orderedParticles_lkey = reg.lkey;
-            orderedParticles_reg_handle = reg.handle;
-            orderedParticles_reg_ptr = orderedParticles.data();
+            this->transferOrderedParticlesLkey = reg.lkey;
+            this->transferOrderedParticlesRegHandle = reg.handle;
+            this->transferOrderedParticlesRegPtr = orderedParticles.data();
         }
 
         this->particles_agent->PutBatch(orderedParticles.data(), Np,
                                         batchEntries.data(), batchEntries.size(),
-                                        this->other_rank, false, orderedParticles_lkey);
+                                        this->other_rank, false, this->transferOrderedParticlesLkey);
 
         (void)usedContiguousAllocation;
 
@@ -1020,19 +1040,19 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             this->particles_agent->Flush(this->other_rank);
         }
 
-        if(availIndices.data() != availIndices_reg_ptr)
+        if(availIndices.data() != this->transferAvailIndicesRegPtr)
         {
-            if(availIndices_reg_handle)
+            if(this->transferAvailIndicesRegHandle)
             {
-                this->th_agent->DeregisterExternalSource(availIndices_reg_handle);
+                this->th_agent->DeregisterExternalSource(this->transferAvailIndicesRegHandle);
             }
             auto reg = this->th_agent->RegisterExternalSource(
                 availIndices.data(), availIndices.capacity() * sizeof(index_t));
-            availIndices_lkey = reg.lkey;
-            availIndices_reg_handle = reg.handle;
-            availIndices_reg_ptr = availIndices.data();
+            this->transferAvailIndicesLkey = reg.lkey;
+            this->transferAvailIndicesRegHandle = reg.handle;
+            this->transferAvailIndicesRegPtr = availIndices.data();
         }
-        this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, true, availIndices_lkey);
+        this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, true, this->transferAvailIndicesLkey);
         int newLengths[2] = {availLength - static_cast<int>(Np),
                              toHandleLength + static_cast<int>(Np)};
         this->lengths_agent->Put(newLengths, 2, this->other_rank, 0, is_mpi or is_ofi);
