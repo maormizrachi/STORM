@@ -1801,7 +1801,6 @@ void RDMAMonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
     bool allowIdleDrain = flushSmallBuffers;
     bool heldIdleDrain = false;
     const bool usesAsyncReallocation = this->UsesAsyncReallocation();
-    const bool useRegisteredSendSources = usesAsyncReallocation;
     if(flushSmallBuffers and this->config.holdSmallIdleFlushes)
     {
         size_t holdoffCycles = std::max<size_t>(1, this->config.GetSmallIdleFlushHoldoffCycles());
@@ -1848,7 +1847,8 @@ void RDMAMonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         }
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         size_t flushedParticles = particles.size();
-        uint32_t sourceLkey = particles.SourceLkey(remoteHandler, useRegisteredSendSources);
+        uint32_t sourceLkey = particles.SourceLkey(
+            remoteHandler, remoteHandler->SupportsPersistentSendSourceRegistration());
         bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
         if(not transferred)
         {
@@ -1935,7 +1935,6 @@ template<typename T, typename Grid>
 void RDMAMonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
 {
     const bool usesAsyncReallocation = this->UsesAsyncReallocation();
-    const bool useRegisteredSendSources = usesAsyncReallocation;
     for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
     {
         rank_t toRank = this->sendBufferActiveRanks[index];
@@ -1969,7 +1968,8 @@ void RDMAMonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
             continue;
         }
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-        uint32_t sourceLkey = particles.SourceLkey(remoteHandler, useRegisteredSendSources);
+        uint32_t sourceLkey = particles.SourceLkey(
+            remoteHandler, remoteHandler->SupportsPersistentSendSourceRegistration());
         bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
         if(not transferred)
         {

@@ -101,6 +101,8 @@ public:
 
     bool UsesAsyncReallocation(void) const;
 
+    bool SupportsPersistentSendSourceRegistration(void) const;
+
     typename RemoteMemoryAgent<MCParticle>::SourceRegistration RegisterSendSource(const MCParticle *particles, size_t particlesNum);
 
     void DeregisterSendSource(uint64_t handle);
@@ -611,6 +613,13 @@ void RankHandler2<T, Grid>::UpdatePeerRemoteInfo(const ReallocationMetadata &met
     this->particles_agent->UpdateRemoteInfo(this->other_rank, metadata.particles);
     this->lengths_agent->UpdateRemoteInfo(this->other_rank, metadata.lengths);
     this->peer_buffsize = metadata.new_buffsize;
+}
+
+template<typename T, typename Grid>
+bool RankHandler2<T, Grid>::SupportsPersistentSendSourceRegistration(void) const
+{
+    return this->size_internal > 1 and
+           this->particles_agent->SupportsPersistentSourceRegistration();
 }
 
 template<typename T, typename Grid>
