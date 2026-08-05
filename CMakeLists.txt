@@ -5,6 +5,10 @@ project(STORM
   DESCRIPTION "Scalable Three-dimensional Optimized RDMA Monte Carlo"
 )
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "^(Intel|IntelLLVM)$")
+  add_compile_options(-fp-model precise)
+endif()
+
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -15,7 +19,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
   # --- Compiler flags (aligned with RICH/config/compiler_flags.cmake) ---
 
-  # Release: -O2 (not -O3 -- avoids aggressive FP reassociation), minimal debug info
+  # Release: -O2, minimal debug info.
   set(CMAKE_C_FLAGS_RELEASE   "-O2 -DNDEBUG -g1" CACHE STRING "" FORCE)
   set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG -g1" CACHE STRING "" FORCE)
 
