@@ -36,10 +36,17 @@ struct RadiationIMCParameters
     bool withDDMC = false;
     double ddmcMinCellOpticalDepth = 15.0;
     double ddmcMinParticleOpticalDepth = 5.0;
+    double ddmcExternalSourceMinFaceOpticalDepth = 5.0;
+    bool ddmcUseMovingInterfaceCorrection = true;
+    double ddmcMaxInterfaceVelocityOverC = 0.1;
+    double ddmcInterfaceTargetWeightRatio = 2.0;
+    std::size_t ddmcMaxInterfaceSplits = 64;
     // Moving IMC-to-DDMC interface corrections above this bound bypass DDMC
     // for that crossing and remain unbiased in ordinary IMC transport.
     double ddmcMaxMovingInterfaceWeightCorrection = 10.0;
     bool ddmcUseMultigroupPGRW = false;
+    std::size_t ddmcMaxGroupCutoff = NumGroups;
+    bool ddmcInterfaceDiagnostics = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
     // Canonical transport-level switch for polarized Thomson scattering.
@@ -96,6 +103,14 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
     {
         os << "\tDDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << '\n';
         os << "\tDDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << '\n';
+        os << "\tDDMC external-source min face optical depth: "
+           << parameters.ddmcExternalSourceMinFaceOpticalDepth << '\n';
+        os << "\tDDMC moving-interface correction: "
+           << parameters.ddmcUseMovingInterfaceCorrection << '\n';
+        os << "\tDDMC maximum interface velocity/c: "
+           << parameters.ddmcMaxInterfaceVelocityOverC << '\n';
+        os << "\tDDMC maximum group cutoff: "
+           << parameters.ddmcMaxGroupCutoff << '\n';
         os << "\tDDMC multigroup PGRW: " << parameters.ddmcUseMultigroupPGRW << '\n';
         os << "\tDDMC max moving interface weight correction: "
            << parameters.ddmcMaxMovingInterfaceWeightCorrection << '\n';

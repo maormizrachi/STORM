@@ -6,13 +6,18 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <random>
+#include <sstream>
 #include <string>
 #include <type_traits>
+#include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -423,6 +428,14 @@ public:
         std::size_t learnedMinPhotons = 0;
         std::size_t learnedMaxPhotons = 0;
         double adaptiveScoreSum = 0.0;
+        double adaptiveScoreP05 = 0.0;
+        double adaptiveScoreP50 = 0.0;
+        double adaptiveScoreP95 = 0.0;
+        double adaptiveScoreMax = 0.0;
+        double adaptiveScoreSpanLow = 0.0;
+        double adaptiveScoreSpanHigh = 0.0;
+        std::size_t learnedPhotonsAtLeast1000 = 0;
+        std::size_t learnedPhotonsAtLeast2000 = 0;
     };
 
     struct GroupSamplingDiagnostics
@@ -465,6 +478,16 @@ public:
 
     using DDMCFaceLeak = ddmc::FaceLeak<PointT>;
     using DDMCCellData = ddmc::CellData<PointT>;
+
+    struct PostProcessExternalSource
+    {
+        std::size_t faceIndex = std::numeric_limits<std::size_t>::max();
+        std::size_t cellID = std::numeric_limits<std::size_t>::max();
+        std::size_t interiorCellID = std::numeric_limits<std::size_t>::max();
+        PointT location{};
+        PointT outwardNormal{};
+        double luminosity = 0.0;
+    };
 
     RadiationIMC(const GridT &grid,
                  const std::shared_ptr<BoundaryCond> &boundary,
@@ -512,12 +535,35 @@ public:
     }
     const std::shared_ptr<Observer> &getObserver() const { return this->observer_; }
 
+    void reseedRNG(std::uint64_t seed)
+    {
+        std::uint64_t rankOffset = 0;
+#ifdef STORM_WITH_MPI
+        int mpiInitialized = 0;
+        MPI_Initialized(&mpiInitialized);
+        if(mpiInitialized)
+        {
+            int rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            rankOffset = static_cast<std::uint64_t>(rank) * 104729ULL;
+        }
+#endif
+        this->rng_.seed(seed + rankOffset);
+        this->opacity_->reseed(seed + 1ULL);
+        ReseedRandomInCell(seed + 2ULL);
+    }
+
     std::size_t getRandomWalkStepCount() const override { return this->rwStepCount_; }
     std::size_t getDDMCStepCount() const override { return this->ddmcStepCount_; }
     std::size_t getDDMCLeakCount() const override { return this->ddmcLeakCount_; }
     std::size_t getDDMCCensusCount() const override { return this->ddmcCensusCount_; }
     std::size_t getDDMCUpscatterCount() const override { return this->ddmcUpscatterCount_; }
     std::size_t getDDMCFallbackCount() const override { return this->ddmcFallbackCount_; }
+    std::string getAccelerationDebugInfo(std::size_t cellIndex,
+                                         double frequency) const override;
+    std::string getDDMCFaceDiagnosticsTSV(double xMin, double xMax) const;
+    std::string getDDMCInterfaceEventDiagnosticsTSV(double xMin,
+                                                    double xMax) const;
     std::size_t getDDMCMovingInterfaceBypassCount() const
     {
         return this->ddmcMovingInterfaceBypassCount_;
@@ -551,13 +597,24 @@ public:
         return this->ddmcMomentumMatrixFallbackCount_;
     }
 
+    void setPostProcessExternalSources(
+        std::vector<PostProcessExternalSource> sources);
+    void clearPostProcessExternalSources();
+    bool hasPostProcessExternalSources() const
+    {
+        return this->postProcessExternalSourceMode_;
+    }
+
     void setNewPhotonsPerCell(std::size_t n);
     void setAdaptiveSourceCellScores(std::unordered_map<std::size_t, double> scores,
                                      double strength,
                                      double maxFactor,
                                      double learnedReserveFrac,
                                      double learnedMinFactor,
-                                     double observerBudgetMultiplier);
+                                     double observerBudgetMultiplier,
+                                     std::size_t learnedMinPhotons = 0,
+                                     std::size_t learnedMaxPhotons = 0,
+                                     double scorePower = 1.0);
     void clearAdaptiveSourceCellScores();
     void setAdaptiveSourceCellGroupScores(std::unordered_map<std::size_t, GroupArray> scores,
                                           double strength,
@@ -628,6 +685,8 @@ private:
                                      std::size_t cellIndex,
                                      ComptonOccupationMode occupationMode,
                                      ComptonCellData &data);
+    double computeLteTemperature(const CellT &cell,
+                                 std::size_t cellIndex) const;
     void recomputeComptonContractions(ComptonCellData &data) const;
     void buildComptonSources(double sourceDt, ComptonCellData &data) const;
     void buildComptonEventData(ComptonCellData &data) const;
@@ -705,11 +764,87 @@ private:
     void applyDDMCMomentumFeedback(double fullDt);
     bool tryIMCToDDMCInterface(MCParticle &particle,
                                Functionality &functionality,
+                               std::vector<MCParticle> &particlesToAdd,
                                std::size_t sourceCellIndex,
                                std::size_t targetCellIndex,
                                std::size_t faceIndex);
 
+    enum class DDMCDiagnosticEventKind : unsigned char
+    {
+        IMCCandidate,
+        IMCFrequencyReject,
+        IMCIncident,
+        IMCAdmitted,
+        IMCReflected,
+        IMCBypass,
+        DDMCToDDMC,
+        DDMCToIMC
+    };
+
+    static constexpr std::size_t DDMC_DIAGNOSTIC_GREY_GROUP =
+        std::numeric_limits<std::size_t>::max();
+
+    struct DDMCDiagnosticEventKey
+    {
+        DDMCDiagnosticEventKind kind = DDMCDiagnosticEventKind::IMCCandidate;
+        std::size_t faceIndex = std::numeric_limits<std::size_t>::max();
+        std::size_t sourceCellID = std::numeric_limits<std::size_t>::max();
+        std::size_t targetCellID = std::numeric_limits<std::size_t>::max();
+        std::size_t group = DDMC_DIAGNOSTIC_GREY_GROUP;
+
+        bool operator<(DDMCDiagnosticEventKey const &other) const
+        {
+            return std::tie(kind, faceIndex, sourceCellID, targetCellID, group) <
+                   std::tie(other.kind, other.faceIndex, other.sourceCellID,
+                            other.targetCellID, other.group);
+        }
+    };
+
+    struct DDMCDiagnosticEventAccumulator
+    {
+        std::size_t faceIndex = std::numeric_limits<std::size_t>::max();
+        std::size_t sourceCellID = std::numeric_limits<std::size_t>::max();
+        std::size_t targetCellID = std::numeric_limits<std::size_t>::max();
+        std::size_t group = DDMC_DIAGNOSTIC_GREY_GROUP;
+        std::size_t sourceGroupCutoff = 0;
+        std::size_t targetGroupCutoff = 0;
+        double faceX = std::numeric_limits<double>::quiet_NaN();
+        double sourceGeneratorX = std::numeric_limits<double>::quiet_NaN();
+        double targetGeneratorX = std::numeric_limits<double>::quiet_NaN();
+        std::size_t count = 0;
+        double signedEnergy = 0.0;
+        double absoluteEnergy = 0.0;
+        double muSum = 0.0;
+        std::size_t muCount = 0;
+        double admissionProbabilitySum = 0.0;
+        std::size_t admissionProbabilityCount = 0;
+    };
+
+    void recordDDMCDiagnosticEvent(DDMCDiagnosticEventKind kind,
+                                   std::size_t sourceCellIndex,
+                                   std::size_t targetCellIndex,
+                                   std::size_t faceIndex,
+                                   std::size_t group,
+                                   double energy,
+                                   std::size_t sourceGroupCutoff,
+                                   std::size_t targetGroupCutoff,
+                                   double mu,
+                                   double admissionProbability);
+
     void clampFrequencyToBounds(double &frequency) const;
+    PointT samplePostProcessExternalSourceDirection(
+        const PointT &outwardNormal);
+    GroupArray buildPostProcessExternalSourcePlanckPdf(
+        const CellT &cell) const;
+    double samplePostProcessExternalSourcePlanckFrequencyInGroup(
+        const CellT &cell, std::size_t group);
+    double samplePostProcessExternalSourcePlanckFrequency(const CellT &cell);
+    MCParticle generatePostProcessExternalSourceParticle(
+        std::size_t cellIndex, const CellT &cell,
+        const PostProcessExternalSource &source);
+    bool handlePostProcessExternalSourceBoundary(
+        MCParticle &particle, std::size_t cellIndex,
+        std::size_t faceIndex, Functionality &functionality);
 
     std::vector<CellT> &cells_;
     std::vector<ExtensivesT> &extensives_;
@@ -734,6 +869,13 @@ private:
     bool comptonDataReusableInPreStep_ = false;
     double comptonRiskPrecomputeDt_ = -1.0;
     std::shared_ptr<Observer> observer_;
+    bool postProcessExternalSourceMode_ = false;
+    std::vector<PostProcessExternalSource> postProcessExternalSources_;
+    std::vector<std::size_t> postProcessExternalSourceLocalCellIndices_;
+    std::unordered_map<std::size_t, std::size_t>
+        postProcessExternalSourceFaceIndex_;
+    std::unordered_set<std::size_t>
+        postProcessExternalSourceInteriorCellIDs_;
     bool preStepInitialized_ = false;
     std::mt19937_64 rng_;
     std::uniform_real_distribution<double> dist_;
@@ -760,6 +902,34 @@ private:
     std::size_t ddmcLeakReciprocityCheckCount_ = 0;
     std::size_t ddmcMomentumFeedbackCount_ = 0;
     std::size_t ddmcMomentumMatrixFallbackCount_ = 0;
+    std::size_t ddmcResidentLeakCount_ = 0;
+    std::size_t ddmcTransportLeakCount_ = 0;
+    std::size_t ddmcRemoteResidentLeakCount_ = 0;
+    std::size_t ddmcMPIFaceFluxReductionCount_ = 0;
+    std::size_t ddmcLeakInvalidGeometryCount_ = 0;
+    std::size_t ddmcUnsupportedBoundaryFaceCount_ = 0;
+    std::size_t ddmcInterfaceIncidentCount_ = 0;
+    std::size_t ddmcInterfaceAdmittedCount_ = 0;
+    std::size_t ddmcInterfaceReflectedCount_ = 0;
+    std::size_t ddmcInterfaceGuAppliedCount_ = 0;
+    std::size_t ddmcInterfaceGuFallbackCount_ = 0;
+    std::size_t ddmcInterfaceBypassCount_ = 0;
+    std::size_t ddmcInterfaceSplitPacketCount_ = 0;
+    std::size_t ddmcInterfaceFluxTallyCount_ = 0;
+    double ddmcInterfaceMinimumMu_ = std::numeric_limits<double>::infinity();
+    std::map<DDMCDiagnosticEventKey, DDMCDiagnosticEventAccumulator>
+        ddmcDiagnosticEvents_;
+    std::size_t ddmcExternalSourceCandidateFaceCount_ = 0;
+    std::size_t ddmcExternalSourceAcceleratedFaceCount_ = 0;
+    std::size_t ddmcExternalSourceExplicitFallbackFaceCount_ = 0;
+    std::size_t ddmcExternalSourceInteriorExcludedCellCount_ = 0;
+    std::size_t ddmcExternalSourceThermalizationCount_ = 0;
+    std::size_t ddmcExternalSourceStayDDMCCount_ = 0;
+    std::size_t ddmcExternalSourceToIMCCount_ = 0;
+    double ddmcExternalSourceThermalizedEnergy_ = 0.0;
+    double ddmcExternalSourceToIMCEnergy_ = 0.0;
+    double ddmcExternalSourceMinimumFaceOpticalDepth_ =
+        std::numeric_limits<double>::infinity();
     std::size_t ddmcStepCount_ = 0;
     std::size_t ddmcLeakCount_ = 0;
     std::size_t ddmcCensusCount_ = 0;
@@ -775,6 +945,9 @@ private:
     double adaptiveSourceLearnedReserveFrac_ = 0.0;
     double adaptiveSourceLearnedMinFactor_ = 1.0;
     double adaptiveSourceObserverBudgetMultiplier_ = 1.0;
+    std::size_t adaptiveSourceLearnedMinPhotons_ = 0;
+    std::size_t adaptiveSourceLearnedMaxPhotons_ = 0;
+    double adaptiveSourceScorePower_ = 1.0;
 
     std::unordered_map<std::size_t, GroupArray> adaptiveSourceCellGroupScores_;
     bool adaptiveSourceCellGroupScoresEnabled_ = false;
@@ -973,6 +1146,29 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         StormError eo("RadiationIMC DDMC particle optical-depth threshold must be finite and positive");
         eo.addEntry("ddmcMinParticleOpticalDepth", this->parameters_.ddmcMinParticleOpticalDepth);
         throw eo;
+    }
+    if(this->parameters_.withDDMC &&
+       (!std::isfinite(
+            this->parameters_.ddmcExternalSourceMinFaceOpticalDepth) ||
+        this->parameters_.ddmcExternalSourceMinFaceOpticalDepth <= 0.0))
+    {
+        StormError eo(
+            "RadiationIMC DDMC external-source face optical-depth threshold must be finite and positive");
+        eo.addEntry("ddmcExternalSourceMinFaceOpticalDepth",
+                    this->parameters_.ddmcExternalSourceMinFaceOpticalDepth);
+        throw eo;
+    }
+    if(this->parameters_.withDDMC &&
+       (!(this->parameters_.ddmcMaxInterfaceVelocityOverC > 0.0) ||
+        !std::isfinite(this->parameters_.ddmcMaxInterfaceVelocityOverC) ||
+        !(this->parameters_.ddmcInterfaceTargetWeightRatio > 0.0) ||
+        !std::isfinite(this->parameters_.ddmcInterfaceTargetWeightRatio) ||
+        this->parameters_.ddmcMaxInterfaceSplits == 0 ||
+        this->parameters_.ddmcMaxGroupCutoff == 0 ||
+        this->parameters_.ddmcMaxGroupCutoff > NumGroups))
+    {
+        throw StormError(
+            "RadiationIMC DDMC interface controls are outside their valid ranges");
     }
     if(this->parameters_.withDDMC &&
        (!std::isfinite(this->parameters_.ddmcMaxMovingInterfaceWeightCorrection) ||
@@ -1248,7 +1444,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setAdaptiveSourceCellScores(
     std::unordered_map<std::size_t, double> scores, double strength, double maxFactor,
-    double learnedReserveFrac, double learnedMinFactor, double observerBudgetMultiplier)
+    double learnedReserveFrac, double learnedMinFactor,
+    double observerBudgetMultiplier, std::size_t learnedMinPhotons,
+    std::size_t learnedMaxPhotons, double scorePower)
 {
     this->adaptiveSourceScores_ = std::move(scores);
     this->adaptiveSourceStrength_ = std::clamp(strength, 0.0, 1.0);
@@ -1256,6 +1454,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->adaptiveSourceLearnedReserveFrac_ = std::clamp(learnedReserveFrac, 0.0, 1.0);
     this->adaptiveSourceLearnedMinFactor_ = std::max(1.0, learnedMinFactor);
     this->adaptiveSourceObserverBudgetMultiplier_ = std::max(1.0, observerBudgetMultiplier);
+    this->adaptiveSourceLearnedMinPhotons_ = learnedMinPhotons;
+    this->adaptiveSourceLearnedMaxPhotons_ = learnedMaxPhotons;
+    this->adaptiveSourceScorePower_ =
+        (scorePower > 0.0 && std::isfinite(scorePower)) ? scorePower : 1.0;
     this->adaptiveSourceScoresEnabled_ = !this->adaptiveSourceScores_.empty();
 }
 
@@ -1269,6 +1471,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->adaptiveSourceLearnedReserveFrac_ = 0.0;
     this->adaptiveSourceLearnedMinFactor_ = 1.0;
     this->adaptiveSourceObserverBudgetMultiplier_ = 1.0;
+    this->adaptiveSourceLearnedMinPhotons_ = 0;
+    this->adaptiveSourceLearnedMaxPhotons_ = 0;
+    this->adaptiveSourceScorePower_ = 1.0;
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
@@ -1713,6 +1918,33 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->ddmcCellData_.assign(Ncells, DDMCCellData{});
     this->ddmcLeakReciprocityResidualMax_ = 0.0;
     this->ddmcLeakReciprocityCheckCount_ = 0;
+    this->ddmcResidentLeakCount_ = 0;
+    this->ddmcTransportLeakCount_ = 0;
+    this->ddmcRemoteResidentLeakCount_ = 0;
+    this->ddmcMPIFaceFluxReductionCount_ = 0;
+    this->ddmcLeakInvalidGeometryCount_ = 0;
+    this->ddmcUnsupportedBoundaryFaceCount_ = 0;
+    this->ddmcInterfaceIncidentCount_ = 0;
+    this->ddmcInterfaceAdmittedCount_ = 0;
+    this->ddmcInterfaceReflectedCount_ = 0;
+    this->ddmcInterfaceGuAppliedCount_ = 0;
+    this->ddmcInterfaceGuFallbackCount_ = 0;
+    this->ddmcInterfaceBypassCount_ = 0;
+    this->ddmcInterfaceSplitPacketCount_ = 0;
+    this->ddmcInterfaceFluxTallyCount_ = 0;
+    this->ddmcInterfaceMinimumMu_ = std::numeric_limits<double>::infinity();
+    this->ddmcDiagnosticEvents_.clear();
+    this->ddmcExternalSourceCandidateFaceCount_ = 0;
+    this->ddmcExternalSourceAcceleratedFaceCount_ = 0;
+    this->ddmcExternalSourceExplicitFallbackFaceCount_ = 0;
+    this->ddmcExternalSourceInteriorExcludedCellCount_ = 0;
+    this->ddmcExternalSourceThermalizationCount_ = 0;
+    this->ddmcExternalSourceStayDDMCCount_ = 0;
+    this->ddmcExternalSourceToIMCCount_ = 0;
+    this->ddmcExternalSourceThermalizedEnergy_ = 0.0;
+    this->ddmcExternalSourceToIMCEnergy_ = 0.0;
+    this->ddmcExternalSourceMinimumFaceOpticalDepth_ =
+        std::numeric_limits<double>::infinity();
 
     // Eligibility is exchanged separately from the local cell data.  This
     // is important for Voronoi/MPI grids: a ghost index is not a local cell
@@ -1804,7 +2036,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             }
             if(cutoff > 0 && totalBgDiff > 0.0)
             {
-                data.groupCutoff = cutoff;
+                data.groupCutoff = std::min(
+                    cutoff, this->parameters_.ddmcMaxGroupCutoff);
                 data.sigmaA = sumBgSigADiff / totalBgDiff;
                 data.sigmaT = sumBgSigTDiff / totalBgDiff;
                 data.sigmaEnergyAbs = data.sigmaA;
@@ -1860,15 +2093,29 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
                 std::size_t const next = (neighbors.first == i)
                     ? neighbors.second : neighbors.first;
-                if(this->grid.IsPointOutsideBox(next) &&
-                   this->boundary->getDDMCBoundaryFaceBehavior(
-                       faceIdx, i, next) !=
-                       DDMCBoundaryFaceBehavior::ReflectingRigid)
+                if(this->grid.IsPointOutsideBox(next))
                 {
-                    data.boundaryExcluded = true;
-                    data.eligible = false;
-                    data.eligibilityReason = ddmc::EligibilityReason::BoundaryExcluded;
-                    break;
+                    DDMCBoundaryFaceBehavior const behavior =
+                        this->boundary->getDDMCBoundaryFaceBehavior(
+                            faceIdx, i, next);
+                    if(behavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
+                    {
+                        ++data.rigidBoundaryFaceCount;
+                    }
+                    else
+                    {
+                        ++data.unsupportedBoundaryFaceCount;
+                        ++this->ddmcUnsupportedBoundaryFaceCount_;
+                        if(data.firstUnsupportedBoundaryFace ==
+                           std::numeric_limits<std::size_t>::max())
+                        {
+                            data.firstUnsupportedBoundaryFace = faceIdx;
+                        }
+                        data.boundaryExcluded = true;
+                        data.eligible = false;
+                        data.eligibilityReason =
+                            ddmc::EligibilityReason::BoundaryExcluded;
+                    }
                 }
             }
         }
@@ -1883,6 +2130,75 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
             this->ddmcPointVelocity_[i] = cell.velocity;
+        }
+    }
+
+    if(this->postProcessExternalSourceMode_)
+    {
+        if(this->postProcessExternalSourceLocalCellIndices_.size() !=
+           this->postProcessExternalSources_.size())
+        {
+            throw StormError(
+                "DDMC external source-to-cell map has inconsistent size");
+        }
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            DDMCCellData &data = this->ddmcCellData_[i];
+            std::size_t const cellID = radiation_imc_detail::ddmcStableCellID(
+                this->grid, i, this->cells_[i]);
+            if(this->postProcessExternalSourceInteriorCellIDs_.count(cellID))
+            {
+                data.externalSourceInteriorExcluded = true;
+                data.eligible = false;
+                this->ddmcPointEligible_[i] = 0;
+                ++this->ddmcExternalSourceInteriorExcludedCellCount_;
+            }
+        }
+        for(std::size_t sourceIndex = 0;
+            sourceIndex < this->postProcessExternalSources_.size();
+            ++sourceIndex)
+        {
+            PostProcessExternalSource const &source =
+                this->postProcessExternalSources_[sourceIndex];
+            std::size_t const i =
+                this->postProcessExternalSourceLocalCellIndices_[sourceIndex];
+            if(i >= Ncells)
+            {
+                throw StormError("DDMC external source-to-cell map is stale");
+            }
+            DDMCCellData &data = this->ddmcCellData_[i];
+            ++data.externalSourceBoundaryFaceCount;
+            ++this->ddmcExternalSourceCandidateFaceCount_;
+            PointT const normal = source.outwardNormal /
+                std::max(fastabs(source.outwardNormal),
+                         std::numeric_limits<double>::min());
+            double const faceDistance = std::abs(ScalarProd(
+                this->grid.FaceCM(source.faceIndex) -
+                    this->grid.GetMeshPoint(i), normal));
+            double const faceTau = data.sigmaDiffusion * faceDistance;
+            double const diagnosticFaceTau =
+                (faceTau >= 0.0 && std::isfinite(faceTau)) ? faceTau : 0.0;
+            data.minExternalSourceFaceOpticalDepth = std::min(
+                data.minExternalSourceFaceOpticalDepth, diagnosticFaceTau);
+            this->ddmcExternalSourceMinimumFaceOpticalDepth_ = std::min(
+                this->ddmcExternalSourceMinimumFaceOpticalDepth_,
+                diagnosticFaceTau);
+            if(!(faceTau >=
+                 this->parameters_.ddmcExternalSourceMinFaceOpticalDepth) ||
+               !std::isfinite(faceTau))
+            {
+                data.externalSourceFaceOpticalDepthExcluded = true;
+                data.eligible = false;
+                this->ddmcPointEligible_[i] = 0;
+            }
+        }
+        for(DDMCCellData const &data : this->ddmcCellData_)
+        {
+            if(data.externalSourceBoundaryFaceCount > 0 && !data.eligible)
+            {
+                this->ddmcExternalSourceExplicitFallbackFaceCount_ +=
+                    data.externalSourceBoundaryFaceCount;
+            }
         }
     }
 
@@ -1961,6 +2277,69 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 0, data.groupCutoff) : 1.0;
         for(std::size_t faceIdx : this->grid.GetCellFaces(i))
         {
+            auto const sourceFace =
+                this->postProcessExternalSourceFaceIndex_.find(faceIdx);
+            if(this->postProcessExternalSourceMode_ &&
+               sourceFace != this->postProcessExternalSourceFaceIndex_.end())
+            {
+                if(sourceFace->second >=
+                   this->postProcessExternalSources_.size())
+                {
+                    throw StormError(
+                        "DDMC external-source face map contains an invalid source index");
+                }
+                PostProcessExternalSource const &source =
+                    this->postProcessExternalSources_[sourceFace->second];
+                if(radiation_imc_detail::ddmcStableCellID(
+                       this->grid, i, this->cells_[i]) != source.cellID)
+                {
+                    throw StormError(
+                        "DDMC attempted to build an external-source leak from the interior side");
+                }
+                PointT sourceNormal = source.outwardNormal /
+                    std::max(fastabs(source.outwardNormal),
+                             std::numeric_limits<double>::min());
+                double const sourceDistanceToFace = std::abs(ScalarProd(
+                    this->grid.FaceCM(faceIdx) - cellCenter, sourceNormal));
+                double const area = this->grid.GetArea(faceIdx);
+                double const boundaryRate = ddmc::BoundaryLeakRate(
+                    area, volume, data.sigmaDiffusion,
+                    sourceDistanceToFace, units::clight);
+                if(!(boundaryRate > 0.0) || !std::isfinite(boundaryRate))
+                {
+                    throw StormError(
+                        "DDMC external-source boundary has an invalid leak rate");
+                }
+                DDMCFaceLeak faceLeak;
+                faceLeak.faceIndex = faceIdx;
+                faceLeak.nextCellIndex = i;
+                faceLeak.kind = ddmc::FaceKind::ThermalizingBoundary;
+                faceLeak.rate = boundaryRate;
+                faceLeak.boundaryRate = boundaryRate;
+                faceLeak.transportRate = boundaryRate;
+                faceLeak.sourceBandMass = sourceBandMass;
+                faceLeak.commonBandMass = sourceBandMass;
+                faceLeak.ddmcFraction = 1.0;
+                faceLeak.area = area;
+                faceLeak.sourceDistanceToFace = sourceDistanceToFace;
+                faceLeak.targetDDMCEligible = true;
+                faceLeak.targetGroupCutoff = data.groupCutoff;
+                faceLeak.outwardNormal = sourceNormal;
+                data.faceLeaks.push_back(faceLeak);
+                data.totalLeakRate += boundaryRate;
+                data.faceAreaSum += area;
+                double const nx = sourceNormal[0];
+                double const ny = sourceNormal[1];
+                double const nz = sourceNormal[2];
+                data.fluxMatrix[0] += area * nx * nx;
+                data.fluxMatrix[1] += area * nx * ny;
+                data.fluxMatrix[2] += area * nx * nz;
+                data.fluxMatrix[3] += area * ny * ny;
+                data.fluxMatrix[4] += area * ny * nz;
+                data.fluxMatrix[5] += area * nz * nz;
+                ++this->ddmcExternalSourceAcceleratedFaceCount_;
+                continue;
+            }
             const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
             std::size_t nextCellIndex = (neighbors.first == i) ? neighbors.second : neighbors.first;
             if(this->grid.IsPointOutsideBox(nextCellIndex))
@@ -1974,9 +2353,12 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 continue;
             }
             PointT normal = this->grid.Normal(faceIdx);
-            double normalMag = fastabs(normal);
-            if(normalMag <= 0.0)
+            double const normalMag = fastabs(normal);
+            double const area = this->grid.GetArea(faceIdx);
+            if(!(normalMag > 0.0) || !std::isfinite(normalMag) ||
+               !(area > 0.0) || !std::isfinite(area))
             {
+                ++this->ddmcLeakInvalidGeometryCount_;
                 continue;
             }
             normal = normal / normalMag;
@@ -1996,8 +2378,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                     this->grid.GetMeshPoint(nextCellIndex) - cellCenter,
                     normal));
             }
-            if(sourceDistance <= 0.0)
+            if(!(sourceDistance > 0.0) || !std::isfinite(sourceDistance))
             {
+                ++this->ddmcLeakInvalidGeometryCount_;
                 continue;
             }
 
@@ -2017,14 +2400,14 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             if(targetEligible && targetDistance > 0.0)
             {
                 conductance = ddmc::TwoSidedConductance(
-                    this->grid.GetArea(faceIdx), sourceDistance,
+                    area, sourceDistance,
                     data.diffusionCoefficient, targetDistance,
                     this->ddmcPointDiffusionCoefficient_[nextCellIndex]);
                 internalRate = conductance / volume;
             }
 
             double boundaryRate = ddmc::BoundaryLeakRate(
-                this->grid.GetArea(faceIdx), volume, data.sigmaDiffusion,
+                area, volume, data.sigmaDiffusion,
                 sourceDistance, units::clight);
             std::size_t const targetCutoff =
                 nextCellIndex < this->ddmcPointGroupCutoff_.size()
@@ -2067,7 +2450,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 faceLeak.ddmcRate = ddmcRate;
                 faceLeak.transportRate = transportRate;
                 faceLeak.ddmcFraction = ddmcFraction;
-                faceLeak.area = this->grid.GetArea(faceIdx);
+                faceLeak.area = area;
                 faceLeak.sourceDistanceToFace = sourceDistance;
                 faceLeak.targetDistanceToFace = targetDistance;
                 faceLeak.conductance = conductance;
@@ -2234,6 +2617,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         {
             ddmc::ReducePointContributions(
                 this->grid, this->ddmcFluxRhsIntegrated_);
+            ++this->ddmcMPIFaceFluxReductionCount_;
         }
 #endif
 
@@ -2505,7 +2889,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double f = this->factorFleck_[cellIndex];
     double upscatterRate = 0.0;
     if(this->parameters_.ddmcUseMultigroupPGRW && data.gamma < 1.0 &&
-       data.sigmaEnergyAbs > 0.0 && f > 0.0)
+       data.sigmaEnergyAbs > 0.0 &&
+       (f > 0.0 || this->postProcessExternalSourceMode_))
     {
         upscatterRate = units::clight * (1.0 - f) * data.sigmaEnergyAbs *
             (1.0 - data.gamma);
@@ -2801,6 +3186,107 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
         nOut = nOut / nOutMag;
 
+        if(chosen->kind == ddmc::FaceKind::ThermalizingBoundary)
+        {
+            auto const sourceFace =
+                this->postProcessExternalSourceFaceIndex_.find(
+                    chosen->faceIndex);
+            if(sourceFace ==
+                   this->postProcessExternalSourceFaceIndex_.end() ||
+               sourceFace->second >=
+                   this->postProcessExternalSources_.size())
+            {
+                throw StormError(
+                    "DDMC selected an external-source face without an installed source");
+            }
+            PostProcessExternalSource const &source =
+                this->postProcessExternalSources_[sourceFace->second];
+            if(radiation_imc_detail::ddmcStableCellID(
+                   this->grid, cellIndex, this->cells_[cellIndex]) !=
+               source.cellID)
+            {
+                throw StormError(
+                    "DDMC selected an external-source face from the wrong transport cell");
+            }
+
+            nOut = source.outwardNormal /
+                std::max(fastabs(source.outwardNormal),
+                         std::numeric_limits<double>::min());
+            double const eventEnergy = std::abs(particle.weight);
+            ++this->ddmcExternalSourceThermalizationCount_;
+            this->ddmcExternalSourceThermalizedEnergy_ += eventEnergy;
+            if(this->parameters_.withMultigroupOpacity)
+            {
+                particle.frequency =
+                    this->samplePostProcessExternalSourcePlanckFrequency(
+                        this->cells_[cellIndex]);
+                this->clampFrequencyToBounds(particle.frequency);
+            }
+
+            bool const leaveDDMCBand =
+                this->parameters_.ddmcUseMultigroupPGRW &&
+                data.groupCutoff < NumGroups &&
+                particle.frequency >=
+                    this->energyBoundaries_[data.groupCutoff];
+            if(leaveDDMCBand)
+            {
+                particle.velocity = units::clight *
+                    this->samplePostProcessExternalSourceDirection(nOut);
+#ifdef MONTECARLO_POLARIZATION
+                if(this->polarizationEnabled())
+                {
+                    particle.stokesQ = 0.0;
+                    particle.stokesU = 0.0;
+                    particle.polarizationInitialized = false;
+                }
+#endif
+                if constexpr(
+                    radiation_imc_detail::has_member_velocity<CellT>::value)
+                {
+                    if(useComovingFrame)
+                    {
+                        radiation_imc_detail::lorentzTransformToLab<PointT>(
+                            particle, this->cells_[cellIndex]);
+                        this->clampFrequencyToBounds(particle.frequency);
+                    }
+                }
+                static constexpr double nudge = 1.0e-8;
+                particle.location = (1.0 - nudge) * source.location +
+                    nudge * this->grid.GetMeshPoint(cellIndex);
+                particle.radiationState.clearDDMC();
+                particle.initialWeight = std::abs(particle.weight);
+                functionality.change = ParticleStatus::NO_CELL_MOVE;
+                ++this->ddmcExternalSourceToIMCCount_;
+                this->ddmcExternalSourceToIMCEnergy_ += eventEnergy;
+                ++this->ddmcLeakCount_;
+                ++this->ddmcTransportLeakCount_;
+                return true;
+            }
+
+            particle.location = this->grid.GetMeshPoint(cellIndex);
+            particle.velocity = this->opacity_->getRandomVelocity(
+                this->cells_[cellIndex], this->rng_, this->dist_);
+#ifdef MONTECARLO_POLARIZATION
+            if(this->polarizationEnabled())
+            {
+                particle.stokesQ = 0.0;
+                particle.stokesU = 0.0;
+                particle.polarizationInitialized = false;
+            }
+#endif
+            particle.radiationState.set(
+                RadiationTransportState<PointT>::DDMCMode);
+            particle.radiationState.set(
+                RadiationTransportState<PointT>::DDMCCellResident);
+            particle.radiationState.set(
+                RadiationTransportState<PointT>::DDMCComovingFrame);
+            functionality.change = ParticleStatus::NO_CELL_MOVE;
+            ++this->ddmcExternalSourceStayDDMCCount_;
+            ++this->ddmcLeakCount_;
+            ++this->ddmcResidentLeakCount_;
+            return true;
+        }
+
         constexpr double DDMC_PI = 3.14159265358979323846;
         bool const useDDMCChannel =
             chosen->ddmcRate > 0.0 &&
@@ -2899,6 +3385,20 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             }
         }
 
+        std::size_t const diagnosticGroup = targetDDMC ||
+            !this->parameters_.withMultigroupOpacity
+            ? DDMC_DIAGNOSTIC_GREY_GROUP
+            : this->opacity_->findGroup(
+                particle.frequency, this->energyBoundaries_);
+        this->recordDDMCDiagnosticEvent(
+            targetDDMC ? DDMCDiagnosticEventKind::DDMCToDDMC
+                       : DDMCDiagnosticEventKind::DDMCToIMC,
+            cellIndex, chosen->nextCellIndex, chosen->faceIndex,
+            diagnosticGroup, fluxWeightComoving, data.groupCutoff,
+            chosen->targetGroupCutoff,
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN());
+
         PointT const fluxContribution = fluxWeightComoving * dir;
         this->addDDMCFluxContribution(cellIndex, fluxContribution);
         if(targetDDMC)
@@ -2932,6 +3432,18 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 
         functionality.change = ParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = chosen->nextCellIndex;
+        if(targetDDMC)
+        {
+            ++this->ddmcResidentLeakCount_;
+            if(chosen->nextCellIndex >= this->grid.GetPointNo())
+            {
+                ++this->ddmcRemoteResidentLeakCount_;
+            }
+        }
+        else
+        {
+            ++this->ddmcTransportLeakCount_;
+        }
         ++this->ddmcLeakCount_;
     }
     else
@@ -2984,10 +3496,93 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     return true;
 }
 
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
+                  PositionSamplerT>::recordDDMCDiagnosticEvent(
+    DDMCDiagnosticEventKind kind,
+    std::size_t sourceCellIndex,
+    std::size_t targetCellIndex,
+    std::size_t faceIndex,
+    std::size_t group,
+    double energy,
+    std::size_t sourceGroupCutoff,
+    std::size_t targetGroupCutoff,
+    double mu,
+    double admissionProbability)
+{
+    if(!this->parameters_.withDDMC ||
+       !this->parameters_.ddmcInterfaceDiagnostics)
+    {
+        return;
+    }
+
+    auto pointID = [this](std::size_t index)
+    {
+        if(index < this->ddmcPointCellID_.size() &&
+           this->ddmcPointCellID_[index] !=
+               std::numeric_limits<std::size_t>::max())
+        {
+            return this->ddmcPointCellID_[index];
+        }
+        if(index < this->cells_.size())
+        {
+            return radiation_imc_detail::ddmcStableCellID(
+                this->grid, index, this->cells_[index]);
+        }
+        return std::numeric_limits<std::size_t>::max();
+    };
+    auto pointX = [this](std::size_t index)
+    {
+        if(index < this->grid.getMeshPoints().size())
+            return static_cast<double>(this->grid.GetMeshPoint(index)[0]);
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    std::size_t const sourceCellID = pointID(sourceCellIndex);
+    std::size_t const targetCellID = pointID(targetCellIndex);
+    DDMCDiagnosticEventKey const key{
+        kind, faceIndex, sourceCellID, targetCellID, group};
+    auto inserted = this->ddmcDiagnosticEvents_.emplace(
+        key, DDMCDiagnosticEventAccumulator{});
+    DDMCDiagnosticEventAccumulator &entry = inserted.first->second;
+    if(inserted.second)
+    {
+        entry.faceIndex = faceIndex;
+        entry.sourceCellID = sourceCellID;
+        entry.targetCellID = targetCellID;
+        entry.group = group;
+        entry.sourceGroupCutoff = sourceGroupCutoff;
+        entry.targetGroupCutoff = targetGroupCutoff;
+        entry.faceX = this->grid.FaceCM(faceIndex)[0];
+        entry.sourceGeneratorX = pointX(sourceCellIndex);
+        entry.targetGeneratorX = pointX(targetCellIndex);
+    }
+
+    ++entry.count;
+    if(std::isfinite(energy))
+    {
+        entry.signedEnergy += energy;
+        entry.absoluteEnergy += std::abs(energy);
+    }
+    if(std::isfinite(mu))
+    {
+        entry.muSum += mu;
+        ++entry.muCount;
+    }
+    if(std::isfinite(admissionProbability))
+    {
+        entry.admissionProbabilitySum += admissionProbability;
+        ++entry.admissionProbabilityCount;
+    }
+}
+
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tryIMCToDDMCInterface(
     MCParticle &particle,
     Functionality &functionality,
+    std::vector<MCParticle> &particlesToAdd,
     std::size_t sourceCellIndex,
     std::size_t targetCellIndex,
     std::size_t faceIndex)
@@ -3074,6 +3669,23 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
     }
 
+    std::size_t const sourceGroupCutoff = sourceCellIndex <
+        this->ddmcPointGroupCutoff_.size()
+        ? this->ddmcPointGroupCutoff_[sourceCellIndex] : 0;
+    std::size_t const targetGroupCutoff = targetCellIndex <
+        this->ddmcPointGroupCutoff_.size()
+        ? this->ddmcPointGroupCutoff_[targetCellIndex] : 0;
+    std::size_t const diagnosticGroup = this->parameters_.withMultigroupOpacity
+        ? this->opacity_->findGroup(
+            targetComoving.frequency, this->energyBoundaries_)
+        : DDMC_DIAGNOSTIC_GREY_GROUP;
+    this->recordDDMCDiagnosticEvent(
+        DDMCDiagnosticEventKind::IMCCandidate, sourceCellIndex,
+        targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
+        sourceGroupCutoff, targetGroupCutoff,
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN());
+
     if(this->parameters_.ddmcUseMultigroupPGRW &&
        this->parameters_.withMultigroupOpacity)
     {
@@ -3083,6 +3695,13 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         if(cutoff == 0 || cutoff > NumGroups ||
            frequency >= this->energyBoundaries_[cutoff])
         {
+            this->recordDDMCDiagnosticEvent(
+                DDMCDiagnosticEventKind::IMCFrequencyReject,
+                sourceCellIndex, targetCellIndex, faceIndex,
+                diagnosticGroup, faceComoving.weight, sourceGroupCutoff,
+                targetGroupCutoff,
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN());
             return false;
         }
     }
@@ -3093,23 +3712,36 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double const mu = ScalarProd(faceComoving.velocity / speed, normal);
     if(!(mu > 0.0) || !std::isfinite(mu))
         return false;
+    ++this->ddmcInterfaceIncidentCount_;
+    this->ddmcInterfaceMinimumMu_ = std::min(
+        this->ddmcInterfaceMinimumMu_, mu);
 
     double movingFactor = 1.0;
     auto bypassMovingInterface = [&]()
     {
+        this->recordDDMCDiagnosticEvent(
+            DDMCDiagnosticEventKind::IMCBypass, sourceCellIndex,
+            targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
+            sourceGroupCutoff, targetGroupCutoff, mu,
+            std::numeric_limits<double>::quiet_NaN());
         ++this->ddmcMovingInterfaceBypassCount_;
+        ++this->ddmcInterfaceBypassCount_;
         functionality.change = ParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = targetCellIndex;
         return true;
     };
     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
     {
-        if(useVelocityFrames)
+        if(useVelocityFrames &&
+           this->parameters_.ddmcUseMovingInterfaceCorrection)
         {
             double const betaNormal = -ScalarProd(faceVelocity, normal) *
                 units::inv_clight;
-            if(!std::isfinite(betaNormal) || std::abs(betaNormal) > 0.5)
+            if(!std::isfinite(betaNormal) ||
+               std::abs(betaNormal) >
+                   this->parameters_.ddmcMaxInterfaceVelocityOverC)
             {
+                ++this->ddmcInterfaceGuFallbackCount_;
                 particle.radiationState.bypassCellID = targetID;
                 return bypassMovingInterface();
             }
@@ -3123,10 +3755,30 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                !std::isfinite(movingFactor) ||
                movingFactor > this->parameters_.ddmcMaxMovingInterfaceWeightCorrection)
             {
+                ++this->ddmcInterfaceGuFallbackCount_;
                 particle.radiationState.bypassCellID = targetID;
                 return bypassMovingInterface();
             }
+            ++this->ddmcInterfaceGuAppliedCount_;
         }
+    }
+
+    double const targetWeight =
+        this->parameters_.ddmcInterfaceTargetWeightRatio *
+        std::max(std::abs(particle.weight),
+                 std::numeric_limits<double>::min());
+    std::size_t requiredSplitCount = 1;
+    if(targetWeight > 0.0)
+    {
+        requiredSplitCount = static_cast<std::size_t>(std::ceil(
+            std::abs(faceComoving.weight * movingFactor) / targetWeight));
+        requiredSplitCount = std::max<std::size_t>(1, requiredSplitCount);
+    }
+    if(requiredSplitCount > std::max<std::size_t>(
+           1, this->parameters_.ddmcMaxInterfaceSplits))
+    {
+        particle.radiationState.bypassCellID = targetID;
+        return bypassMovingInterface();
     }
 
     double const targetOpacity =
@@ -3135,9 +3787,14 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         targetCenter - this->grid.FaceCM(faceIndex), normal));
     double const admission = ddmc::StaticAdmissionProbability(
         mu, targetOpacity, targetDistance);
+    this->recordDDMCDiagnosticEvent(
+        DDMCDiagnosticEventKind::IMCIncident, sourceCellIndex,
+        targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
+        sourceGroupCutoff, targetGroupCutoff, mu, admission);
 
     if(this->randomUnitOpen() > admission)
     {
+        ++this->ddmcInterfaceReflectedCount_;
         // Diffuse-albedo rejection stays in the source IMC cell.  The
         // incoming direction is not reflected specularly at a transport-
         // diffusion interface.
@@ -3182,10 +3839,16 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         particle.location = (1.0 - 1.0e-10) * this->grid.FaceCM(faceIndex) +
             1.0e-10 * sourceCenter;
         functionality.change = ParticleStatus::NO_CELL_MOVE;
+        this->recordDDMCDiagnosticEvent(
+            DDMCDiagnosticEventKind::IMCReflected, sourceCellIndex,
+            targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
+            sourceGroupCutoff, targetGroupCutoff, mu, admission);
         return true;
     }
 
     faceComoving.weight *= movingFactor;
+    targetComoving = faceComoving;
+    ++this->ddmcInterfaceAdmittedCount_;
     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
     {
         if(useVelocityFrames)
@@ -3208,6 +3871,13 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 #endif
         }
     }
+    double const admittedTargetWeight = targetComoving.weight;
+    std::size_t splitCount = requiredSplitCount;
+    // Additional packets are inserted directly into a local target.  A
+    // remote target keeps one unbiased corrected-weight packet.
+    if(targetCellIndex >= this->grid.GetPointNo())
+        splitCount = 1;
+    targetComoving.weight /= static_cast<double>(splitCount);
     particle.weight = targetComoving.weight;
     particle.frequency = targetComoving.frequency;
     particle.initialWeight = std::abs(particle.weight);
@@ -3229,11 +3899,12 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double const admittedSpeed = fastabs(targetComoving.velocity);
     if(admittedSpeed > 0.0 && std::isfinite(admittedSpeed))
     {
-        PointT const contribution = particle.weight *
+        PointT const contribution = admittedTargetWeight *
             (targetComoving.velocity / admittedSpeed);
         if(targetCellIndex < this->grid.GetPointNo())
         {
             this->addDDMCFluxContribution(targetCellIndex, contribution);
+            ++this->ddmcInterfaceFluxTallyCount_;
         }
         else
         {
@@ -3254,6 +3925,20 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 #endif
     functionality.change = ParticleStatus::CELL_MOVE;
     functionality.nextCellIndex = targetCellIndex;
+    for(std::size_t copy = 1; copy < splitCount; ++copy)
+    {
+        MCParticle extra = particle;
+        extra.id = std::numeric_limits<std::size_t>::max();
+        extra.cellID = targetID;
+        extra.cellIndex = targetCellIndex;
+        extra.location = targetCenter;
+        particlesToAdd.push_back(std::move(extra));
+        ++this->ddmcInterfaceSplitPacketCount_;
+    }
+    this->recordDDMCDiagnosticEvent(
+        DDMCDiagnosticEventKind::IMCAdmitted, sourceCellIndex,
+        targetCellIndex, faceIndex, diagnosticGroup, admittedTargetWeight,
+        sourceGroupCutoff, targetGroupCutoff, mu, admission);
     return true;
 }
 
@@ -3518,7 +4203,37 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     ComptonOccupationMode occupationMode,
     ComptonCellData &data)
 {
-    (void) cellIndex;
+    bool const usePlanckLTE =
+        occupationMode == ComptonOccupationMode::PlanckFunction;
+    double const lteTemperature = usePlanckLTE
+        ? this->computeLteTemperature(cell, cellIndex) : cell.temperature;
+    GroupArray ltePlanckFractions{};
+    if(usePlanckLTE)
+    {
+        double const kT = units::k_boltz * lteTemperature;
+        double total = 0.0;
+        if(kT > 0.0)
+        {
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                double const mass = planck_integral::planck_integral(
+                    this->energyBoundaries_[group] / kT,
+                    this->energyBoundaries_[group + 1] / kT);
+                ltePlanckFractions[group] =
+                    (mass > 0.0 && std::isfinite(mass)) ? mass : 0.0;
+                total += ltePlanckFractions[group];
+            }
+        }
+        if(total > 0.0)
+        {
+            for(double &fraction : ltePlanckFractions)
+            {
+                fraction /= total;
+            }
+        }
+    }
+    double const lteRadiationEnergyDensity = usePlanckLTE
+        ? units::arad * boost::math::pow<4>(lteTemperature) : 0.0;
     double const pi = 3.141592653589793238462643383279502884;
     double const occupationFactor = boost::math::pow<3>(units::clight) /
         (8.0 * pi * units::planck_constant);
@@ -3534,10 +4249,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             occupation = occupationFactor * data.oldRadiationEnergy[group] /
                 (boost::math::pow<3>(nu) * dnu);
         }
-        else if(occupationMode == ComptonOccupationMode::PlanckFunction)
+        else if(usePlanckLTE)
         {
             occupation = occupationFactor *
-                data.planckFraction[group] * data.Um /
+                ltePlanckFractions[group] * lteRadiationEnergyDensity /
                 (boost::math::pow<3>(nu) * dnu);
         }
         data.occupation[group] = std::clamp(
@@ -3548,7 +4263,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double const maximumTemperature =
         this->comptonMatrixGen_->GetMaximumTemperature() * 0.9999;
     double const temperature = std::clamp(
-        cell.temperature, minimumTemperature, maximumTemperature);
+        lteTemperature, minimumTemperature, maximumTemperature);
     double lastGroupUpScatter = 0.0;
     double lastGroupDownScatter = 0.0;
     this->comptonMatrixGen_->GetTauMatrix(
@@ -3594,7 +4309,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
     }
     double const derivativeScale = 1.0 /
-        (4.0 * units::arad * boost::math::pow<3>(cell.temperature));
+        (4.0 * units::arad * boost::math::pow<3>(lteTemperature));
     for(std::size_t source = 0; source < NumGroups; ++source)
     {
         for(std::size_t target = 0; target < NumGroups; ++target)
@@ -3602,6 +4317,74 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             data.dSdUm[source][target] *= derivativeScale;
         }
     }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                    TraitsT, PositionSamplerT>::computeLteTemperature(
+    const CellT &cell, std::size_t cellIndex) const
+{
+    double const rho = this->density(cellIndex);
+    if(!(rho > 0.0) || !std::isfinite(rho))
+    {
+        return cell.temperature;
+    }
+    double radiationSpecificEnergy = 0.0;
+    if constexpr(
+        radiation_imc_detail::has_member_radiation_energy<CellT>::value)
+    {
+        radiationSpecificEnergy = std::max(0.0, cell.Erad);
+    }
+    double const totalSpecificEnergy =
+        this->specificInternalEnergy(cellIndex) + radiationSpecificEnergy;
+    if(!(totalSpecificEnergy > 0.0) || !std::isfinite(totalSpecificEnergy))
+    {
+        return cell.temperature;
+    }
+
+    double const maximumTemperature = this->comptonMatrixGen_
+        ? this->comptonMatrixGen_->GetMaximumTemperature() * 0.9999
+        : std::max(cell.temperature, 1.0);
+    double const radiationTemperature = std::pow(
+        std::max(radiationSpecificEnergy, 0.0) * rho / units::arad,
+        0.25);
+    double temperature = std::clamp(
+        std::max(cell.temperature, radiationTemperature),
+        1.0e-30, maximumTemperature);
+    auto const &tracers = this->traits_.tracers(cell);
+    auto const &tracerNames = this->traits_.tracerNames(cell);
+    for(int iteration = 0; iteration < 50; ++iteration)
+    {
+        double const matterEnergy = this->eos_->dT2e(
+            rho, temperature, tracers, tracerNames);
+        double const radiationEnergy = units::arad *
+            boost::math::pow<4>(temperature) / rho;
+        double const residual =
+            matterEnergy + radiationEnergy - totalSpecificEnergy;
+        double const scale = std::max(
+            std::abs(totalSpecificEnergy),
+            std::numeric_limits<double>::min());
+        if(std::abs(residual) <= 1.0e-10 * scale)
+        {
+            break;
+        }
+        double const cv = this->eos_->dT2cv(
+            rho, temperature, tracers, tracerNames);
+        double const derivative = cv + 4.0 * units::arad *
+            boost::math::pow<3>(temperature) / rho;
+        if(!(derivative > 0.0) || !std::isfinite(derivative))
+        {
+            break;
+        }
+        double const candidate = temperature - residual / derivative;
+        if(!std::isfinite(candidate))
+        {
+            break;
+        }
+        temperature = std::clamp(
+            candidate, 1.0e-30, maximumTemperature);
+    }
+    return temperature;
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
@@ -5748,7 +6531,6 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     MCParticle &particle,
     std::vector<MCParticle> &particlesToAdd)
 {
-    (void) particlesToAdd;
     Functionality functionality;
 
     std::size_t cellIndex = particle.cellIndex;
@@ -5948,9 +6730,14 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 
     if(min.first == INTERSECTION)
     {
+        if(this->handlePostProcessExternalSourceBoundary(
+               particle, cellIndex, faceIntersect, functionality))
+        {
+            return functionality;
+        }
         if(!particle.radiationState.isDDMC() &&
            this->tryIMCToDDMCInterface(
-               particle, functionality, cellIndex, nextCellIndex,
+               particle, functionality, particlesToAdd, cellIndex, nextCellIndex,
                faceIntersect))
         {
             return functionality;
@@ -6376,11 +7163,57 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 {
     if(this->parameters_.withCompton)
     {
+        if(this->postProcessExternalSourceMode_)
+        {
+            throw StormError(
+                "External fixed-flux post-process sources do not support Compton yet");
+        }
         return this->generateComptonParticles(fullDt);
     }
     std::vector<MCParticle> newParticles;
     const std::size_t Ncells = this->grid.GetPointNo();
     this->lastGroupSamplingDiagnostics_ = GroupSamplingDiagnostics{};
+
+    std::vector<std::size_t> externalSourceOffsets(Ncells + 1, 0);
+    std::vector<std::size_t> externalSourceIndices;
+    if(this->postProcessExternalSourceMode_)
+    {
+        if(this->postProcessExternalSourceLocalCellIndices_.size() !=
+           this->postProcessExternalSources_.size())
+        {
+            throw StormError("External source-to-cell map has inconsistent size");
+        }
+        for(std::size_t sourceIndex = 0;
+            sourceIndex < this->postProcessExternalSources_.size();
+            ++sourceIndex)
+        {
+            auto const &source = this->postProcessExternalSources_[sourceIndex];
+            std::size_t const cellIndex =
+                this->postProcessExternalSourceLocalCellIndices_[sourceIndex];
+            if(source.luminosity > 0.0 && cellIndex < Ncells)
+            {
+                ++externalSourceOffsets[cellIndex + 1];
+            }
+        }
+        for(std::size_t i = 1; i < externalSourceOffsets.size(); ++i)
+        {
+            externalSourceOffsets[i] += externalSourceOffsets[i - 1];
+        }
+        externalSourceIndices.resize(externalSourceOffsets.back());
+        std::vector<std::size_t> cursor = externalSourceOffsets;
+        for(std::size_t sourceIndex = 0;
+            sourceIndex < this->postProcessExternalSources_.size();
+            ++sourceIndex)
+        {
+            auto const &source = this->postProcessExternalSources_[sourceIndex];
+            std::size_t const cellIndex =
+                this->postProcessExternalSourceLocalCellIndices_[sourceIndex];
+            if(source.luminosity > 0.0 && cellIndex < Ncells)
+            {
+                externalSourceIndices[cursor[cellIndex]++] = sourceIndex;
+            }
+        }
+    }
 
     std::vector<double> energyToCreateVec(Ncells);
     std::vector<double> gammaVec(Ncells);
@@ -6398,12 +7231,32 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             }
         }
         gammaVec[i] = gamma;
-        energyToCreateVec[i] = this->factorFleck_[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities_[i] * fullDt * units::clight;
+        if(this->postProcessExternalSourceMode_)
+        {
+            energyToCreateVec[i] = 0.0;
+            for(std::size_t offset = externalSourceOffsets[i];
+                offset < externalSourceOffsets[i + 1]; ++offset)
+            {
+                energyToCreateVec[i] +=
+                    this->postProcessExternalSources_[
+                        externalSourceIndices[offset]].luminosity * fullDt;
+            }
+        }
+        else
+        {
+            energyToCreateVec[i] = this->factorFleck_[i] *
+                this->grid.GetVolume(i) * units::arad *
+                boost::math::pow<4>(cell.temperature) *
+                this->planckOpacities_[i] * fullDt * units::clight;
+        }
         localTotalEnergy += energyToCreateVec[i];
     }
 
     double globalTotalEnergy = localTotalEnergy;
     std::size_t globalTotalCells = Ncells;
+    std::size_t globalSourceCells = static_cast<std::size_t>(std::count_if(
+        energyToCreateVec.begin(), energyToCreateVec.end(),
+        [](double energy) { return energy > 0.0; }));
 #ifdef STORM_WITH_MPI
     {
         int mpiInit = 0;
@@ -6412,11 +7265,24 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         {
             MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
             MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, &globalSourceCells, 1,
+                          MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
         }
     }
 #endif
 
-    std::size_t totalParticles = globalTotalCells * this->parameters_.newPhotonsPerCell * 10;
+    std::size_t const budgetCells = this->postProcessExternalSourceMode_
+        ? globalSourceCells : globalTotalCells;
+    if(this->parameters_.newPhotonsPerCell >
+           std::numeric_limits<std::size_t>::max() / 10 ||
+       (this->parameters_.newPhotonsPerCell > 0 &&
+        budgetCells > std::numeric_limits<std::size_t>::max() /
+            (10 * this->parameters_.newPhotonsPerCell)))
+    {
+        throw StormError("External source particle budget overflow");
+    }
+    std::size_t totalParticles =
+        budgetCells * this->parameters_.newPhotonsPerCell * 10;
     std::vector<std::size_t> nPhotonsVec(Ncells);
     for(std::size_t i = 0; i < Ncells; ++i)
     {
@@ -6436,7 +7302,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         {
             if(std::isfinite(kv.second) && kv.second > 0.0)
             {
-                scoreSum += kv.second;
+                scoreSum += std::pow(
+                    kv.second, this->adaptiveSourceScorePower_);
             }
         }
 
@@ -6459,22 +7326,82 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                 {
                     learnedPhotons += static_cast<std::size_t>(std::ceil(
                         this->adaptiveSourceStrength_ * static_cast<double>(this->sourceEmissionLearnedExtraBudget_)
-                        * it->second / scoreSum));
+                        * std::pow(it->second,
+                                   this->adaptiveSourceScorePower_) /
+                          scoreSum));
                 }
                 std::size_t const minLearned = static_cast<std::size_t>(std::ceil(
                     static_cast<double>(std::max<std::size_t>(1, this->parameters_.newPhotonsPerCell))
                     * this->adaptiveSourceLearnedMinFactor_));
                 learnedPhotons = std::max(learnedPhotons, minLearned);
+                if(this->adaptiveSourceLearnedMinPhotons_ > 0)
+                {
+                    learnedPhotons = std::max(
+                        learnedPhotons,
+                        this->adaptiveSourceLearnedMinPhotons_);
+                }
+                if(this->adaptiveSourceLearnedMaxPhotons_ > 0)
+                {
+                    learnedPhotons = std::min(
+                        learnedPhotons,
+                        this->adaptiveSourceLearnedMaxPhotons_);
+                }
                 photons = std::max(photons, learnedPhotons);
             }
             nPhotonsVec[i] = std::min(photons, std::max<std::size_t>(1, maxPhotons));
         }
     }
 
+    if(this->postProcessExternalSourceMode_)
+    {
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            if(energyToCreateVec[i] > 0.0 && nPhotonsVec[i] == 0)
+            {
+                nPhotonsVec[i] = 1;
+            }
+        }
+    }
     this->lastSourcePhotonsPerCell_ = nPhotonsVec;
     this->lastSourceAllocationSummary_ = SourceAllocationSummary{};
     this->lastSourceAllocationSummary_.adaptiveEnabled =
         this->sourceEmissionControlEnabled_ && this->sourceEmissionUseLearnedScores_ && this->adaptiveSourceScoresEnabled_;
+    std::vector<double> adaptiveScores;
+    adaptiveScores.reserve(this->adaptiveSourceScores_.size());
+    for(auto const &entry : this->adaptiveSourceScores_)
+    {
+        if(entry.second > 0.0 && std::isfinite(entry.second))
+        {
+            adaptiveScores.push_back(entry.second);
+        }
+    }
+    if(!adaptiveScores.empty())
+    {
+        std::sort(adaptiveScores.begin(), adaptiveScores.end());
+        auto percentile = [&adaptiveScores](double quantile)
+        {
+            double const position = quantile *
+                static_cast<double>(adaptiveScores.size() - 1);
+            std::size_t const lower = static_cast<std::size_t>(position);
+            std::size_t const upper = std::min(
+                lower + 1, adaptiveScores.size() - 1);
+            double const fraction = position - static_cast<double>(lower);
+            return (1.0 - fraction) * adaptiveScores[lower] +
+                fraction * adaptiveScores[upper];
+        };
+        this->lastSourceAllocationSummary_.adaptiveScoreP05 =
+            percentile(0.05);
+        this->lastSourceAllocationSummary_.adaptiveScoreP50 =
+            percentile(0.50);
+        this->lastSourceAllocationSummary_.adaptiveScoreP95 =
+            percentile(0.95);
+        this->lastSourceAllocationSummary_.adaptiveScoreMax =
+            adaptiveScores.back();
+        this->lastSourceAllocationSummary_.adaptiveScoreSpanLow =
+            adaptiveScores.front();
+        this->lastSourceAllocationSummary_.adaptiveScoreSpanHigh =
+            adaptiveScores.back();
+    }
     this->lastSourceAllocationSummary_.minPhotons = std::numeric_limits<std::size_t>::max();
     this->lastSourceAllocationSummary_.learnedMinPhotons = std::numeric_limits<std::size_t>::max();
     for(std::size_t i = 0; i < Ncells; ++i)
@@ -6506,6 +7433,14 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                 std::min(this->lastSourceAllocationSummary_.learnedMinPhotons, photons);
             this->lastSourceAllocationSummary_.learnedMaxPhotons =
                 std::max(this->lastSourceAllocationSummary_.learnedMaxPhotons, photons);
+            if(photons >= 1000)
+            {
+                ++this->lastSourceAllocationSummary_.learnedPhotonsAtLeast1000;
+            }
+            if(photons >= 2000)
+            {
+                ++this->lastSourceAllocationSummary_.learnedPhotonsAtLeast2000;
+            }
             if(photons > this->parameters_.newPhotonsPerCell)
             {
                 ++this->lastSourceAllocationSummary_.learnedBoostedCells;
@@ -6567,7 +7502,10 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             if(it != this->adaptiveSourceCellGroupScores_.end())
             {
                 groupScoreAvailable = true;
-                physicalPdf = this->opacity_->GetThermalGroupPdf(cell, this->energyBoundaries_);
+                physicalPdf = this->postProcessExternalSourceMode_
+                    ? this->buildPostProcessExternalSourcePlanckPdf(cell)
+                    : this->opacity_->GetThermalGroupPdf(
+                        cell, this->energyBoundaries_);
                 double totalPhys = 0.0;
                 std::size_t nPhysGroups = 0;
                 for(std::size_t g = 0; g < NumGroups; ++g)
@@ -6747,7 +7685,42 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 
         for(std::size_t j = 0; j < nPhotonsCell; ++j)
         {
-            MCParticle particle = this->generateSingleParticle(i, cell);
+            MCParticle particle;
+            if(this->postProcessExternalSourceMode_)
+            {
+                std::size_t const begin = externalSourceOffsets[i];
+                std::size_t const end = externalSourceOffsets[i + 1];
+                if(begin == end)
+                {
+                    throw StormError(
+                        "External source cell has energy but no source faces");
+                }
+                double const totalLuminosity = energyToCreate / fullDt;
+                double const target = this->randomUnitOpen() * totalLuminosity;
+                double cumulative = 0.0;
+                std::size_t selectedSource = externalSourceIndices[end - 1];
+                for(std::size_t offset = begin; offset < end; ++offset)
+                {
+                    std::size_t const sourceIndex =
+                        externalSourceIndices[offset];
+                    cumulative += this->postProcessExternalSources_[
+                        sourceIndex].luminosity;
+                    if(target <= cumulative)
+                    {
+                        selectedSource = sourceIndex;
+                        break;
+                    }
+                }
+                particle = this->generatePostProcessExternalSourceParticle(
+                    i, cell,
+                    this->postProcessExternalSources_[selectedSource]);
+            }
+            else
+            {
+                particle = this->generateSingleParticle(i, cell);
+            }
+            particle.cellID = radiation_imc_detail::cellID(cell);
+            particle.sourceCellID = particle.cellID;
             particle.timeLeft = fullDt * this->randomUnitOpen();
 
             double weightCorrection = 1.0;
@@ -6799,7 +7772,12 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                         ++this->lastGroupSamplingDiagnostics_.totalSampled;
                         this->lastGroupSamplingDiagnostics_.sampledEnergy += energyPerPhoton;
                         double rndFreq = this->randomUnitOpen();
-                        freqCo = this->opacity_->SampleThermalEnergyInGroup(cell, selectedGroup, rndFreq, this->energyBoundaries_);
+                        freqCo = this->postProcessExternalSourceMode_
+                            ? this->samplePostProcessExternalSourcePlanckFrequencyInGroup(
+                                cell, selectedGroup)
+                            : this->opacity_->SampleThermalEnergyInGroup(
+                                cell, selectedGroup, rndFreq,
+                                this->energyBoundaries_);
                         usedGroupFrequencySampling = true;
                     }
                     else
@@ -6835,7 +7813,10 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
                 if(this->parameters_.withMultigroupOpacity)
                 {
                     double rnd = this->randomUnitOpen();
-                    double freqCo = this->opacity_->GetThermalEnergy(cell, rnd, this->energyBoundaries_);
+                    double freqCo = this->postProcessExternalSourceMode_
+                        ? this->samplePostProcessExternalSourcePlanckFrequency(cell)
+                        : this->opacity_->GetThermalEnergy(
+                            cell, rnd, this->energyBoundaries_);
                     particle.frequency = freqCo / D;
                 }
                 particle.weight = energyToCreate / (nPhotonsCell * D);
@@ -6844,7 +7825,11 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             {
                 if(this->parameters_.withMultigroupOpacity)
                 {
-                    particle.frequency = this->opacity_->GetThermalEnergy(cell, this->randomUnitOpen(), this->energyBoundaries_);
+                    particle.frequency = this->postProcessExternalSourceMode_
+                        ? this->samplePostProcessExternalSourcePlanckFrequency(cell)
+                        : this->opacity_->GetThermalEnergy(
+                            cell, this->randomUnitOpen(),
+                            this->energyBoundaries_);
                 }
                 particle.weight = energyPerPhoton;
             }
@@ -7232,6 +8217,731 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 
     UpdateNewCells<PointT>(this->grid, particles);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                  TraitsT, PositionSamplerT>::setPostProcessExternalSources(
+    std::vector<PostProcessExternalSource> sources)
+{
+    if(!this->parameters_.postProcess.enabled)
+    {
+        throw StormError(
+            "External sources require RadiationIMC post-process mode");
+    }
+    if(this->parameters_.withRandomWalk)
+    {
+        throw StormError(
+            "External source surfaces require random-walk acceleration to be disabled");
+    }
+
+    std::size_t const localCellCount = this->grid.GetPointNo();
+    if(this->cells_.size() < localCellCount)
+    {
+        throw StormError(
+            "External source installation has fewer cells than local tessellation points");
+    }
+
+    std::size_t const invalidCellID =
+        std::numeric_limits<std::size_t>::max();
+    std::size_t const pointCount = std::max(
+        this->grid.GetTotalPointNumber(), this->grid.getMeshPoints().size());
+    std::vector<std::size_t> pointCellIDs(pointCount, invalidCellID);
+    for(std::size_t cellIndex = 0; cellIndex < localCellCount; ++cellIndex)
+    {
+        pointCellIDs[cellIndex] = radiation_imc_detail::ddmcStableCellID(
+            this->grid, cellIndex, this->cells_[cellIndex]);
+    }
+#ifdef STORM_WITH_MPI
+    {
+        int mpiInitialized = 0;
+        MPI_Initialized(&mpiInitialized);
+        if(mpiInitialized)
+        {
+            ddmc::ExchangePointMetadata(this->grid, pointCellIDs);
+        }
+    }
+#endif
+
+    std::unordered_map<std::size_t, std::size_t> localCellIndexByID;
+    localCellIndexByID.reserve(localCellCount);
+    for(std::size_t cellIndex = 0; cellIndex < localCellCount; ++cellIndex)
+    {
+        std::size_t const cellID = pointCellIDs[cellIndex];
+        if(cellID == invalidCellID ||
+           !localCellIndexByID.emplace(cellID, cellIndex).second)
+        {
+            throw StormError(
+                "External source installation requires unique stable cell IDs");
+        }
+    }
+
+    std::unordered_map<std::size_t, std::size_t> faceIndex;
+    faceIndex.reserve(sources.size());
+    std::vector<std::size_t> localSourceCellIndices(
+        sources.size(), invalidCellID);
+    std::unordered_set<std::size_t> localInteriorIDSet;
+    localInteriorIDSet.reserve(sources.size());
+    for(std::size_t sourceIndex = 0; sourceIndex < sources.size();
+        ++sourceIndex)
+    {
+        PostProcessExternalSource &source = sources[sourceIndex];
+        if(source.faceIndex == invalidCellID ||
+           source.cellID == invalidCellID ||
+           source.interiorCellID == invalidCellID ||
+           source.cellID == source.interiorCellID ||
+           !(source.luminosity >= 0.0) ||
+           !std::isfinite(source.luminosity) ||
+           !std::isfinite(source.location[0]) ||
+           !std::isfinite(source.location[1]) ||
+           !std::isfinite(source.location[2]))
+        {
+            throw StormError("External source face has invalid data");
+        }
+        double const normalMagnitude = fastabs(source.outwardNormal);
+        if(!(normalMagnitude > 0.0) || !std::isfinite(normalMagnitude))
+        {
+            throw StormError("External source face has an invalid normal");
+        }
+        source.outwardNormal = source.outwardNormal / normalMagnitude;
+
+        auto const cellIt = localCellIndexByID.find(source.cellID);
+        if(cellIt == localCellIndexByID.end())
+        {
+            throw StormError(
+                "External source references a non-local transport cell");
+        }
+        std::size_t const cellIndex = cellIt->second;
+        localSourceCellIndices[sourceIndex] = cellIndex;
+        auto const &cellFaces = this->grid.GetCellFaces(cellIndex);
+        if(std::find(cellFaces.begin(), cellFaces.end(), source.faceIndex) ==
+           cellFaces.end())
+        {
+            throw StormError(
+                "External source face is not attached to its transport cell");
+        }
+        auto const neighbors = this->grid.GetFaceNeighbors(source.faceIndex);
+        if(neighbors.first != cellIndex && neighbors.second != cellIndex)
+        {
+            throw StormError(
+                "External source face does not contain its transport cell");
+        }
+        std::size_t const interiorCellIndex = neighbors.first == cellIndex
+            ? neighbors.second : neighbors.first;
+        if(this->grid.IsPointOutsideBox(interiorCellIndex) ||
+           interiorCellIndex >= pointCellIDs.size() ||
+           pointCellIDs[interiorCellIndex] != source.interiorCellID)
+        {
+            throw StormError(
+                "External source interior-cell ID does not match the opposite face neighbor");
+        }
+        if(!faceIndex.emplace(source.faceIndex, sourceIndex).second)
+        {
+            throw StormError("Duplicate external source face");
+        }
+        localInteriorIDSet.insert(source.interiorCellID);
+    }
+
+    std::unordered_set<std::size_t> globalInteriorIDs = localInteriorIDSet;
+#ifdef STORM_WITH_MPI
+    if(this->parameters_.withDDMC)
+    {
+        int mpiInitialized = 0;
+        MPI_Initialized(&mpiInitialized);
+        if(mpiInitialized)
+        {
+            std::vector<std::uint64_t> localInteriorIDs;
+            localInteriorIDs.reserve(localInteriorIDSet.size());
+            for(std::size_t id : localInteriorIDSet)
+            {
+                localInteriorIDs.push_back(static_cast<std::uint64_t>(id));
+            }
+            int mpiSize = 1;
+            MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+            int const localCount = static_cast<int>(localInteriorIDs.size());
+            std::vector<int> counts(static_cast<std::size_t>(mpiSize), 0);
+            MPI_Allgather(&localCount, 1, MPI_INT, counts.data(), 1,
+                          MPI_INT, MPI_COMM_WORLD);
+            std::vector<int> displacements(
+                static_cast<std::size_t>(mpiSize), 0);
+            int totalCount = 0;
+            for(int rank = 0; rank < mpiSize; ++rank)
+            {
+                displacements[static_cast<std::size_t>(rank)] = totalCount;
+                totalCount += counts[static_cast<std::size_t>(rank)];
+            }
+            std::vector<std::uint64_t> allInteriorIDs(
+                static_cast<std::size_t>(totalCount));
+            MPI_Allgatherv(
+                localInteriorIDs.empty() ? nullptr : localInteriorIDs.data(),
+                localCount, MPI_UINT64_T,
+                allInteriorIDs.empty() ? nullptr : allInteriorIDs.data(),
+                counts.data(), displacements.data(), MPI_UINT64_T,
+                MPI_COMM_WORLD);
+            globalInteriorIDs.clear();
+            globalInteriorIDs.reserve(allInteriorIDs.size());
+            for(std::uint64_t id : allInteriorIDs)
+            {
+                globalInteriorIDs.insert(static_cast<std::size_t>(id));
+            }
+        }
+    }
+#endif
+
+    this->postProcessExternalSources_ = std::move(sources);
+    this->postProcessExternalSourceLocalCellIndices_ =
+        std::move(localSourceCellIndices);
+    this->postProcessExternalSourceFaceIndex_ = std::move(faceIndex);
+    this->postProcessExternalSourceInteriorCellIDs_ =
+        std::move(globalInteriorIDs);
+    this->postProcessExternalSourceMode_ = true;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                  TraitsT, PositionSamplerT>::clearPostProcessExternalSources()
+{
+    this->postProcessExternalSources_.clear();
+    this->postProcessExternalSourceLocalCellIndices_.clear();
+    this->postProcessExternalSourceFaceIndex_.clear();
+    this->postProcessExternalSourceInteriorCellIDs_.clear();
+    this->postProcessExternalSourceMode_ = false;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                    TraitsT, PositionSamplerT>::
+samplePostProcessExternalSourceDirection(const PointT &outwardNormal)
+{
+    PointT normal = outwardNormal;
+    double const normalMagnitude = fastabs(normal);
+    if(!(normalMagnitude > 0.0) || !std::isfinite(normalMagnitude))
+    {
+        throw StormError("External source face has an invalid normal");
+    }
+    normal = normal / normalMagnitude;
+    PointT helper = std::abs(ScalarProd(normal, PointT(0.0, 0.0, 1.0))) < 0.9
+        ? PointT(0.0, 0.0, 1.0) : PointT(0.0, 1.0, 0.0);
+    PointT tangent1 = helper - ScalarProd(helper, normal) * normal;
+    double const tangentMagnitude = fastabs(tangent1);
+    if(!(tangentMagnitude > 0.0) || !std::isfinite(tangentMagnitude))
+    {
+        throw StormError(
+            "External source face cannot construct a tangent basis");
+    }
+    tangent1 = tangent1 / tangentMagnitude;
+    PointT tangent2 = CrossProduct(normal, tangent1);
+    tangent2 = tangent2 /
+        std::max(fastabs(tangent2), std::numeric_limits<double>::min());
+    double const mu = std::sqrt(this->randomUnitOpen());
+    double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+    double const phi = 2.0 * 3.14159265358979323846 * this->randomUnitOpen();
+    return mu * normal + sinTheta *
+        (std::cos(phi) * tangent1 + std::sin(phi) * tangent2);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                      TraitsT, PositionSamplerT>::GroupArray
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+             TraitsT, PositionSamplerT>::
+buildPostProcessExternalSourcePlanckPdf(const CellT &cell) const
+{
+    GroupArray pdf{};
+    double const kT = units::k_boltz * cell.temperature;
+    if(!(kT > 0.0) || !std::isfinite(kT))
+    {
+        throw StormError(
+            "External source Planck spectrum requires positive finite temperature");
+    }
+    double total = 0.0;
+    for(std::size_t group = 0; group < NumGroups; ++group)
+    {
+        double const left = this->energyBoundaries_[group];
+        double const right = this->energyBoundaries_[group + 1];
+        double const mass = (left < right)
+            ? planck_integral::planck_integral(left / kT, right / kT) : 0.0;
+        pdf[group] = (mass > 0.0 && std::isfinite(mass)) ? mass : 0.0;
+        total += pdf[group];
+    }
+    if(total > 0.0 && std::isfinite(total))
+    {
+        for(double &value : pdf)
+        {
+            value /= total;
+        }
+        return pdf;
+    }
+    double const peakEnergy = 2.8214393721220789 * kT;
+    std::size_t fallbackGroup = 0;
+    while(fallbackGroup + 1 < NumGroups &&
+          peakEnergy >= this->energyBoundaries_[fallbackGroup + 1])
+    {
+        ++fallbackGroup;
+    }
+    pdf[fallbackGroup] = 1.0;
+    return pdf;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                    TraitsT, PositionSamplerT>::
+samplePostProcessExternalSourcePlanckFrequencyInGroup(
+    const CellT &cell, std::size_t group)
+{
+    group = std::min(group, NumGroups - 1);
+    double const left = this->energyBoundaries_[group];
+    double const right = this->energyBoundaries_[group + 1];
+    double const kT = units::k_boltz * cell.temperature;
+    double const groupMass = planck_integral::planck_integral(
+        left / kT, right / kT);
+    if(!(groupMass > 0.0) || !std::isfinite(groupMass))
+    {
+        return 0.5 * (left + right);
+    }
+    double const target = this->randomUnitOpen() * groupMass;
+    double lo = left;
+    double hi = right;
+    for(int iteration = 0; iteration < 56; ++iteration)
+    {
+        double const mid = 0.5 * (lo + hi);
+        double const mass = planck_integral::planck_integral(
+            left / kT, mid / kT);
+        if(mass < target)
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    double frequency = 0.5 * (lo + hi);
+    this->clampFrequencyToBounds(frequency);
+    return frequency;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                    TraitsT, PositionSamplerT>::
+samplePostProcessExternalSourcePlanckFrequency(const CellT &cell)
+{
+    GroupArray const pdf =
+        this->buildPostProcessExternalSourcePlanckPdf(cell);
+    double const target = this->randomUnitOpen();
+    double cumulative = 0.0;
+    std::size_t selectedGroup = NumGroups - 1;
+    for(std::size_t group = 0; group < NumGroups; ++group)
+    {
+        cumulative += pdf[group];
+        if(target <= cumulative)
+        {
+            selectedGroup = group;
+            break;
+        }
+    }
+    return this->samplePostProcessExternalSourcePlanckFrequencyInGroup(
+        cell, selectedGroup);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                      TraitsT, PositionSamplerT>::MCParticle
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+             TraitsT, PositionSamplerT>::
+generatePostProcessExternalSourceParticle(
+    std::size_t cellIndex, const CellT &cell,
+    const PostProcessExternalSource &source)
+{
+    MCParticle particle;
+    particle.id = std::numeric_limits<std::size_t>::max();
+    particle.cellIndex = cellIndex;
+    particle.velocity = units::clight *
+        this->samplePostProcessExternalSourceDirection(source.outwardNormal);
+    static constexpr double nudge = 1.0e-8;
+    particle.location = (1.0 - nudge) * source.location +
+        nudge * this->grid.GetMeshPoint(cellIndex);
+    if(!this->grid.IsPointInCell(particle.location, cellIndex))
+    {
+        throw StormError(
+            "External source face location did not nudge into its transport cell");
+    }
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        if((this->parameters_.withHydro && !this->parameters_.MMC) ||
+           (this->parameters_.postProcess.enabled &&
+            this->parameters_.postProcess.useCellVelocities))
+        {
+            radiation_imc_detail::lorentzTransformToLab<PointT>(
+                particle, cell);
+        }
+    }
+    return particle;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                  TraitsT, PositionSamplerT>::
+handlePostProcessExternalSourceBoundary(
+    MCParticle &particle, std::size_t cellIndex,
+    std::size_t faceIndex, Functionality &functionality)
+{
+    if(!this->postProcessExternalSourceMode_ ||
+       cellIndex >= this->cells_.size())
+    {
+        return false;
+    }
+    auto const faceIt =
+        this->postProcessExternalSourceFaceIndex_.find(faceIndex);
+    if(faceIt == this->postProcessExternalSourceFaceIndex_.end())
+    {
+        return false;
+    }
+    PostProcessExternalSource const &source =
+        this->postProcessExternalSources_[faceIt->second];
+    if(radiation_imc_detail::cellID(this->cells_[cellIndex]) != source.cellID)
+    {
+        return false;
+    }
+
+    PointT normal = source.outwardNormal /
+        std::max(fastabs(source.outwardNormal),
+                 std::numeric_limits<double>::min());
+    double const normalVelocity = ScalarProd(particle.velocity, normal);
+    double const directionTolerance =
+        1.0e-12 * std::max(fastabs(particle.velocity), 1.0);
+    if(normalVelocity > directionTolerance)
+    {
+        throw StormError(
+            "Packet reached the external-source face while moving away from the interior");
+    }
+
+    MCParticle materialParticle = particle;
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        if((this->parameters_.withHydro && !this->parameters_.MMC) ||
+           (this->parameters_.postProcess.enabled &&
+            this->parameters_.postProcess.useCellVelocities))
+        {
+            radiation_imc_detail::lorentzTransformToComoving<PointT>(
+                materialParticle, this->cells_[cellIndex]);
+        }
+    }
+    materialParticle.velocity = units::clight *
+        this->samplePostProcessExternalSourceDirection(normal);
+    if(this->parameters_.withMultigroupOpacity)
+    {
+        materialParticle.frequency =
+            this->samplePostProcessExternalSourcePlanckFrequency(
+                this->cells_[cellIndex]);
+    }
+#ifdef MONTECARLO_POLARIZATION
+    if(this->polarizationEnabled())
+    {
+        materialParticle.stokesQ = 0.0;
+        materialParticle.stokesU = 0.0;
+        materialParticle.polarizationInitialized = false;
+    }
+#endif
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        if((this->parameters_.withHydro && !this->parameters_.MMC) ||
+           (this->parameters_.postProcess.enabled &&
+            this->parameters_.postProcess.useCellVelocities))
+        {
+            radiation_imc_detail::lorentzTransformToLab<PointT>(
+                materialParticle, this->cells_[cellIndex]);
+            this->clampFrequencyToBounds(materialParticle.frequency);
+        }
+    }
+    static constexpr double nudge = 1.0e-8;
+    materialParticle.location = (1.0 - nudge) * source.location +
+        nudge * this->grid.GetMeshPoint(cellIndex);
+    materialParticle.initialWeight = std::abs(materialParticle.weight);
+    materialParticle.radiationState.clearDDMC();
+    particle = materialParticle;
+    functionality.change = ParticleStatus::NO_CELL_MOVE;
+    return true;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                         TraitsT, PositionSamplerT>::
+getAccelerationDebugInfo(std::size_t cellIndex, double frequency) const
+{
+    if(cellIndex >= this->ddmcCellData_.size())
+    {
+        return std::string();
+    }
+    DDMCCellData const &data = this->ddmcCellData_[cellIndex];
+    double internalRate = 0.0;
+    double internalConductance = 0.0;
+    double boundaryRate = 0.0;
+    double ddmcChannelRate = 0.0;
+    double transportChannelRate = 0.0;
+    std::size_t mixedFaces = 0;
+    for(DDMCFaceLeak const &face : data.faceLeaks)
+    {
+        internalRate += face.internalRate;
+        internalConductance += face.conductance;
+        boundaryRate += face.boundaryRate;
+        ddmcChannelRate += face.ddmcRate;
+        transportChannelRate += face.transportRate;
+        if(face.ddmcRate > 0.0 && face.transportRate > 0.0)
+        {
+            ++mixedFaces;
+        }
+    }
+    std::ostringstream out;
+    out << std::setprecision(17)
+        << "eligible=" << (data.eligible ? 1 : 0)
+        << " boundary_excluded=" << (data.boundaryExcluded ? 1 : 0)
+        << " rigid_boundary_faces=" << data.rigidBoundaryFaceCount
+        << " unsupported_boundary_faces="
+        << data.unsupportedBoundaryFaceCount
+        << " first_unsupported_boundary_face="
+        << data.firstUnsupportedBoundaryFace
+        << " group_cutoff=" << data.groupCutoff
+        << " sigmaT=" << data.sigmaT
+        << " sigmaA=" << data.sigmaA
+        << " sigmaEnergyAbs=" << data.sigmaEnergyAbs
+        << " sigmaDiffusion=" << data.sigmaDiffusion
+        << " sigmaParticleGate=" << data.sigmaParticleGate
+        << " sigmaGroupExit=" << data.sigmaGroupExit
+        << " gamma=" << data.gamma
+        << " D=" << data.diffusionCoefficient
+        << " leak_rate=" << data.totalLeakRate
+        << " faces=" << data.faceLeaks.size()
+        << " frequency=" << frequency
+        << " ddmc_eligible=" << (data.eligible ? 1 : 0)
+        << " ddmc_boundary_excluded="
+        << (data.boundaryExcluded ? 1 : 0)
+        << " ddmc_rigid_boundary_faces=" << data.rigidBoundaryFaceCount
+        << " ddmc_unsupported_boundary_faces="
+        << data.unsupportedBoundaryFaceCount
+        << " ddmc_first_unsupported_boundary_face="
+        << data.firstUnsupportedBoundaryFace
+        << " ddmc_group_cutoff=" << data.groupCutoff
+        << " ddmc_sigmaT=" << data.sigmaT
+        << " ddmc_sigmaA=" << data.sigmaA
+        << " ddmc_sigmaEnergyAbs=" << data.sigmaEnergyAbs
+        << " ddmc_sigmaDiffusion=" << data.sigmaDiffusion
+        << " ddmc_sigmaParticleGate=" << data.sigmaParticleGate
+        << " ddmc_sigmaGroupExit=" << data.sigmaGroupExit
+        << " ddmc_gamma=" << data.gamma
+        << " ddmc_D=" << data.diffusionCoefficient
+        << " ddmc_total_leak_rate=" << data.totalLeakRate
+        << " ddmc_face_count=" << data.faceLeaks.size()
+        << " ddmc_internal_leak_rate_sum=" << internalRate
+        << " ddmc_internal_conductance_sum=" << internalConductance
+        << " ddmc_boundary_rate_sum=" << boundaryRate
+        << " ddmc_channel_rate_sum=" << ddmcChannelRate
+        << " ddmc_transport_channel_rate_sum=" << transportChannelRate
+        << " ddmc_mixed_face_count=" << mixedFaces
+        << " ddmc_resident_leaks=" << this->ddmcResidentLeakCount_
+        << " ddmc_transport_leaks=" << this->ddmcTransportLeakCount_
+        << " ddmc_remote_resident_leaks="
+        << this->ddmcRemoteResidentLeakCount_
+        << " ddmc_mpi_face_flux_reductions="
+        << this->ddmcMPIFaceFluxReductionCount_
+        << " ddmc_leak_invalid_geometry="
+        << this->ddmcLeakInvalidGeometryCount_
+        << " ddmc_leak_reciprocity_max="
+        << this->ddmcLeakReciprocityResidualMax_
+        << " ddmc_interface_incident="
+        << this->ddmcInterfaceIncidentCount_
+        << " ddmc_interface_admitted="
+        << this->ddmcInterfaceAdmittedCount_
+        << " ddmc_interface_reflected="
+        << this->ddmcInterfaceReflectedCount_
+        << " ddmc_interface_gu_applied="
+        << this->ddmcInterfaceGuAppliedCount_
+        << " ddmc_interface_gu_fallback="
+        << this->ddmcInterfaceGuFallbackCount_
+        << " ddmc_interface_bypass="
+        << this->ddmcInterfaceBypassCount_
+        << " ddmc_interface_split_packets="
+        << this->ddmcInterfaceSplitPacketCount_
+        << " ddmc_interface_min_mu=" << this->ddmcInterfaceMinimumMu_
+        << " ddmc_interface_max_gu="
+        << this->ddmcMovingInterfaceMaxFactor_
+        << " ddmc_interface_flux_tallies="
+        << this->ddmcInterfaceFluxTallyCount_
+        << " ddmc_leak_reciprocity_checks="
+        << this->ddmcLeakReciprocityCheckCount_;
+    return out.str();
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                         TraitsT, PositionSamplerT>::
+getDDMCFaceDiagnosticsTSV(double xMin, double xMax) const
+{
+    std::ostringstream out;
+    out << std::setprecision(17);
+    if(!this->parameters_.withDDMC ||
+       !this->parameters_.ddmcInterfaceDiagnostics)
+    {
+        return out.str();
+    }
+    for(std::size_t cellIndex = 0;
+         cellIndex < this->ddmcCellData_.size(); ++cellIndex)
+    {
+        DDMCCellData const &data = this->ddmcCellData_[cellIndex];
+        std::size_t const sourceID = cellIndex < this->ddmcPointCellID_.size()
+            ? this->ddmcPointCellID_[cellIndex]
+            : radiation_imc_detail::ddmcStableCellID(
+                this->grid, cellIndex, this->cells_[cellIndex]);
+        double const sourceGeneratorX =
+            this->grid.GetMeshPoint(cellIndex)[0];
+        double const sourceCellCMX = this->grid.GetCellCM(cellIndex)[0];
+        double const volume = this->grid.GetVolume(cellIndex);
+        for(DDMCFaceLeak const &face :
+            data.faceLeaks)
+        {
+            PointT const center = this->grid.FaceCM(face.faceIndex);
+            if(center[0] < xMin || center[0] > xMax)
+            {
+                continue;
+            }
+
+            std::size_t const target = face.nextCellIndex;
+            std::size_t const targetID = target < this->ddmcPointCellID_.size()
+                ? this->ddmcPointCellID_[target]
+                : std::numeric_limits<std::size_t>::max();
+            double const targetGeneratorX =
+                target < this->grid.getMeshPoints().size()
+                ? static_cast<double>(this->grid.GetMeshPoint(target)[0])
+                : std::numeric_limits<double>::quiet_NaN();
+            int const targetEligible = target < this->ddmcPointEligible_.size()
+                ? this->ddmcPointEligible_[target] : 0;
+            double const targetSigma =
+                target < this->ddmcPointSigmaDiffusion_.size()
+                ? this->ddmcPointSigmaDiffusion_[target] : 0.0;
+            double const targetD =
+                target < this->ddmcPointDiffusionCoefficient_.size()
+                ? this->ddmcPointDiffusionCoefficient_[target] : 0.0;
+
+            out << sourceID << '\t' << targetID
+                << '\t' << face.faceIndex
+                << '\t' << sourceGeneratorX
+                << '\t' << sourceCellCMX
+                << '\t' << targetGeneratorX
+                << '\t' << center[0]
+                << '\t' << volume
+                << '\t' << data.groupCutoff
+                << '\t' << face.targetGroupCutoff
+                << '\t' << (data.eligible ? 1 : 0)
+                << '\t' << targetEligible
+                << '\t' << data.sigmaDiffusion
+                << '\t' << targetSigma
+                << '\t' << data.diffusionCoefficient
+                << '\t' << targetD
+                << '\t' << face.sourceDistanceToFace
+                << '\t' << face.targetDistanceToFace
+                << '\t' << face.area
+                << '\t' << face.conductance
+                << '\t' << face.internalRate
+                << '\t' << face.boundaryRate
+                << '\t' << face.sourceBandMass
+                << '\t' << face.commonBandMass
+                << '\t' << face.ddmcFraction
+                << '\t' << face.ddmcRate
+                << '\t' << face.transportRate
+                << '\t' << face.rate
+                << '\n';
+        }
+    }
+    return out.str();
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename PositionSamplerT>
+std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
+                         TraitsT, PositionSamplerT>::
+getDDMCInterfaceEventDiagnosticsTSV(double xMin, double xMax) const
+{
+    std::ostringstream out;
+    out << std::setprecision(17);
+    if(!this->parameters_.withDDMC ||
+       !this->parameters_.ddmcInterfaceDiagnostics)
+    {
+        return out.str();
+    }
+
+    auto eventName = [](DDMCDiagnosticEventKind kind)
+    {
+        switch(kind)
+        {
+            case DDMCDiagnosticEventKind::IMCCandidate:
+                return "imc_candidate";
+            case DDMCDiagnosticEventKind::IMCFrequencyReject:
+                return "imc_frequency_reject";
+            case DDMCDiagnosticEventKind::IMCIncident:
+                return "imc_incident";
+            case DDMCDiagnosticEventKind::IMCAdmitted:
+                return "imc_admitted";
+            case DDMCDiagnosticEventKind::IMCReflected:
+                return "imc_reflected";
+            case DDMCDiagnosticEventKind::IMCBypass:
+                return "imc_bypass";
+            case DDMCDiagnosticEventKind::DDMCToDDMC:
+                return "ddmc_to_ddmc";
+            case DDMCDiagnosticEventKind::DDMCToIMC:
+                return "ddmc_to_imc";
+        }
+        return "unknown";
+    };
+
+    for(auto const &item : this->ddmcDiagnosticEvents_)
+    {
+        DDMCDiagnosticEventKey const &key = item.first;
+        DDMCDiagnosticEventAccumulator const &entry = item.second;
+        if(entry.faceX < xMin || entry.faceX > xMax)
+            continue;
+        long long const outputGroup = key.group == DDMC_DIAGNOSTIC_GREY_GROUP
+            ? -1LL : static_cast<long long>(key.group);
+        out << eventName(key.kind)
+            << '\t' << entry.sourceCellID
+            << '\t' << entry.targetCellID
+            << '\t' << entry.faceIndex
+            << '\t' << entry.sourceGeneratorX
+            << '\t' << entry.targetGeneratorX
+            << '\t' << entry.faceX
+            << '\t' << outputGroup
+            << '\t' << entry.sourceGroupCutoff
+            << '\t' << entry.targetGroupCutoff
+            << '\t' << entry.count
+            << '\t' << entry.signedEnergy
+            << '\t' << entry.absoluteEnergy
+            << '\t' << entry.muSum
+            << '\t' << entry.muCount
+            << '\t' << entry.admissionProbabilitySum
+            << '\t' << entry.admissionProbabilityCount
+            << '\n';
+    }
+    return out.str();
 }
 
 } // namespace STORM

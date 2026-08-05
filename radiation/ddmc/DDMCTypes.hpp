@@ -58,6 +58,15 @@ struct CellData
     EligibilityReason eligibilityReason = EligibilityReason::Uncomputed;
     bool boundaryExcluded = false;
     bool observerExcluded = false;
+    bool externalSourceInteriorExcluded = false;
+    bool externalSourceFaceOpticalDepthExcluded = false;
+    std::size_t externalSourceBoundaryFaceCount = 0;
+    double minExternalSourceFaceOpticalDepth =
+        std::numeric_limits<double>::infinity();
+    std::size_t rigidBoundaryFaceCount = 0;
+    std::size_t unsupportedBoundaryFaceCount = 0;
+    std::size_t firstUnsupportedBoundaryFace =
+        std::numeric_limits<std::size_t>::max();
     double sigmaA = 0.0;
     double sigmaT = 0.0;
     double sigmaEnergyAbs = 0.0;
