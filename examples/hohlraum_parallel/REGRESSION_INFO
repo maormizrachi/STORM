@@ -1,5 +1,6 @@
 # STORM regression test configuration
 TAGS="mpi"
+CATEGORY="physics"
 MPI_NP=512
 CHECK_FUNCTION="check_hohlraum_parallel_case"
 TIMEOUT=7200

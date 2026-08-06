@@ -1,5 +1,6 @@
 # STORM regression test configuration
 TAGS="mpi"
+CATEGORY="physics"
 MPI_NP=48
 SLURM_NODES=16
 SLURM_MEM_PER_CPU="20G"

@@ -1,4 +1,5 @@
 # STORM regression test configuration
 TAGS="mpi"
+CATEGORY="physics"
 MPI_NP=16
 CHECK_FUNCTION="check_marshak_wave_case"

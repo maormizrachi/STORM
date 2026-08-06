@@ -1,5 +1,6 @@
 # STORM regression test configuration
 TAGS="mpi"
+CATEGORY="physics"
 MPI_NP=4
 CHECK_FUNCTION="check_densmore2012_case"
 TIMEOUT=1800
