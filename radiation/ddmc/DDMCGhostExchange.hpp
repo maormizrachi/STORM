@@ -264,12 +264,16 @@ void ReducePointContributions(const GridT &grid, std::vector<T> &data)
             throw error;
         }
 
+        // Contributions may be initialized only for locally owned cells.
+        // Ghost indices address the full local+ghost point array, so expand
+        // before gathering the values which must be returned to their owners.
+        data.resize(grid.GetTotalPointNumber(), T{});
+
         std::vector<std::vector<T>> outgoing(static_cast<std::size_t>(rankCount));
         for(std::size_t slot = 0; slot < peerRanks.size(); ++slot)
         {
             int const destination = peerRanks[slot];
-            if(destination < 0 || destination >= rankCount ||
-               ghostIndices[slot].size() != ownerIndices[slot].size())
+            if(destination < 0 || destination >= rankCount)
             {
                 StormError error("DDMC contribution reduction has an invalid peer map");
                 throw error;
@@ -331,7 +335,6 @@ void ReducePointContributions(const GridT &grid, std::vector<T> &data)
                       receiveBytes.data(), receiveDisplacements.data(), MPI_BYTE,
                       MPI_COMM_WORLD);
 
-        data.resize(grid.GetTotalPointNumber(), T{});
         for(std::size_t slot = 0; slot < peerRanks.size(); ++slot)
         {
             int const source = peerRanks[slot];
@@ -343,13 +346,25 @@ void ReducePointContributions(const GridT &grid, std::vector<T> &data)
             for(std::size_t j = 0; j < ownerIndices[slot].size(); ++j)
             {
                 std::size_t const owner = ownerIndices[slot][j];
-                std::size_t const ghost = ghostIndices[slot][j];
-                if(owner >= data.size() || ghost >= data.size())
+                if(owner >= data.size())
                     throw StormError("DDMC contribution reduction index is out of range");
                 data[owner] += detail::decodeValue<T>(
                     receiveBuffer,
                     static_cast<std::size_t>(receiveDisplacements[static_cast<std::size_t>(source)]) +
                         j * sizeof(T));
+            }
+        }
+
+        // Incoming contributions correspond to owned points, while outgoing
+        // contributions correspond to ghosts.  Those list lengths need not
+        // be symmetric for a distributed Voronoi halo, so clear ghosts in a
+        // separate pass rather than pairing them with the owned list.
+        for(const auto &peerGhostIndices : ghostIndices)
+        {
+            for(std::size_t ghost : peerGhostIndices)
+            {
+                if(ghost >= data.size())
+                    throw StormError("DDMC contribution reduction index is out of range");
                 data[ghost] = T{};
             }
         }

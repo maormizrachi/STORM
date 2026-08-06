@@ -129,6 +129,16 @@ struct has_member_temperature : std::false_type {};
 template<typename T>
 struct has_member_temperature<T, std::void_t<decltype(std::declval<const T &>().temperature)>> : std::true_type {};
 
+template<typename EOST, typename TracersT, typename TracerNamesT, typename = void>
+struct has_dT2e : std::false_type {};
+
+template<typename EOST, typename TracersT, typename TracerNamesT>
+struct has_dT2e<EOST, TracersT, TracerNamesT, std::void_t<decltype(
+    std::declval<const EOST &>().dT2e(
+        std::declval<double>(), std::declval<double>(),
+        std::declval<const TracersT &>(),
+        std::declval<const TracerNamesT &>()))>> : std::true_type {};
+
 template<typename CellT>
 std::size_t cellID(const CellT &cell)
 {
@@ -4353,10 +4363,25 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
         1.0e-30, maximumTemperature);
     auto const &tracers = this->traits_.tracers(cell);
     auto const &tracerNames = this->traits_.tracerNames(cell);
+    auto matterSpecificEnergy = [&](double candidateTemperature) -> double
+    {
+        using TracersType = std::decay_t<decltype(tracers)>;
+        using TracerNamesType = std::decay_t<decltype(tracerNames)>;
+        if constexpr(radiation_imc_detail::has_dT2e<
+                         EOST, TracersType, TracerNamesType>::value)
+        {
+            return this->eos_->dT2e(
+                rho, candidateTemperature, tracers, tracerNames);
+        }
+        else
+        {
+            throw StormError(
+                "Planck-function Compton occupation requires an EOS dT2e method");
+        }
+    };
     for(int iteration = 0; iteration < 50; ++iteration)
     {
-        double const matterEnergy = this->eos_->dT2e(
-            rho, temperature, tracers, tracerNames);
+        double const matterEnergy = matterSpecificEnergy(temperature);
         double const radiationEnergy = units::arad *
             boost::math::pow<4>(temperature) / rho;
         double const residual =

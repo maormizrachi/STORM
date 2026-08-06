@@ -1,4 +1,34 @@
 cmake_minimum_required(VERSION 3.14)
+
+# For MPI builds, use the compiler wrappers from the active environment when
+# the caller has not selected compilers explicitly.  This must happen before
+# project(): vendor compiler environments may add a different MPI's headers
+# through CPATH, while FindMPI (which runs later) selects the active MPI
+# libraries.  Compiling through the wrapper keeps headers, libraries, and the
+# launcher from the same MPI installation.  Explicit compiler settings and
+# toolchain files remain authoritative.
+if(STORM_WITH_MPI AND NOT CMAKE_TOOLCHAIN_FILE)
+  if(NOT CMAKE_CXX_COMPILER)
+    unset(_storm_mpi_cxx_wrapper CACHE)
+    find_program(_storm_mpi_cxx_wrapper NAMES mpicxx mpic++ mpiCC
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
+    if(_storm_mpi_cxx_wrapper)
+      set(CMAKE_CXX_COMPILER "${_storm_mpi_cxx_wrapper}"
+          CACHE FILEPATH "C++ compiler selected from the active MPI wrapper")
+    endif()
+  endif()
+
+  if(NOT CMAKE_C_COMPILER)
+    unset(_storm_mpi_c_wrapper CACHE)
+    find_program(_storm_mpi_c_wrapper NAMES mpicc
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
+    if(_storm_mpi_c_wrapper)
+      set(CMAKE_C_COMPILER "${_storm_mpi_c_wrapper}"
+          CACHE FILEPATH "C compiler selected from the active MPI wrapper")
+    endif()
+  endif()
+endif()
+
 project(STORM
   VERSION 1.0.0
   LANGUAGES CXX C
@@ -105,6 +135,26 @@ find_package(OpenMP QUIET)
 
 # ---------- Optional dependencies ----------
 if(STORM_WITH_MPI)
+  # Prefer the MPI wrapper selected by the caller's PATH.  FindMPI otherwise
+  # gives vendor-specific environment hints (for example a stale MPI_HOME)
+  # precedence over the loaded toolchain, which can link one MPI while the
+  # matching launcher on PATH belongs to another.  An explicitly supplied
+  # MPI_CXX_COMPILER remains authoritative.
+  if(NOT MPI_CXX_COMPILER)
+    find_program(_storm_mpi_cxx_wrapper NAMES mpicxx mpic++ mpiCC)
+    if(_storm_mpi_cxx_wrapper)
+      set(MPI_CXX_COMPILER "${_storm_mpi_cxx_wrapper}"
+          CACHE FILEPATH "MPI C++ compiler wrapper" FORCE)
+      get_filename_component(_storm_mpi_bin_dir
+          "${_storm_mpi_cxx_wrapper}" DIRECTORY)
+      find_program(_storm_mpi_launcher NAMES mpiexec mpirun
+          HINTS "${_storm_mpi_bin_dir}" NO_DEFAULT_PATH)
+      if(_storm_mpi_launcher AND NOT MPIEXEC_EXECUTABLE)
+        set(MPIEXEC_EXECUTABLE "${_storm_mpi_launcher}"
+            CACHE FILEPATH "MPI launcher matching the selected wrapper" FORCE)
+      endif()
+    endif()
+  endif()
   find_package(MPI 2.0 REQUIRED COMPONENTS CXX)
 endif()
 
