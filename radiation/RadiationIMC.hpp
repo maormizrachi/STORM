@@ -37,6 +37,7 @@
 #include "../utils/RandomInCell.hpp"
 #include "physics/MonteCarloPhysics.hpp"
 #include "radiation/RadiationIMCParameters.hpp"
+#include "radiation/RadiationPressureGradient.hpp"
 #include "radiation/RadiationIMCTraits.hpp"
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/Compton.hpp"
@@ -7035,7 +7036,6 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 
     if(!this->parameters_.noHydroFeedback)
     {
-        std::vector<double> Erad_time_avg_grad(Ncells, 0.0);
         if(this->parameters_.diffusionPressureGradient && this->parameters_.withHydro)
         {
             if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
@@ -7051,52 +7051,6 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                     }
                 }
 #endif
-                for(std::size_t i = 0; i < Ncells; ++i)
-                {
-                    const PointT &point = this->grid.GetMeshPoint(i);
-                    std::size_t neighbor_right = std::numeric_limits<std::size_t>::max();
-                    std::size_t neighbor_left = std::numeric_limits<std::size_t>::max();
-                    for(std::size_t faceIdx : this->grid.GetCellFaces(i))
-                    {
-                        const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
-                        std::size_t neighborIdx = (neighbors.first == i) ? neighbors.second : neighbors.first;
-                        PointT diff = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
-                        if(diff.x > 0.99)
-                        {
-                            neighbor_right = neighborIdx;
-                        }
-                        else if(diff.x < -0.99)
-                        {
-                            neighbor_left = neighborIdx;
-                        }
-                    }
-                    if(neighbor_right == std::numeric_limits<std::size_t>::max())
-                    {
-                        StormError eo("No right neighbor found in RadiationIMC::postStep");
-                        throw eo;
-                    }
-                    if(neighbor_left == std::numeric_limits<std::size_t>::max())
-                    {
-                        StormError eo("No left neighbor found in RadiationIMC::postStep");
-                        throw eo;
-                    }
-                    const PointT &neighbor_right_point = this->grid.GetMeshPoint(neighbor_right);
-                    const PointT &neighbor_left_point = this->grid.GetMeshPoint(neighbor_left);
-                    double grad;
-                    if(this->grid.IsPointOutsideBox(neighbor_left))
-                    {
-                        grad = (this->Erad_time_avg_[neighbor_right] - this->Erad_time_avg_[i]) / (neighbor_right_point.x - point.x);
-                    }
-                    else if(this->grid.IsPointOutsideBox(neighbor_right))
-                    {
-                        grad = (this->Erad_time_avg_[i] - this->Erad_time_avg_[neighbor_left]) / (point.x - neighbor_left_point.x);
-                    }
-                    else
-                    {
-                        grad = (this->Erad_time_avg_[neighbor_right] - this->Erad_time_avg_[neighbor_left]) / (neighbor_right_point.x - neighbor_left_point.x);
-                    }
-                    Erad_time_avg_grad[i] = grad;
-                }
             }
         }
 
@@ -7114,7 +7068,13 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 {
                     if(this->parameters_.diffusionPressureGradient)
                     {
-                        this->extensives_[i].momentum.x -= fullDt * this->grid.GetVolume(i) * Erad_time_avg_grad[i] / 3.0;
+                        PointT const radiationEnergyGradient =
+                            radiation_pressure_gradient_detail::
+                                reconstructRadiationEnergyGradient<PointT>(
+                                    this->grid, this->Erad_time_avg_, i);
+                        this->extensives_[i].momentum +=
+                            radiationEnergyGradient *
+                            (-fullDt * this->grid.GetVolume(i) / 3.0);
                     }
                 }
             }
