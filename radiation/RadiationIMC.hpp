@@ -5071,15 +5071,29 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         GroupArray sorted = candidate;
         std::sort(sorted.begin(), sorted.end(),
             [](double left, double right) { return left > right; });
+        static constexpr GroupArray inverseActiveCounts = []()
+        {
+            GroupArray values{};
+            for(std::size_t index = 0; index < NumGroups; ++index)
+            {
+                values[index] =
+                    1.0 / static_cast<double>(index + 1);
+            }
+            return values;
+        }();
         double cumulative = 0.0;
         double theta = 0.0;
         std::size_t active = 0;
         for(std::size_t index = 0; index < NumGroups; ++index)
         {
             cumulative += sorted[index];
+            // Keep this as a multiply by a compile-time reciprocal.  Intel LLVM
+            // otherwise vectorizes the prefix scan with a speculative zero
+            // divisor in a lane that is blended out later; trapping floating
+            // point environments still raise SIGFPE on that discarded lane.
             double const trialTheta =
-                (cumulative - result.targetTotal) /
-                static_cast<double>(index + 1);
+                (cumulative - result.targetTotal) *
+                inverseActiveCounts[index];
             if(sorted[index] > trialTheta)
             {
                 active = index + 1;
