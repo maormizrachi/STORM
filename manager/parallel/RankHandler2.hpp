@@ -93,7 +93,7 @@ public:
 
     std::shared_ptr<ReallocationAgent> &reallocationAgent;
 
-    void Reallocate(double factor);
+    void Reallocate(double factor, size_t requiredBuffSize = 0);
 
     ReallocationMetadata LocalReallocate(double factor);
 
@@ -382,15 +382,22 @@ void RankHandler2<T, Grid>::AppendLocalParticles(size_t particlesNum, const Writ
     }
 
     size_t currentSize = this->LocalSize();
-    if(currentSize + particlesNum > this->buffsize)
+    if(particlesNum > std::numeric_limits<size_t>::max() - currentSize)
     {
-        double factor = std::max<double>(
-            1.5,
-            static_cast<double>(currentSize + particlesNum) /
-                static_cast<double>(std::max<size_t>(1, this->buffsize)) * 1.5);
-        this->Reallocate(factor);
+        STORMError eo("RankHandler2::AppendLocalParticles: particle count overflow");
+        eo.addEntry("Current Particles", currentSize);
+        eo.addEntry("Particles To Append", particlesNum);
+        eo.addEntry("My Rank", this->rank_world);
+        eo.addEntry("Peer Rank", this->peer_rank_world);
+        throw eo;
+    }
+
+    size_t requiredSize = currentSize + particlesNum;
+    if(requiredSize > this->buffsize)
+    {
+        this->Reallocate(1.5, requiredSize);
         currentSize = this->LocalSize();
-        assert(currentSize + particlesNum <= this->buffsize);
+        assert(particlesNum <= this->buffsize - currentSize);
     }
 
     uint64_t localTail = this->tail;
@@ -419,7 +426,7 @@ void RankHandler2<T, Grid>::AppendLocalParticles(const MCParticle *particles, si
 }
 
 template<typename T, typename Grid>
-void RankHandler2<T, Grid>::Reallocate(double factor)
+void RankHandler2<T, Grid>::Reallocate(double factor, size_t requiredBuffSize)
 {
 #ifdef MEMORY_DEBUG
     memory_debug::check_system_memory("RankHandler2::Reallocate");
@@ -438,6 +445,7 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
     size_t oldBuffSize = this->buffsize;
     size_t newBuffSize = std::ceil(static_cast<double>(this->buffsize) * factor);
     newBuffSize = std::max<size_t>(newBuffSize, this->minimalBuffSize);
+    newBuffSize = std::max(newBuffSize, requiredBuffSize);
 
     size_t localCount = this->LocalSize();
     bool noParticles = (localCount == 0);
@@ -453,7 +461,7 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
     }
 
     std::vector<unsigned char> activeParticles;
-    if(not noParticles)
+    if(this->size_internal > 1 and not noParticles)
     {
         activeParticles.resize(localCount * sizeof(MCParticle));
         this->ForEachLocalParticle([&activeParticles](const MCParticle &particle, size_t index)
@@ -504,19 +512,26 @@ void RankHandler2<T, Grid>::Reallocate(double factor)
         if(noParticles)
         {
             delete[] this->particles;
-            this->particles = new MCParticle[this->buffsize];
-            this->head = 0;
-            this->tail = 0;
+            this->particles = new MCParticle[newBuffSize];
         }
         else
         {
-            MCParticle *new_particles = new MCParticle[this->buffsize];
-            std::memcpy(new_particles, activeParticles.data(), localCount * sizeof(MCParticle));
+            MCParticle *newParticles = new MCParticle[newBuffSize];
+            this->SynchronizeLocalParticlesForRead();
+            size_t start = static_cast<size_t>(this->head % oldBuffSize);
+            size_t first = std::min(localCount, oldBuffSize - start);
+            std::memcpy(newParticles, this->particles + start, first * sizeof(MCParticle));
+            if(first < localCount)
+            {
+                std::memcpy(newParticles + first, this->particles,
+                            (localCount - first) * sizeof(MCParticle));
+            }
             delete[] this->particles;
-            this->particles = new_particles;
-            this->head = 0;
-            this->tail = static_cast<uint64_t>(localCount);
+            this->particles = newParticles;
         }
+
+        this->head = 0;
+        this->tail = static_cast<uint64_t>(localCount);
         this->peer_buffsize = this->buffsize;
     }
 
@@ -703,8 +718,10 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
 
             size_t requiredSize = remoteCount + Np;
             size_t denominator = std::max<size_t>(1, this->peer_buffsize);
-            this->requestedFactor = static_cast<double>(requiredSize) /
-                                    static_cast<double>(denominator) * 1.5;
+            const double requiredFactor = std::nextafter(
+                static_cast<double>(requiredSize) / static_cast<double>(denominator),
+                std::numeric_limits<double>::infinity());
+            this->requestedFactor = std::max(1.5, requiredFactor);
 
 
             if(this->UsesAsyncReallocation())

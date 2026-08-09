@@ -2183,15 +2183,42 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
     unsigned long long globalInitialParticles = static_cast<unsigned long long>(this->initialParticleCount);
     unsigned long long globalPreStepParticles = static_cast<unsigned long long>(this->preStepParticleCount);
     unsigned long long globalStartParticles = static_cast<unsigned long long>(this->startParticleCount);
+    const unsigned long long localStartParticles = globalStartParticles;
+    unsigned long long maxStartParticles = 0;
+    MPI_Allreduce(&localStartParticles, &maxStartParticles, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, this->comm_world);
+    int maxStartRankCandidate =
+        (localStartParticles == maxStartParticles)
+            ? static_cast<int>(this->rank_world)
+            : std::numeric_limits<int>::max();
+    int maxStartRank = 0;
+    MPI_Allreduce(&maxStartRankCandidate, &maxStartRank, 1, MPI_INT, MPI_MIN,
+                  this->comm_world);
     MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalInitialParticles, &globalInitialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalPreStepParticles, &globalPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalStartParticles, &globalStartParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     if(this->rank_world == 0)
     {
+        const double averageStartParticles =
+            static_cast<double>(globalStartParticles) / this->size_world;
+        const double maxToAverage = averageStartParticles > 0
+            ? static_cast<double>(maxStartParticles) / averageStartParticles
+            : 0.0;
+        const double maxRawPayloadMiB =
+            static_cast<double>(maxStartParticles) * sizeof(MCParticle) /
+            (1024.0 * 1024.0);
         std::cout << "MC particle counts before transport:"
                   << " initial=" << globalInitialParticles
                   << " prestep_generated=" << globalPreStepParticles
                   << " active_after_prestep=" << globalStartParticles
+                  << std::endl;
+        std::cout << "MC particle distribution after generation:"
+                  << " max=" << maxStartParticles
+                  << " (rank " << maxStartRank << ")"
+                  << " avg=" << averageStartParticles
+                  << " max/avg=" << maxToAverage
+                  << " particle_size=" << sizeof(MCParticle) << " B"
+                  << " max_raw_payload=" << maxRawPayloadMiB << " MiB"
                   << std::endl;
     }
 
