@@ -192,12 +192,12 @@ static bool Rebalance(Grid &grid,
         if(counters.size() == N)
         {
             weights[i] += 0.005 * static_cast<double>(counters[i]);
-            sumOfWeights += weights[i];
         }
-//        if(particleCounts.size() == N)
-//        {
-//            weights[i] += 1 * static_cast<double>(particleCounts[i]);
-//        }
+        if(particleCounts.size() == N)
+        {
+            weights[i] += 10 * static_cast<double>(particleCounts[i]);
+        }
+        sumOfWeights += weights[i];
     }
 
     size_t Ntotal = N;
