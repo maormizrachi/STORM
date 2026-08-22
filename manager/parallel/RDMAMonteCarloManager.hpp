@@ -551,7 +551,7 @@ void RDMAMonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> 
 
     myHandler->AppendLocalParticles(particlesNum, [this, &particles, firstID](MCParticle &destination, size_t i)
     {
-        std::memcpy(&destination, &particles[i], sizeof(MCParticle));
+        destination = particles[i];
         destination.rank = this->rank_world;
         destination.id = firstID + i;
 
@@ -716,7 +716,7 @@ void RDMAMonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&
     RankHandler_t *handler = this->rankHandlers[this->rank_world];
     handler->AppendLocalParticles(particlesNum, [this, &particles](MCParticle &destination, size_t i)
     {
-        std::memcpy(&destination, &particles[i], sizeof(MCParticle));
+        destination = particles[i];
         if(destination.id == std::numeric_limits<size_t>::max())
         {
             // no ID has been assigned
@@ -809,7 +809,16 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const st
             }
         }
         #endif // STORM_DEBUG
-        bool transferred = remoteHandler->TransferParticles(particles);
+        const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+        if(usesAsyncReallocation)
+        {
+            this->ProgressReallocations();
+        }
+        bool transferred = false;
+        if(not (usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank)))
+        {
+            transferred = remoteHandler->TransferParticles(particles);
+        }
         if(not transferred)
         {
             RegisteredSendBuffer &buffer = this->GetSendBuffer(toRank);
@@ -912,7 +921,16 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t>
             }
         }
         #endif // STORM_DEBUG
-        bool transferred = remoteHandler->TransferParticles(particles);
+        const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+        if(usesAsyncReallocation)
+        {
+            this->ProgressReallocations();
+        }
+        bool transferred = false;
+        if(not (usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank)))
+        {
+            transferred = remoteHandler->TransferParticles(particles);
+        }
         if(not transferred)
         {
             RegisteredSendBuffer &buffer = this->GetSendBuffer(toRank);
@@ -1553,7 +1571,9 @@ void RDMAMonteCarloManager<T, Grid>::ShrinkBuffers(void)
     }
     for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
     {
-        if(r != this->rank_world and this->rankHandlers[r] != nullptr and this->rankHandlers[r]->buffsize > this->config.minimalBuffSize)
+        if(r != this->rank_world and this->rankHandlers[r] != nullptr and
+           this->rankHandlers[r]->SupportsShrinkingReallocation() and
+           this->rankHandlers[r]->buffsize > this->config.minimalBuffSize)
         {
             bool isNeighbor = neighbors.find(r) != neighbors.end();
             if(!isNeighbor)
@@ -1609,7 +1629,8 @@ void RDMAMonteCarloManager<T, Grid>::ShrinkBuffers(void)
             continue;
         }
 
-        if(this->rankHandlers[r] != nullptr)
+        if(this->rankHandlers[r] != nullptr and
+           this->rankHandlers[r]->SupportsShrinkingReallocation())
         {
             shrinkConfirmations[r].push_back(this->rank_world);
         }

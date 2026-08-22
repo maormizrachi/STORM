@@ -77,6 +77,8 @@ public:
 
     bool UsesAsyncReallocation(void) const;
 
+    bool SupportsShrinkingReallocation(void) const;
+
     // todo: necessary?
     inline void LockSelfBuffer(void)
     {
@@ -162,9 +164,9 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
     {
         this->other_rank = 1 - this->rank_internal;
 
-        this->particles_agent = RMAFactory::Create<MCParticle>(this->rdma_type, this->buffsize, this->comm);
-        this->av_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
-        this->th_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
+        this->particles_agent = RMAFactory::CreateResizable<MCParticle>(this->rdma_type, this->buffsize, this->comm);
+        this->av_agent = RMAFactory::CreateResizable<index_t>(this->rdma_type, this->buffsize, this->comm);
+        this->th_agent = RMAFactory::CreateResizable<index_t>(this->rdma_type, this->buffsize, this->comm);
         this->lengths_agent = RMAFactory::CreateOver<int>(this->rdma_type, this->lengths_storage, 2, this->comm);
 
         this->particles = this->particles_agent->GetLocalPointer();
@@ -708,7 +710,7 @@ void RankHandler<T, Grid>::Reallocate(double factor)
 
             if(this->buffsize >= oldBuffSize)
             {
-                std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
+                std::copy(this->particles, this->particles + oldBuffSize, new_particles);
                 std::memcpy(new_th, this->th, this->th_length * sizeof(index_t));
                 size_t difference = this->buffsize - oldBuffSize;
                 std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
@@ -718,7 +720,7 @@ void RankHandler<T, Grid>::Reallocate(double factor)
             }
             else
             {
-                std::memcpy(new_particles, this->particles, this->buffsize * sizeof(MCParticle));
+                std::copy(this->particles, this->particles + this->buffsize, new_particles);
                 std::memcpy(new_th, this->th, this->buffsize * sizeof(index_t));
                 std::iota(new_av, new_av + this->buffsize, 0);
                 this->av_length = static_cast<int>(this->buffsize);
@@ -754,6 +756,12 @@ bool RankHandler<T, Grid>::UsesAsyncReallocation(void) const
            this->av_agent->SupportsAsyncReallocation() and
            this->th_agent->SupportsAsyncReallocation() and
            this->lengths_agent->SupportsAsyncReallocation();
+}
+
+template<typename T, typename Grid>
+bool RankHandler<T, Grid>::SupportsShrinkingReallocation(void) const
+{
+    return this->size_internal <= 1 or this->particles_agent->SupportsShrinkingReallocation();
 }
 
 template<typename T, typename Grid>

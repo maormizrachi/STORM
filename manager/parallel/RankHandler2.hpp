@@ -10,7 +10,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -81,11 +80,20 @@ public:
 private:
     static constexpr size_t HEAD_INDEX = 0;
     static constexpr size_t TAIL_INDEX = 1;
-    uint64_t queue_storage[2]; // [head, tail], monotonic SPSC counters
+    static constexpr size_t BUFFER_ADDR_INDEX = 2;
+    static constexpr size_t BUFFER_RKEY_INDEX = 3;
+    static constexpr size_t BUFFER_COUNT_INDEX = 4;
+    static constexpr size_t BUFFER_GENERATION_INDEX = 5;
+    static constexpr size_t QUEUE_STORAGE_SIZE = 6;
+    uint64_t queue_storage[QUEUE_STORAGE_SIZE];
+    uint64_t buffer_generation;
 
     void SynchronizeLocalQueueForRead(void) const;
     void SynchronizeLocalParticlesForRead(void) const;
     void PublishLocalQueueCounter(void);
+    void PublishLocalBufferInfo(void);
+    void RefreshPeerBufferInfo(void);
+    void LinearizeLocalParticles(size_t localCount, size_t oldBuffSize);
 
 public:
     volatile uint64_t &head;
@@ -102,6 +110,8 @@ public:
     bool UsesAsyncReallocation(void) const;
 
     bool SupportsPersistentSendSourceRegistration(void) const;
+
+    bool SupportsShrinkingReallocation(void) const;
 
     typename RemoteMemoryAgent<MCParticle>::SourceRegistration RegisterSendSource(const MCParticle *particles, size_t particlesNum);
 
@@ -129,6 +139,7 @@ public:
 private:
     std::unique_ptr<RemoteMemoryAgent<MCParticle>> particles_agent;
     std::unique_ptr<RemoteMemoryAgent<uint64_t>> lengths_agent;
+    std::unique_ptr<MCParticle[]> local_particles_storage;
     std::shared_ptr<DistributedMutex> localListMutex;
     std::shared_ptr<DistributedMutex> remoteListMutex;
     RDMA_Type rdma_type;
@@ -141,7 +152,7 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
                                     std::shared_ptr<ReallocationAgent> &reallocationAgent,
                                     RDMA_Type rdma_type, size_t minimalBuffSize):
     comm_world(comm_world), comm(private_comm), buffsize(buffsize),
-    particles(nullptr), queue_storage{0, 0},
+    particles(nullptr), queue_storage{}, buffer_generation(0),
     head(queue_storage[HEAD_INDEX]), tail(queue_storage[TAIL_INDEX]),
     reallocationAgent(reallocationAgent), rdma_type(rdma_type), destroyed(false),
     group_world(MPI_GROUP_NULL), group_internal(MPI_GROUP_NULL),
@@ -164,10 +175,12 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
     {
         this->other_rank = 1 - this->rank_internal;
 
-        this->particles_agent = RMAFactory::Create<MCParticle>(this->rdma_type, this->buffsize, this->comm);
-        this->lengths_agent = RMAFactory::CreateOver<uint64_t>(this->rdma_type, this->queue_storage, 2, this->comm);
+        this->particles_agent = RMAFactory::CreateResizable<MCParticle>(this->rdma_type, this->buffsize, this->comm);
+        this->lengths_agent = RMAFactory::CreateOver<uint64_t>(this->rdma_type, this->queue_storage,
+                                                               QUEUE_STORAGE_SIZE, this->comm);
 
         this->particles = this->particles_agent->GetLocalPointer();
+        this->PublishLocalBufferInfo();
 
         std::shared_ptr<DistributedMutex> rank0Mutex = std::make_shared<DistributedMutex>(comm, 0, this->rdma_type);
         std::shared_ptr<DistributedMutex> rank1Mutex = std::make_shared<DistributedMutex>(comm, 1, this->rdma_type);
@@ -179,7 +192,9 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
     else
     {
         this->other_rank = 0;
-        this->particles = new MCParticle[this->buffsize];
+        this->local_particles_storage =
+            std::make_unique<MCParticle[]>(std::max<size_t>(this->buffsize, 1));
+        this->particles = this->local_particles_storage.get();
         this->Reset();
     }
 
@@ -233,7 +248,8 @@ void RankHandler2<T, Grid>::Destroy(void)
     }
     else
     {
-        delete[] this->particles;
+        this->local_particles_storage.reset();
+        this->particles = nullptr;
     }
     this->destroyed = true;
 }
@@ -277,6 +293,86 @@ void RankHandler2<T, Grid>::PublishLocalQueueCounter(void)
     if(this->size_internal > 1 and this->lengths_agent)
     {
         this->lengths_agent->SyncLocal();
+    }
+}
+
+template<typename T, typename Grid>
+void RankHandler2<T, Grid>::PublishLocalBufferInfo(void)
+{
+    if(this->size_internal <= 1 or not this->particles_agent or
+       not this->particles_agent->SupportsLocalResize())
+    {
+        return;
+    }
+
+    const RemoteBufferInfo info = this->particles_agent->GetLocalRemoteInfo();
+    this->queue_storage[BUFFER_ADDR_INDEX] = info.addr;
+    this->queue_storage[BUFFER_RKEY_INDEX] = info.rkey;
+    this->queue_storage[BUFFER_COUNT_INDEX] = static_cast<uint64_t>(info.count);
+    this->queue_storage[BUFFER_GENERATION_INDEX] = ++this->buffer_generation;
+    this->PublishLocalQueueCounter();
+}
+
+template<typename T, typename Grid>
+void RankHandler2<T, Grid>::RefreshPeerBufferInfo(void)
+{
+    if(this->size_internal <= 1 or not this->particles_agent->SupportsLocalResize())
+    {
+        return;
+    }
+
+    uint64_t remoteMetadata[4] = {};
+    this->lengths_agent->Get(remoteMetadata, 4, this->other_rank, BUFFER_ADDR_INDEX);
+
+    RemoteBufferInfo info;
+    info.addr = remoteMetadata[0];
+    info.rkey = remoteMetadata[1];
+    info.count = static_cast<size_t>(remoteMetadata[2]);
+    // CXI (and other FI_MR_VIRT_ADDR-off providers) publish addr=0 and use
+    // byte offsets into the MR. A zero address is only illegal when the
+    // backend actually addresses by virtual address (IBV, verbs MSG).
+    const bool requireVirtualAddress = this->particles_agent->UsesVirtualAddresses();
+    if((requireVirtualAddress and info.addr == 0) or info.count == 0 or remoteMetadata[3] == 0)
+    {
+        STORMError eo("RankHandler2::RefreshPeerBufferInfo: invalid remote buffer metadata");
+        eo.addEntry("My Rank", this->rank_world);
+        eo.addEntry("Peer Rank", this->peer_rank_world);
+        eo.addEntry("Remote Address", static_cast<size_t>(info.addr));
+        eo.addEntry("Remote Key", static_cast<size_t>(info.rkey));
+        eo.addEntry("Remote Count", info.count);
+        eo.addEntry("Remote Generation", static_cast<size_t>(remoteMetadata[3]));
+        eo.addEntry("Requires Virtual Address", static_cast<size_t>(requireVirtualAddress ? 1 : 0));
+        throw eo;
+    }
+
+    this->particles_agent->UpdateRemoteInfo(this->other_rank, info);
+    this->peer_buffsize = info.count;
+}
+
+template<typename T, typename Grid>
+void RankHandler2<T, Grid>::LinearizeLocalParticles(size_t localCount, size_t oldBuffSize)
+{
+    if(localCount == 0 or oldBuffSize == 0)
+    {
+        return;
+    }
+
+    this->SynchronizeLocalParticlesForRead();
+    const size_t start = static_cast<size_t>(this->head % oldBuffSize);
+    if(start == 0)
+    {
+        return;
+    }
+
+    std::vector<MCParticle> activeParticles;
+    activeParticles.reserve(localCount);
+    for(size_t i = 0; i < localCount; i++)
+    {
+        activeParticles.push_back(this->particles[(start + i) % oldBuffSize]);
+    }
+    for(size_t i = 0; i < localCount; i++)
+    {
+        this->particles[i] = activeParticles[i];
     }
 }
 
@@ -363,10 +459,10 @@ void RankHandler2<T, Grid>::DetachLocalParticles(std::vector<MCParticle> &result
     this->SynchronizeLocalParticlesForRead();
     size_t start = static_cast<size_t>(localHead % this->buffsize);
     size_t first = std::min(count, this->buffsize - start);
-    std::memcpy(result.data(), this->particles + start, first * sizeof(MCParticle));
+    std::copy(this->particles + start, this->particles + start + first, result.begin());
     if(first < count)
     {
-        std::memcpy(result.data() + first, this->particles, (count - first) * sizeof(MCParticle));
+        std::copy(this->particles, this->particles + (count - first), result.begin() + first);
     }
     this->head = localTail;
     this->PublishLocalQueueCounter();
@@ -421,7 +517,7 @@ void RankHandler2<T, Grid>::AppendLocalParticles(const MCParticle *particles, si
 {
     this->AppendLocalParticles(particlesNum, [particles](MCParticle &destination, size_t index)
     {
-        std::memcpy(&destination, particles + index, sizeof(MCParticle));
+        destination = particles[index];
     });
 }
 
@@ -432,6 +528,19 @@ void RankHandler2<T, Grid>::Reallocate(double factor, size_t requiredBuffSize)
     memory_debug::check_system_memory("RankHandler2::Reallocate");
 #endif
 
+    this->LockSelfBuffer();
+    struct LocalBufferUnlockGuard
+    {
+        RankHandler2 *handler;
+        bool active;
+        ~LocalBufferUnlockGuard()
+        {
+            if(active)
+            {
+                handler->UnlockSelfBuffer();
+            }
+        }
+    } unlockGuard{this, this->size_internal > 1};
 
     if(this->size_internal > 1)
     {
@@ -460,15 +569,7 @@ void RankHandler2<T, Grid>::Reallocate(double factor, size_t requiredBuffSize)
         throw eo;
     }
 
-    std::vector<unsigned char> activeParticles;
-    if(this->size_internal > 1 and not noParticles)
-    {
-        activeParticles.resize(localCount * sizeof(MCParticle));
-        this->ForEachLocalParticle([&activeParticles](const MCParticle &particle, size_t index)
-        {
-            std::memcpy(activeParticles.data() + index * sizeof(MCParticle), &particle, sizeof(MCParticle));
-        });
-    }
+    this->LinearizeLocalParticles(localCount, oldBuffSize);
 
     this->buffsize = newBuffSize;
 
@@ -498,7 +599,6 @@ void RankHandler2<T, Grid>::Reallocate(double factor, size_t requiredBuffSize)
         }
         else
         {
-            std::memcpy(this->particles, activeParticles.data(), localCount * sizeof(MCParticle));
             this->head = 0;
             this->tail = static_cast<uint64_t>(localCount);
         }
@@ -506,29 +606,18 @@ void RankHandler2<T, Grid>::Reallocate(double factor, size_t requiredBuffSize)
         MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0,
                      &this->peer_buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0,
                      this->comm, MPI_STATUS_IGNORE);
+        this->PublishLocalBufferInfo();
     }
     else
     {
-        if(noParticles)
+        std::unique_ptr<MCParticle[]> newStorage =
+            std::make_unique<MCParticle[]>(std::max<size_t>(newBuffSize, 1));
+        for(size_t i = 0; i < localCount; i++)
         {
-            delete[] this->particles;
-            this->particles = new MCParticle[newBuffSize];
+            newStorage[i] = this->particles[i];
         }
-        else
-        {
-            MCParticle *newParticles = new MCParticle[newBuffSize];
-            this->SynchronizeLocalParticlesForRead();
-            size_t start = static_cast<size_t>(this->head % oldBuffSize);
-            size_t first = std::min(localCount, oldBuffSize - start);
-            std::memcpy(newParticles, this->particles + start, first * sizeof(MCParticle));
-            if(first < localCount)
-            {
-                std::memcpy(newParticles + first, this->particles,
-                            (localCount - first) * sizeof(MCParticle));
-            }
-            delete[] this->particles;
-            this->particles = newParticles;
-        }
+        this->local_particles_storage = std::move(newStorage);
+        this->particles = this->local_particles_storage.get();
 
         this->head = 0;
         this->tail = static_cast<uint64_t>(localCount);
@@ -576,26 +665,15 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
         }
 
         size_t localCount = this->LocalSize();
-        std::vector<unsigned char> activeParticles;
-        if(localCount > 0)
-        {
-            activeParticles.resize(localCount * sizeof(MCParticle));
-            this->ForEachLocalParticle([&activeParticles](const MCParticle &particle, size_t index)
-            {
-                std::memcpy(activeParticles.data() + index * sizeof(MCParticle), &particle, sizeof(MCParticle));
-            });
-        }
+        this->LinearizeLocalParticles(localCount, this->buffsize);
 
         this->buffsize = newBuffSize;
         RemoteBufferInfo particlesInfo = this->particles_agent->LocalResize(this->buffsize);
         RemoteBufferInfo lengthsInfo = this->lengths_agent->GetLocalRemoteInfo();
         this->particles = this->particles_agent->GetLocalPointer();
-        if(localCount > 0)
-        {
-            std::memcpy(this->particles, activeParticles.data(), localCount * sizeof(MCParticle));
-        }
         this->head = 0;
         this->tail = static_cast<uint64_t>(localCount);
+        this->PublishLocalBufferInfo();
         this->PublishLocalQueueCounter();
 
         this->UnlockSelfBuffer();
@@ -638,6 +716,12 @@ bool RankHandler2<T, Grid>::SupportsPersistentSendSourceRegistration(void) const
 }
 
 template<typename T, typename Grid>
+bool RankHandler2<T, Grid>::SupportsShrinkingReallocation(void) const
+{
+    return this->size_internal <= 1 or this->particles_agent->SupportsShrinkingReallocation();
+}
+
+template<typename T, typename Grid>
 typename RemoteMemoryAgent<typename RankHandler2<T, Grid>::MCParticle>::SourceRegistration
 RankHandler2<T, Grid>::RegisterSendSource(const MCParticle *particles, size_t particlesNum)
 {
@@ -672,6 +756,17 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
 
     if(this->size_internal > 1)
     {
+        // After RequestReallocationAsync the peer may LocalResize and
+        // ibv_dereg_mr the old MR before we receive the new rkey. Any RDMA
+        // (Put, Get, or QuiesceTarget) with the stale rkey is
+        // IBV_WC_REM_ACCESS_ERR. The send-buffer flush path already skips
+        // pending ranks; this is the same guard for direct transfers.
+        if(this->UsesAsyncReallocation() and
+           this->reallocationAgent->IsPendingReallocation(this->peer_rank_world))
+        {
+            return false;
+        }
+
         // The peer may resize/replace its receive queue asynchronously. Hold
         // the peer-owned mutex for the complete remote queue transaction so a
         // reallocation cannot invalidate the remote particle window between
@@ -679,6 +774,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
         // while asking the peer to reallocate; its callback acquires this
         // same mutex on its local side.
         this->remoteListMutex->Lock();
+        this->RefreshPeerBufferInfo();
 
         uint64_t remoteHead = 0;
         uint64_t remoteTail = 0;
@@ -737,6 +833,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
             this->remoteListMutex->Unlock();
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
             this->remoteListMutex->Lock();
+            this->RefreshPeerBufferInfo();
 
             getRemoteCounters();
             remoteCount = static_cast<size_t>(remoteTail - remoteHead);

@@ -392,7 +392,7 @@ void MonteCarloManagerLegacy<T, Grid>::AddParticles(const std::vector<MCParticle
         index_t idx = avIndices[i];
         // copy particle
         MCParticle *particle = myHandler->particles + idx;
-        std::memcpy(particle, &particles[i], sizeof(MCParticle));
+        *particle = particles[i];
         // set to handle
         thIndices[i] = idx;
         // set ID
@@ -563,7 +563,7 @@ void MonteCarloManagerLegacy<T, Grid>::PutSelfParticles(std::vector<MCParticle> 
     {
         size_t particleIdx = av_indices[i];
         handler->th[oldTHLength + i] = particleIdx;
-        std::memcpy(handler->particles + particleIdx, &particles[i], sizeof(MCParticle));
+        handler->particles[particleIdx] = particles[i];
         MCParticle &particle = handler->particles[particleIdx];
         if(particle.id == std::numeric_limits<size_t>::max())
         {
@@ -1523,7 +1523,9 @@ void MonteCarloManagerLegacy<T, Grid>::ShrinkBuffers(void)
     boost::container::flat_set<rank_t> neighbors(this->neighbors.cbegin(), this->neighbors.cend());
     for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
     {
-        if(r != this->rank_world and this->rankHandlers[r] != nullptr and this->rankHandlers[r]->buffsize > this->config.minimalBuffSize)
+        if(r != this->rank_world and this->rankHandlers[r] != nullptr and
+           this->rankHandlers[r]->SupportsShrinkingReallocation() and
+           this->rankHandlers[r]->buffsize > this->config.minimalBuffSize)
         {
             if(neighbors.find(r) == neighbors.end())
             {
@@ -1575,7 +1577,8 @@ void MonteCarloManagerLegacy<T, Grid>::ShrinkBuffers(void)
             continue;
         }
 
-        if(this->rankHandlers[r] != nullptr)
+        if(this->rankHandlers[r] != nullptr and
+           this->rankHandlers[r]->SupportsShrinkingReallocation())
         {
             shrinkConfirmations[r].push_back(this->rank_world);
         }
