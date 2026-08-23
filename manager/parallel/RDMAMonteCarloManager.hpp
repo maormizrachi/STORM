@@ -40,6 +40,7 @@
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <mpi.h>
@@ -125,9 +126,12 @@ std::vector<rank_t> GetNeighborList2(const Grid &tess, const boost::container::f
 }
 
 
-template<typename T, typename Grid>
+template<typename T, typename Grid, typename Physics = MonteCarloPhysics<T, Grid>>
 class RDMAMonteCarloManager
 {
+    static_assert(std::is_base_of<MonteCarloPhysics<T, Grid>, Physics>::value,
+                  "Physics must derive from MonteCarloPhysics<T, Grid>");
+
     using MCParticle = MonteCarloParticle<T>;
     using RankHandler_t = RankHandler2<T, Grid>;
 
@@ -138,7 +142,7 @@ public:
         size_t leavingCount = 0;
     };
 
-    RDMAMonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
+    RDMAMonteCarloManager(const Grid &grid, const std::shared_ptr<Physics> &physics,
                     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
                     const MonteCarloConfig &config = MonteCarloConfig(),
@@ -334,7 +338,7 @@ private:
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
     std::vector<RankHandler_t*> rankHandlers;
     T ll, ur;
-    std::shared_ptr<MonteCarloPhysics<T, Grid>> physics;
+    std::shared_ptr<Physics> physics;
     std::shared_ptr<PopulationControl<T, Grid>> populationControl;
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
     Tracker tracker;
@@ -430,8 +434,8 @@ private:
 
 };
 
-template<typename T, typename Grid>
-RDMAMonteCarloManager<T, Grid>::RDMAMonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
+template<typename T, typename Grid, typename Physics>
+RDMAMonteCarloManager<T, Grid, Physics>::RDMAMonteCarloManager(const Grid &grid, const std::shared_ptr<Physics> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                                             const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition, const MonteCarloConfig &config, const MPI_Comm &comm, RDMA_Type rdma_type):
     grid(grid), config(config), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL), tracker(comm), rdma_type(rdma_type)
 {
@@ -506,8 +510,8 @@ RDMAMonteCarloManager<T, Grid>::RDMAMonteCarloManager(const Grid &grid, const st
     this->activeRankScanRemaining = 0;
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::ClearCommunicator()
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::ClearCommunicator()
 {
     if(this->comm_world == MPI_COMM_NULL)
     {
@@ -534,8 +538,8 @@ void RDMAMonteCarloManager<T, Grid>::ClearCommunicator()
     this->comm_world = MPI_COMM_NULL;
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::FreeHandlers(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::FreeHandlers(void)
 {
     auto freeHandler = [&](rank_t _rank)
     {
@@ -551,8 +555,8 @@ void RDMAMonteCarloManager<T, Grid>::FreeHandlers(void)
     ForEachRankSync(this->comm_world, this->ranksOrder, freeHandler);
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &particles)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::AddParticles(const std::vector<MCParticle> &particles)
 {
     if(particles.empty())
     {
@@ -604,8 +608,8 @@ void RDMAMonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> 
     this->localDecrementAmount -= static_cast<typename AmountManager::counter_t>(particlesNum);
 }
 
-template<typename T, typename Grid>
-RDMAMonteCarloManager<T, Grid>::~RDMAMonteCarloManager()
+template<typename T, typename Grid, typename Physics>
+RDMAMonteCarloManager<T, Grid, Physics>::~RDMAMonteCarloManager()
 {
     if(not std::uncaught_exceptions())
     {
@@ -615,8 +619,8 @@ RDMAMonteCarloManager<T, Grid>::~RDMAMonteCarloManager()
     }
 }
 
-template<typename T, typename Grid>
-bool RDMAMonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
+template<typename T, typename Grid, typename Physics>
+bool RDMAMonteCarloManager<T, Grid, Physics>::UsesAsyncReallocation(void) const
 {
     for(const RankHandler_t *handler : this->rankHandlers)
     {
@@ -628,8 +632,8 @@ bool RDMAMonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
     return false;
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::PumpRMAProgress(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::PumpRMAProgress(void)
 {
     if(this->UsesAsyncReallocation())
     {
@@ -637,8 +641,8 @@ void RDMAMonteCarloManager<T, Grid>::PumpRMAProgress(void)
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::ProgressReallocations(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::ProgressReallocations(void)
 {
     this->PumpRMAProgress();
     if(this->UsesAsyncReallocation())
@@ -651,24 +655,24 @@ void RDMAMonteCarloManager<T, Grid>::ProgressReallocations(void)
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::MakeRDMAProgress(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::MakeRDMAProgress(void)
 {
     RMAFactory::MakeProgress(this->rdma_type);
 }
 
-template<typename T, typename Grid>
-RDMAMonteCarloManager<T, Grid>::Tracker::Tracker(const MPI_Comm &comm): comm(comm)
+template<typename T, typename Grid, typename Physics>
+RDMAMonteCarloManager<T, Grid, Physics>::Tracker::Tracker(const MPI_Comm &comm): comm(comm)
 {}
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::Tracker::Reset(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::Tracker::Reset(void)
 {
     this->track.clear();
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::Tracker::ReportParticle(MCParticle &particle)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::Tracker::ReportParticle(MCParticle &particle)
 {
     if(this->track.find(particle.id) == this->track.end())
     {
@@ -677,8 +681,8 @@ void RDMAMonteCarloManager<T, Grid>::Tracker::ReportParticle(MCParticle &particl
     this->track[particle.id].push_back(particle);
 }
 
-template<typename T, typename Grid>
-std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloManager<T, Grid>::Tracker::GetLocalTrackParticleRoute(size_t id) const
+template<typename T, typename Grid, typename Physics>
+std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMonteCarloManager<T, Grid, Physics>::Tracker::GetLocalTrackParticleRoute(size_t id) const
 {
     auto it = this->track.find(id);
     if(it == this->track.end())
@@ -688,8 +692,8 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
     return it->second;
 }
 
-template<typename T, typename Grid>
-std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloManager<T, Grid>::Tracker::GetTrackParticleRoute(size_t id) const
+template<typename T, typename Grid, typename Physics>
+std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMonteCarloManager<T, Grid, Physics>::Tracker::GetTrackParticleRoute(size_t id) const
 {
     std::vector<MCParticle> local = this->GetLocalTrackParticleRoute(id);
     std::vector<MCParticle> global = MPI_All_cast(local, this->comm);
@@ -698,8 +702,8 @@ std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloM
     return global;
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&particles)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::PutSelfParticles(std::vector<MCParticle> &&particles)
 {
     #ifdef STORM_DEBUG
     boost::container::flat_set<std::pair<rank_t, size_t>> particlesSet;
@@ -745,8 +749,8 @@ void RDMAMonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&
     particles.swap(empty);
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::TransferParticles(rank_t fromRank, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
 {
     if(indicesInToHandle.empty())
     {
@@ -845,8 +849,8 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const st
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks)
 {
     if(indicesInToHandle.empty())
     {
@@ -957,8 +961,8 @@ void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t>
     }
 }
 
-template<typename T, typename Grid>
-bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
+template<typename T, typename Grid, typename Physics>
+bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &stepData)
 {
     static std::vector<MCParticle> particlesToAdd;
     static size_t progressStepCounter;
@@ -1360,10 +1364,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                         T preReflectVel = particle.velocity;
                                     #endif // STORM_WITH_TRACING_HISTORY
                                     MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
-                                    this->physics->onBoundaryResult(
-                                        particle, status,
-                                        functionality.boundaryCrossing &&
-                                        this->boundaryCondition->isEscape(status));
+                                    this->physics->onBoundaryResult(particle, status, functionality.boundaryCrossing && this->boundaryCondition->isEscape(status));
                                     if(status == MonteCarloParticleStatus::REFLECT)
                                     {
                                         #ifdef STORM_WITH_TRACING_HISTORY
@@ -1396,8 +1397,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                                     throwCellMoveOutsideBox("remote rank transfer");
                                 #endif // STORM_DEBUG
 
-                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
-                                                    MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                                 auto [otherRank, neighborIndexInRank] = it->second;
                                 #ifdef STORM_DEBUG
                                 particle.checkedHere = false;
@@ -1526,8 +1526,8 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
 }
 
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::ResetAllBuffers(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::ResetAllBuffers(void)
 {
     this->activeRanks.clear();
     this->nextActiveRanks.clear();
@@ -1559,8 +1559,8 @@ void RDMAMonteCarloManager<T, Grid>::ResetAllBuffers(void)
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::ShrinkBuffers(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::ShrinkBuffers(void)
 {
     if(this->rank_world == 0)
     {
@@ -1714,16 +1714,16 @@ void RDMAMonteCarloManager<T, Grid>::ShrinkBuffers(void)
     }
 }
 
-template<typename T, typename Grid>
-typename RDMAMonteCarloManager<T, Grid>::RegisteredSendBuffer &RDMAMonteCarloManager<T, Grid>::GetSendBuffer(rank_t rank)
+template<typename T, typename Grid, typename Physics>
+typename RDMAMonteCarloManager<T, Grid, Physics>::RegisteredSendBuffer &RDMAMonteCarloManager<T, Grid, Physics>::GetSendBuffer(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
     return this->sendBuffers[static_cast<size_t>(rank)];
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::QueueReadySendBuffer(rank_t rank)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::QueueReadySendBuffer(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBufferReadyQueued.size()));
@@ -1736,8 +1736,8 @@ void RDMAMonteCarloManager<T, Grid>::QueueReadySendBuffer(rank_t rank)
     this->readySendBufferRanks.push_back(rank);
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::MarkSendBufferEmpty(rank_t rank)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::MarkSendBufferEmpty(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
@@ -1752,8 +1752,8 @@ void RDMAMonteCarloManager<T, Grid>::MarkSendBufferEmpty(rank_t rank)
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::ResetSendBuffers(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::ResetSendBuffers(void)
 {
     for(rank_t rank : this->sendBufferActiveRanks)
     {
@@ -1774,8 +1774,8 @@ void RDMAMonteCarloManager<T, Grid>::ResetSendBuffers(void)
     this->sendBufferPendingParticles = 0;
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::ReleaseSendBufferRegistrations(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::ReleaseSendBufferRegistrations(void)
 {
     for(RegisteredSendBuffer &buffer : this->sendBuffers)
     {
@@ -1783,8 +1783,8 @@ void RDMAMonteCarloManager<T, Grid>::ReleaseSendBufferRegistrations(void)
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t previousSize, const RegisteredSendBuffer &buffer, size_t addedParticles)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::NoteSendBufferGrowth(rank_t rank, size_t previousSize, const RegisteredSendBuffer &buffer, size_t addedParticles)
 {
     this->sendBufferPendingParticles += addedParticles;
     if(addedParticles > 0 and previousSize == 0 and not buffer.empty())
@@ -1809,8 +1809,8 @@ void RDMAMonteCarloManager<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t pr
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t flushedParticles)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::NoteSendBufferFlush(rank_t rank, size_t flushedParticles)
 {
     assert(this->sendBufferPendingParticles >= flushedParticles);
     this->sendBufferPendingParticles -= flushedParticles;
@@ -1818,8 +1818,8 @@ void RDMAMonteCarloManager<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t flu
 }
 
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::FlushSendBuffers(bool flushSmallBuffers)
 {
     size_t pendingRanks = this->sendBufferPendingRanks;
 
@@ -1965,8 +1965,8 @@ void RDMAMonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
     (void)heldIdleDrain;
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::FlushAllSendBuffers(void)
 {
     const bool usesAsyncReallocation = this->UsesAsyncReallocation();
     for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
@@ -2023,8 +2023,8 @@ void RDMAMonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
     }
 }
 
-template<typename T, typename Grid>
-bool RDMAMonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
+template<typename T, typename Grid, typename Physics>
+bool RDMAMonteCarloManager<T, Grid, Physics>::AllSendBuffersEmpty(void) const
 {
     if(this->sendBufferPendingParticles == 0)
     {
@@ -2046,8 +2046,8 @@ bool RDMAMonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
 }
 
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum)
 {
     const size_t bytesPerSlot = sizeof(MCParticle);
     size_t localHandlerMemory = 0;
@@ -2134,8 +2134,8 @@ void RDMAMonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialPartic
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::RetireStaleHandlers(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::RetireStaleHandlers(void)
 {
     if(not this->config.retireStaleHandlers)
     {
@@ -2236,8 +2236,8 @@ void RDMAMonteCarloManager<T, Grid>::RetireStaleHandlers(void)
     }
 }
 
-template<typename T, typename Grid>
-void RDMAMonteCarloManager<T, Grid>::PrepareHandlers(void)
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::PrepareHandlers(void)
 {
 
     this->neighbors = GetNeighborList2(this->grid, this->ranks_ghost_map);
@@ -2292,8 +2292,8 @@ void RDMAMonteCarloManager<T, Grid>::PrepareHandlers(void)
     this->ResetAllBuffers();
 }
 
-template<typename T, typename Grid>
-std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloManager<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
+template<typename T, typename Grid, typename Physics>
+std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMonteCarloManager<T, Grid, Physics>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
 {
     // if(this->Ncells != this->grid.GetPointNo())
     // {

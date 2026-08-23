@@ -274,6 +274,10 @@ endif()
 if(STORM_WITH_MPI)
   target_compile_definitions(storm PUBLIC STORM_WITH_MPI MADVORO_WITH_MPI RICH_MPI SPATIAL_DS_WITH_MPI __WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
+
+  add_library(storm_static_physics_compile_test OBJECT EXCLUDE_FROM_ALL
+    examples/static_physics_compile.cpp)
+  target_link_libraries(storm_static_physics_compile_test PRIVATE storm)
 endif()
 
 set(STORM_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CMMC/src")

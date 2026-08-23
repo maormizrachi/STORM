@@ -7,6 +7,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <mpi.h>
 #include "../particle/Particle.hpp"
 #include "../physics/MonteCarloPhysics.hpp"
@@ -106,10 +107,10 @@ inline RDMA_Type ToRDMAType(RDMAEngine engine)
     return RDMA_Type::AUTO_RDMA;
 }
 
-template<typename T, typename Grid>
+template<typename T, typename Grid, typename Physics>
 MonteCarloManager<T, Grid> CreateMonteCarloManager(
     const Grid &grid,
-    const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
+    const std::shared_ptr<Physics> &physics,
     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
     ManagerType managerType = ManagerType::Auto,
@@ -117,6 +118,9 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
     const MonteCarloConfig &config = MonteCarloConfig(),
     const MPI_Comm &comm = MPI_COMM_WORLD)
 {
+    static_assert(std::is_base_of<MonteCarloPhysics<T, Grid>, Physics>::value,
+                  "Physics must derive from MonteCarloPhysics<T, Grid>");
+
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
 
@@ -137,7 +141,7 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
             try
             {
                 log("Trying RDMA with OFI (libfabric)...");
-                auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
+                auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid, Physics>>(
                     grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::OFI_RDMA);
                 log("Using RDMA with OFI (libfabric)");
                 return mgr;
@@ -155,7 +159,7 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
         }
 
         case ManagerType::RDMA:
-            return MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid>>(
+            return MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid, Physics>>(
                 grid, physics, populationControl, boundaryCondition, config, comm, ToRDMAType(rdmaEngine));
 
         case ManagerType::Legacy:
