@@ -71,7 +71,7 @@ std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::fl
 template<typename T, typename Grid>
 class MonteCarloManagerLegacy
 {
-    using MCParticle = MonteCarloParticle<T, Grid>;
+    using MCParticle = MonteCarloParticle<T>;
     using RankHandler_t = RankHandler<T, Grid>;
 
 public:
@@ -1174,7 +1174,7 @@ bool MonteCarloManagerLegacy<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
                         std::cout << "Before running particle step, particle is " << particle << std::endl;
                     }
 
-                    MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+                    MonteCarloFunctionality functionality = this->physics->step(particle, particlesToAdd);
 
                     if(particle.on_track)
                     {

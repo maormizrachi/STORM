@@ -40,7 +40,7 @@ public:
     void SetTemperature(double temp) { temperature_ = temp; }
     double GetTemperature() const { return temperature_; }
 
-    ParticleStatus apply(Particle<T, Grid> &particle) override
+    ParticleStatus apply(Particle<T> &particle) override
     {
         const auto &[ll, ur] = this->grid.GetBoxCoordinates();
         ParticleStatus status = ParticleStatus::DONE;
@@ -80,7 +80,7 @@ public:
         return DDMCBoundaryFaceBehavior::ReflectingRigid;
     }
 
-    std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) override
+    std::vector<Particle<T>> generateNewBoundaryParticles(double fullDt) override
     {
         double T4 = boost::math::pow<4>(temperature_);
         std::uniform_real_distribution<double> unif(0, 1);
@@ -98,7 +98,7 @@ public:
         }
         double total = cdf[N_DENSMORE_GROUPS];
 
-        std::vector<Particle<T, Grid>> newParticles;
+        std::vector<Particle<T>> newParticles;
         size_t N = this->grid.GetPointNo();
 
         for(size_t i = 0; i < N; i++)
@@ -117,7 +117,7 @@ public:
                         for(size_t j = 0; j < Npercell_; j++)
                         {
                             newParticles.emplace_back();
-                            Particle<T, Grid> &p = newParticles.back();
+                            Particle<T> &p = newParticles.back();
                             p.location = RandomPointOnFace<T, Grid>(this->grid, faceIdx);
                             double mu = std::sqrt(unif(re));
                             p.velocity.x = mu;

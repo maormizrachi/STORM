@@ -23,10 +23,10 @@ int main()
 
     STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 
-    std::vector<STORM::Particle<Vector3D, Grid>> particles;
+    std::vector<STORM::Particle<Vector3D>> particles;
     for(size_t i = 0; i < 100; i++)
     {
-        STORM::Particle<Vector3D, Grid> p;
+        STORM::Particle<Vector3D> p;
         p.location = Vector3D(0.55, 0.55, 0.55);
         double theta = 2 * M_PI * i / 100.0;
         double phi = M_PI * (i % 50) / 50.0;

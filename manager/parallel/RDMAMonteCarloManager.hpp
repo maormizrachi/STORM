@@ -127,7 +127,7 @@ std::vector<rank_t> GetNeighborList2(const Grid &tess, const boost::container::f
 template<typename T, typename Grid>
 class RDMAMonteCarloManager
 {
-    using MCParticle = MonteCarloParticle<T, Grid>;
+    using MCParticle = MonteCarloParticle<T>;
     using RankHandler_t = RankHandler2<T, Grid>;
 
 public:
@@ -1229,7 +1229,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                         }
                         #endif // STORM_DEBUG
 
-                        MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+                        MonteCarloFunctionality functionality = this->physics->step(particle, particlesToAdd);
 
                         #ifdef STORM_DEBUG
                         if(__builtin_expect(functionality.change != MonteCarloParticleStatus::REMOVE &&

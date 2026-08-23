@@ -330,7 +330,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         std::make_shared<CombPopulationControl<Vector3D, MarshakGrid>>(grid, 15, 6.0);
 
     MonteCarloManagerSerial<Vector3D, MarshakGrid> manager(grid, physics, popControl, boundary);
-    std::vector<Particle<Vector3D, MarshakGrid>> particles;
+    std::vector<Particle<Vector3D>> particles;
 
     double dt = params.initialDt;
     double simTime = 0;

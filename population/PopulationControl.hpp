@@ -9,7 +9,7 @@ template<typename T, typename Grid>
 class PopulationControl
 {
 public:
-    using MCParticle = Particle<T, Grid>;
+    using MCParticle = Particle<T>;
 
     PopulationControl(const Grid &grid);
 

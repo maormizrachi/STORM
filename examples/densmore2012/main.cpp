@@ -227,7 +227,7 @@ int main(int argc, char *argv[])
 #else
     STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 #endif
-    std::vector<STORM::Particle<Vector3D, Grid>> particles;
+    std::vector<STORM::Particle<Vector3D>> particles;
 
     for(size_t step = 0; step < iterations; step++)
     {

@@ -26,7 +26,7 @@ template<typename T, typename Grid>
 class MonteCarloManagerSerial
 {
     using index_t = uint32_t;
-    using MCParticle = Particle<T, Grid>;
+    using MCParticle = Particle<T>;
 
 public:
     struct MonteCarloStepFinalData
@@ -302,7 +302,7 @@ void MonteCarloManagerSerial<T, Grid>::HandleAll(MonteCarloStepFinalData &stepDa
             particle.steps++;
             this->cellsStepsCounters[particle.cellIndex]++;
 
-            StepResult<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+            StepResult functionality = this->physics->step(particle, particlesToAdd);
 
             if(particle.on_track)
             {

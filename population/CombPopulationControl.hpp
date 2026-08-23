@@ -23,7 +23,7 @@ class CombPopulationControl : public PopulationControl<T, Grid>
 public:
     CombPopulationControl(const Grid &grid, size_t Nmin = 20, double totalParticlesFactor = 2.0);
 
-    std::vector<Particle<T, Grid>> activate(const std::vector<Particle<T, Grid>> &particles) override;
+    std::vector<Particle<T>> activate(const std::vector<Particle<T>> &particles) override;
 
 private:
     size_t Nmin;
@@ -35,7 +35,7 @@ template<typename T, typename Grid>
 class StratifiedCombPopulationControl : public PopulationControl<T, Grid>
 {
 public:
-    using MCParticle = Particle<T, Grid>;
+    using MCParticle = Particle<T>;
     using Classifier = std::function<size_t(const MCParticle&)>;
 
     StratifiedCombPopulationControl(const Grid &grid,
@@ -77,9 +77,9 @@ CombPopulationControl<T, Grid>::CombPopulationControl(const Grid &grid, size_t N
 {}
 
 template<typename T, typename Grid>
-std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const std::vector<Particle<T, Grid>> &particles)
+std::vector<Particle<T>> CombPopulationControl<T, Grid>::activate(const std::vector<Particle<T>> &particles)
 {
-    using MCParticle = Particle<T, Grid>;
+    using MCParticle = Particle<T>;
 
     #ifdef STORM_WITH_MPI
         rank_t rank = 0;
@@ -253,9 +253,9 @@ std::vector<Particle<T, Grid>> CombPopulationControl<T, Grid>::activate(const st
 }
 
 template<typename T, typename Grid>
-std::vector<Particle<T, Grid>> StratifiedCombPopulationControl<T, Grid>::activate(const std::vector<Particle<T, Grid>> &particles)
+std::vector<Particle<T>> StratifiedCombPopulationControl<T, Grid>::activate(const std::vector<Particle<T>> &particles)
 {
-    using MCParticle = Particle<T, Grid>;
+    using MCParticle = Particle<T>;
 
     #ifdef STORM_WITH_MPI
         rank_t rank = 0;

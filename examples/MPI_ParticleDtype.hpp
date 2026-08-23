@@ -10,9 +10,9 @@
 #include "Vector3D.hpp"
 
 template<typename Grid>
-struct MPI_has_complex_dtype<STORM::Particle<Vector3D, Grid>> : std::true_type
+struct MPI_has_complex_dtype<STORM::Particle<Vector3D>> : std::true_type
 {
-    using ParticleT = STORM::Particle<Vector3D, Grid>;
+    using ParticleT = STORM::Particle<Vector3D>;
 
     static MPI_Datatype getDatatype()
     {
@@ -25,7 +25,12 @@ private:
     {
         ParticleT dummy{};
 
-        constexpr int base_count = 14;
+        constexpr int base_count = 19;
+#ifdef MONTECARLO_POLARIZATION
+        constexpr int polarization_count = 5;
+#else
+        constexpr int polarization_count = 0;
+#endif
 #ifdef STORM_DEBUG
         constexpr int debug_count = 10;
 #else
@@ -37,7 +42,8 @@ private:
 #else
         constexpr int history_count = 0;
 #endif
-        constexpr int total_count = base_count + debug_count + history_count;
+        constexpr int total_count = base_count + polarization_count +
+            debug_count + history_count;
 
         MPI_Datatype types[total_count];
         int blocklengths[total_count];
@@ -57,49 +63,61 @@ private:
             idx++;
         };
 
-        add_field(dummy.rank, MPI_INT);
-        add_field(dummy.id, MPI_UNSIGNED_LONG_LONG);
-        add_field(dummy.cellID, MPI_UNSIGNED_LONG_LONG);
-        add_field(dummy.sourceCellID, MPI_UNSIGNED_LONG_LONG);
+        add_field(dummy.rank, MPI_INT32_T);
+        add_field(dummy.id, MPI_UINT64_T);
+        add_field(dummy.cellID, MPI_UINT64_T);
+        add_field(dummy.sourceCellID, MPI_UINT64_T);
         add_field(dummy.location.x, MPI_DOUBLE, 3);
         add_field(dummy.velocity.x, MPI_DOUBLE, 3);
-        add_field(dummy.cellIndex, MPI_UNSIGNED_LONG_LONG);
+        add_field(dummy.cellIndex, MPI_UINT64_T);
         add_field(dummy.timeLeft, MPI_DOUBLE);
         add_field(dummy.frequency, MPI_DOUBLE);
         add_field(dummy.weight, MPI_DOUBLE);
         add_field(dummy.initialWeight, MPI_DOUBLE);
-        add_field(dummy.steps, MPI_UNSIGNED_LONG_LONG);
-        add_field(dummy.on_track, MPI_CXX_BOOL);
-        add_field(dummy.sent, MPI_CXX_BOOL);
+        add_field(dummy.rngKey, MPI_UINT64_T);
+        add_field(dummy.rngCounter, MPI_UINT64_T);
+        add_field(dummy.radiationState.flags, MPI_UINT8_T);
+        add_field(dummy.radiationState.pendingFlux.x, MPI_DOUBLE, 3);
+        add_field(dummy.radiationState.bypassCellID, MPI_UINT64_T);
+#ifdef MONTECARLO_POLARIZATION
+        add_field(dummy.stokesQ, MPI_DOUBLE);
+        add_field(dummy.stokesU, MPI_DOUBLE);
+        add_field(dummy.polarizationBasis.x, MPI_DOUBLE, 3);
+        add_field(dummy.polarizationInitialized, MPI_UINT8_T);
+        add_field(dummy.radiationState.pendingMeanScatterings, MPI_DOUBLE);
+#endif
+        add_field(dummy.steps, MPI_UINT64_T);
+        add_field(dummy.on_track, MPI_UINT8_T);
+        add_field(dummy.sent, MPI_UINT8_T);
 
 #ifdef STORM_DEBUG
-        add_field(dummy.checkedHere, MPI_CXX_BOOL);
-        add_field(dummy.ghostIndex, MPI_UNSIGNED_LONG_LONG);
+        add_field(dummy.checkedHere, MPI_UINT8_T);
+        add_field(dummy.ghostIndex, MPI_UINT64_T);
         add_field(dummy.newCellValue.x, MPI_DOUBLE, 3);
-        add_field(dummy.nextRank, MPI_INT);
-        add_field(dummy.removedFromRank, MPI_CXX_BOOL);
-        add_field(dummy.sentByRank, MPI_INT);
-        add_field(dummy.lastSeen, MPI_UNSIGNED_LONG_LONG);
-        add_field(dummy.lastSeenRank, MPI_INT);
-        add_field(dummy.lastSeenRankBuf, MPI_INT);
-        add_field(dummy.lastSeenIndex, MPI_UNSIGNED_LONG_LONG);
+        add_field(dummy.nextRank, MPI_INT32_T);
+        add_field(dummy.removedFromRank, MPI_UINT8_T);
+        add_field(dummy.sentByRank, MPI_INT32_T);
+        add_field(dummy.lastSeen, MPI_UINT64_T);
+        add_field(dummy.lastSeenRank, MPI_INT32_T);
+        add_field(dummy.lastSeenRankBuf, MPI_INT32_T);
+        add_field(dummy.lastSeenIndex, MPI_UINT64_T);
 #endif
 
 #ifdef STORM_WITH_TRACING_HISTORY
         for(int h = 0; h < STORM_WITH_TRACING_HISTORY; h++)
         {
-            add_field(dummy.tracingHistory[h].cellIndex, MPI_UNSIGNED_LONG_LONG);
-            add_field(dummy.tracingHistory[h].rank, MPI_INT);
-            add_field(dummy.tracingHistory[h].operation, MPI_INT);
-            add_field(dummy.tracingHistory[h].step, MPI_UNSIGNED_LONG_LONG);
-            add_field(dummy.tracingHistory[h].reflected, MPI_CXX_BOOL);
+            add_field(dummy.tracingHistory[h].cellIndex, MPI_UINT64_T);
+            add_field(dummy.tracingHistory[h].rank, MPI_INT32_T);
+            add_field(dummy.tracingHistory[h].operation, MPI_INT32_T);
+            add_field(dummy.tracingHistory[h].step, MPI_UINT64_T);
+            add_field(dummy.tracingHistory[h].reflected, MPI_UINT8_T);
             add_field(dummy.tracingHistory[h].location.x, MPI_DOUBLE, 3);
             add_field(dummy.tracingHistory[h].velocity.x, MPI_DOUBLE, 3);
             add_field(dummy.tracingHistory[h].preReflectLocation.x, MPI_DOUBLE, 3);
             add_field(dummy.tracingHistory[h].preReflectVelocity.x, MPI_DOUBLE, 3);
         }
-        add_field(dummy.tracingHistoryIndex, MPI_UNSIGNED_LONG_LONG);
-        add_field(dummy.tracingHistoryCount, MPI_UNSIGNED_LONG_LONG);
+        add_field(dummy.tracingHistoryIndex, MPI_UINT64_T);
+        add_field(dummy.tracingHistoryCount, MPI_UINT64_T);
 #endif
 
         assert(idx == total_count);

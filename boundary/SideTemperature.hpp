@@ -24,9 +24,9 @@ class SideTemperature : public BoundaryCondition<T, Grid>
 public:
     SideTemperature(const Grid &grid, double temperature, size_t Npercell, const std::vector<double> &energyBoundaries = {});
 
-    ParticleStatus apply(Particle<T, Grid> &particle) override;
+    ParticleStatus apply(Particle<T> &particle) override;
 
-    std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+    std::vector<Particle<T>> generateNewBoundaryParticles(double fullDt) override;
 
     DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
         size_t faceIdx,
@@ -82,7 +82,7 @@ SideTemperature<T, Grid>::SideTemperature(const Grid &grid, double temperature, 
 }
 
 template<typename T, typename Grid>
-ParticleStatus SideTemperature<T, Grid>::apply(Particle<T, Grid> &particle)
+ParticleStatus SideTemperature<T, Grid>::apply(Particle<T> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     ParticleStatus status = ParticleStatus::DONE;
@@ -112,13 +112,13 @@ ParticleStatus SideTemperature<T, Grid>::apply(Particle<T, Grid> &particle)
 }
 
 template<typename T, typename Grid>
-std::vector<Particle<T, Grid>> SideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
+std::vector<Particle<T>> SideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
     static const double T4 = boost::math::pow<4>(this->temperature);
     std::uniform_real_distribution<double> unif(0, 1);
     static std::mt19937_64 re(0);
 
-    std::vector<Particle<T, Grid>> newParticles;
+    std::vector<Particle<T>> newParticles;
     size_t N = this->grid.GetPointNo();
     for(size_t i = 0; i < N; i++)
     {
@@ -136,7 +136,7 @@ std::vector<Particle<T, Grid>> SideTemperature<T, Grid>::generateNewBoundaryPart
                     for(size_t j = 0; j < this->Npercell; j++)
                     {
                         newParticles.emplace_back();
-                        Particle<T, Grid> &newParticle = newParticles.back();
+                        Particle<T> &newParticle = newParticles.back();
                         newParticle.location = RandomPointOnFace<T, Grid>(this->grid, faceIdx);
                         double mu = std::sqrt(unif(re));
                         newParticle.velocity.x = mu;

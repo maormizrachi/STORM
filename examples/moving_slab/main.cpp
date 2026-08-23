@@ -156,7 +156,7 @@ static std::vector<Vector3D> BuildAllPoints(double t, double vSlab, double L_sla
 // ============================================================
 
 static void SyncParticleCellIDs(const std::vector<MovingSlabCell> &cells,
-                                std::vector<STORM::Particle<Vector3D, Grid>> &particles)
+                                std::vector<STORM::Particle<Vector3D>> &particles)
 {
     size_t N = cells.size();
     for(auto &p : particles)
@@ -176,7 +176,7 @@ static bool Rebalance(Grid &grid,
                       STORM::MonteCarloManager<Vector3D, Grid> &manager,
                       std::vector<MovingSlabCell> &cells,
                       std::vector<MovingSlabExtensives> &extensives,
-                      std::vector<STORM::Particle<Vector3D, Grid>> &particles,
+                      std::vector<STORM::Particle<Vector3D>> &particles,
                       int rank)
 {
     size_t N = grid.GetPointNo();
@@ -254,7 +254,7 @@ static void Remesh(Grid &grid, double vSlab, double L_slab, double xSym,
                    double prevTime, double nowTime,
                    std::vector<MovingSlabCell> &cells,
                    std::vector<MovingSlabExtensives> &extensives,
-                   std::vector<STORM::Particle<Vector3D, Grid>> &particles,
+                   std::vector<STORM::Particle<Vector3D>> &particles,
                    STORM::MonteCarloManager<Vector3D, Grid> &manager)
 {
     double slabFrontOld = L_slab + vSlab * prevTime;
@@ -311,7 +311,7 @@ static void Remesh(Grid &grid, double vSlab, double L_slab, double xSym,
     auto boxCoords = grid.GetBoxCoordinates();
     particles.erase(
         std::remove_if(particles.begin(), particles.end(),
-            [&boxCoords](const STORM::Particle<Vector3D, Grid> &p)
+            [&boxCoords](const STORM::Particle<Vector3D> &p)
             {
                 return p.location.x < boxCoords.first.x || p.location.x > boxCoords.second.x;
             }),
@@ -333,7 +333,7 @@ static SimulationResult RunSimulation(
     STORM::MonteCarloManager<Vector3D, Grid> &manager,
     std::vector<MovingSlabCell> &cells,
     std::vector<MovingSlabExtensives> &extensives,
-    std::vector<STORM::Particle<Vector3D, Grid>> &particles,
+    std::vector<STORM::Particle<Vector3D>> &particles,
     double vSlab, double L_slab, double xSym, double tO,
     int rank, int nprocs)
 {
@@ -612,7 +612,7 @@ int main(int argc, char *argv[])
     {
         STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
             grid, physics, popControl, boundary);
-        std::vector<STORM::Particle<Vector3D, Grid>> particles;
+        std::vector<STORM::Particle<Vector3D>> particles;
 
         if(rank == 0)
         {

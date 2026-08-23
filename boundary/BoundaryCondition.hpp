@@ -35,7 +35,7 @@ public:
 
     virtual ~BoundaryCondition() = default;
 
-    virtual ParticleStatus apply(Particle<T, Grid> &particle) = 0;
+    virtual ParticleStatus apply(Particle<T> &particle) = 0;
 
     // A REMOVE result can mean absorption/thermalization as well as escape;
     // concrete boundaries identify the latter explicitly.
@@ -45,7 +45,7 @@ public:
         return false;
     }
 
-    virtual std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) = 0;
+    virtual std::vector<Particle<T>> generateNewBoundaryParticles(double fullDt) = 0;
 
     virtual DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
         size_t faceIdx,
@@ -93,7 +93,7 @@ protected:
     }
 
     bool reflectParticleOnBoxFace(
-        Particle<T, Grid> &particle,
+        Particle<T> &particle,
         const typename Grid::Face_T &face) const
     {
         T normal;

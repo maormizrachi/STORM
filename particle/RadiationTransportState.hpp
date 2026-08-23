@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <limits>
+#include "../types.hpp"
 
 namespace STORM {
 
@@ -23,7 +24,7 @@ struct RadiationTransportState
 
     std::uint8_t flags = 0;
     PointT pendingFlux{};
-    std::size_t bypassCellID = std::numeric_limits<std::size_t>::max();
+    cell_id_t bypassCellID = std::numeric_limits<cell_id_t>::max();
 #ifdef MONTECARLO_POLARIZATION
     double pendingMeanScatterings = 0.0;
 #endif
@@ -62,7 +63,7 @@ struct RadiationTransportState
             this->flags & ~static_cast<std::uint8_t>(
                 DDMCMode | DDMCCellResident | DDMCComovingFrame | PendingFlux));
         this->pendingFlux = PointT{};
-        this->bypassCellID = std::numeric_limits<std::size_t>::max();
+        this->bypassCellID = std::numeric_limits<cell_id_t>::max();
 #ifdef MONTECARLO_POLARIZATION
         this->pendingMeanScatterings = 0.0;
 #endif

@@ -12,7 +12,7 @@ namespace STORM {
 using namespace STORM::fallback;
 
 template<typename T, typename Grid>
-double DopplerShift(const Particle<T, Grid> &particle, const T &velocity)
+double DopplerShift(const Particle<T> &particle, const T &velocity)
 {
     double const v2 = ScalarProd(velocity, velocity);
     double const invClight2 = 1.0 / (units::clight * units::clight);
@@ -22,7 +22,7 @@ double DopplerShift(const Particle<T, Grid> &particle, const T &velocity)
 
 template<typename T, typename Grid>
 void LorentzTransformation(
-    Particle<T, Grid> &particle,
+    Particle<T> &particle,
     const T &velocity,
     const std::vector<double> *energyBoundaries = nullptr)
 {

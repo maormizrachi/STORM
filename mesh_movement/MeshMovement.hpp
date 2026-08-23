@@ -15,7 +15,7 @@ namespace STORM {
 template<typename PointT, typename Grid>
 struct MeshMovement
 {
-    using ParticleT = STORM::Particle<PointT, Grid>;
+    using ParticleT = STORM::Particle<PointT>;
 
     static void UpdateNewCells(const Grid &grid, std::vector<ParticleT> &particles);
 
@@ -225,7 +225,7 @@ void MeshMovement<PointT, Grid>::UpdateNewCellsAfterExchange(const Grid &grid, s
 // ============================================================
 
 template<typename PointT, typename Grid>
-void UpdateNewCells(const Grid &grid, std::vector<Particle<PointT, Grid>> &particles)
+void UpdateNewCells(const Grid &grid, std::vector<Particle<PointT>> &particles)
 {
     MeshMovement<PointT, Grid>::UpdateNewCells(grid, particles);
 }
@@ -233,7 +233,7 @@ void UpdateNewCells(const Grid &grid, std::vector<Particle<PointT, Grid>> &parti
 #ifdef STORM_WITH_MPI
 
 template<typename PointT, typename Grid>
-void UpdateNewCellsAfterExchange(const Grid &grid, std::vector<Particle<PointT, Grid>> &particles)
+void UpdateNewCellsAfterExchange(const Grid &grid, std::vector<Particle<PointT>> &particles)
 {
     MeshMovement<PointT, Grid>::UpdateNewCellsAfterExchange(grid, particles);
 }

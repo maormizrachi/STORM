@@ -34,7 +34,7 @@ using namespace STORM::fallback;
 template<typename T, typename Grid>
 class TwoSidedMonteCarloManager
 {
-    using MCParticle = MonteCarloParticle<T, Grid>;
+    using MCParticle = MonteCarloParticle<T>;
 
 public:
     TwoSidedMonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
@@ -434,7 +434,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
             #ifdef STORM_DEBUG
                 particle.previousLocation = particle.location;
             #endif // STORM_DEBUG
-            MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+            MonteCarloFunctionality functionality = this->physics->step(particle, particlesToAdd);
 
             if(particle.on_track)
             {

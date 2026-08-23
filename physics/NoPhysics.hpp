@@ -9,8 +9,8 @@ template<typename T, typename Grid>
 class NoPhysics : public MonteCarloPhysics<T, Grid>
 {
 public:
-    using MCParticle = Particle<T, Grid>;
-    using Functionality = StepResult<T, Grid>;
+    using MCParticle = Particle<T>;
+    using Functionality = StepResult;
 
     NoPhysics(Grid &grid, const std::shared_ptr<BoundaryCondition<T, Grid>> &boundary);
 

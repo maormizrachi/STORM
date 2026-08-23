@@ -3,24 +3,23 @@
 
 #include <limits>
 #include "ParticleStatus.hpp"
+#include "../types.hpp"
 
 namespace STORM {
 
-template<typename T, typename Grid>
 struct StepResult
 {
     ParticleStatus change = ParticleStatus::NO_CELL_MOVE;
-    size_t nextCellIndex = std::numeric_limits<size_t>::max();
+    cell_index_t nextCellIndex = std::numeric_limits<cell_index_t>::max();
     // Set when nextCellIndex is an actual outside-box boundary.  The manager
     // combines this with the boundary-condition outcome before accounting
     // escape energy.
-    bool boundaryCrossing = false;
+    std::uint8_t boundaryCrossing = 0;
 };
 
 } // namespace STORM
 
 // Back-compat alias
-template<typename T, typename Grid>
-using MonteCarloFunctionality = STORM::StepResult<T, Grid>;
+using MonteCarloFunctionality = STORM::StepResult;
 
 #endif // STORM_STEP_RESULT_HPP

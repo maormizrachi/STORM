@@ -474,7 +474,7 @@ int main(int argc, char **argv)
         std::vector<double> energy{totalEnergy(extensives.front())};
         const double initialEnergy = energy.front();
 
-        std::vector<STORM::Particle<Vector3D, Grid>> particles =
+        std::vector<STORM::Particle<Vector3D>> particles =
             physics->generateInitialParticles(options.initialPhotonsPerCell);
         const double initialDt = 1e-13;
         const double maxDt = 1e-10;

@@ -48,22 +48,27 @@ public:
     }
 
     virtual PointT getRandomVelocity(const CellT &cell,
-                                     std::mt19937_64 &rng,
-                                     std::uniform_real_distribution<double> &dist)
+                                     double directionRandom1,
+                                     double directionRandom2)
     {
         (void) cell;
-        return isotropicVelocity(rng, dist);
+        const double mu = 1.0 - 2.0 * directionRandom1;
+        const double phi = 2.0 * std::acos(-1.0) * directionRandom2;
+        const double sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+        return PointT(sinTheta * std::cos(phi),
+                      sinTheta * std::sin(phi), mu) * units::clight;
     }
 
     virtual PointT getNewScatterVelocity(const CellT &cell,
                                          const PointT &oldVelocity,
                                          double frequency,
-                                         std::mt19937_64 &rng,
-                                         std::uniform_real_distribution<double> &dist)
+                                         double directionRandom1,
+                                         double directionRandom2)
     {
         (void) oldVelocity;
         (void) frequency;
-        return this->getRandomVelocity(cell, rng, dist);
+        return this->getRandomVelocity(
+            cell, directionRandom1, directionRandom2);
     }
 
     virtual bool ComptonIncludedInTransport() const { return false; }

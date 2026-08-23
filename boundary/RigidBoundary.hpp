@@ -14,9 +14,9 @@ public:
 
     ~RigidBoundary() override;
 
-    ParticleStatus apply(Particle<T, Grid> &particle) override;
+    ParticleStatus apply(Particle<T> &particle) override;
 
-    std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+    std::vector<Particle<T>> generateNewBoundaryParticles(double fullDt) override;
 
     DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
         size_t faceIdx,
@@ -40,7 +40,7 @@ RigidBoundary<T, Grid>::~RigidBoundary()
 {}
 
 template<typename T, typename Grid>
-ParticleStatus RigidBoundary<T, Grid>::apply(Particle<T, Grid> &particle)
+ParticleStatus RigidBoundary<T, Grid>::apply(Particle<T> &particle)
 {
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
     ParticleStatus status = ParticleStatus::DONE;
@@ -58,7 +58,7 @@ ParticleStatus RigidBoundary<T, Grid>::apply(Particle<T, Grid> &particle)
 }
 
 template<typename T, typename Grid>
-std::vector<Particle<T, Grid>> RigidBoundary<T, Grid>::generateNewBoundaryParticles(double fullDt)
+std::vector<Particle<T>> RigidBoundary<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
     (void) fullDt;
     return {};

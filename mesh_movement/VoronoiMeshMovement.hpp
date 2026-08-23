@@ -46,7 +46,7 @@ template<typename PointT, typename GridT>
 struct VoronoiMeshMovement
 {
     using Grid = GridT;
-    using ParticleT = STORM::Particle<PointT, Grid>;
+    using ParticleT = STORM::Particle<PointT>;
     using IVec = IndexedVector<PointT>;
 
     static void UpdateNewCells(const Grid &grid, std::vector<ParticleT> &particles, const std::vector<size_t> &cellIDs);

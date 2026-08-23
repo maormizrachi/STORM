@@ -111,7 +111,7 @@ static bool IsMaterial(double x, double r)
 }
 
 using Grid = MadVoro::Voronoi3D<Vector3D>;
-using ParticleT = STORM::Particle<Vector3D, Grid>;
+using ParticleT = STORM::Particle<Vector3D>;
 
 static bool Rebalance(Grid &grid,
                       STORM::MonteCarloManager<Vector3D, Grid> &manager,
@@ -501,7 +501,7 @@ int main(int argc, char *argv[])
     STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
         grid, physics, popControl, boundary);
 
-    std::vector<STORM::Particle<Vector3D, Grid>> particles;
+    std::vector<STORM::Particle<Vector3D>> particles;
 
     double dt = 1e-11;
     const double t_final = 3e-9;

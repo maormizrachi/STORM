@@ -9,7 +9,7 @@ template<typename T, typename Grid>
 class VacuumBoundary : public BoundaryCondition<T, Grid>
 {
 public:
-    using MCParticle = Particle<T, Grid>;
+    using MCParticle = Particle<T>;
 
     explicit VacuumBoundary(const Grid &grid)
         : BoundaryCondition<T, Grid>(grid)

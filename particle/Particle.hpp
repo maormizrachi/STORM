@@ -14,6 +14,7 @@
 #include "ParticleStatus.hpp"
 #include "../elementary/PointOps.hpp"
 #include "RadiationTransportState.hpp"
+#include "../types.hpp"
 
 #define EPSILON 1e-12
 
@@ -28,11 +29,11 @@ using dt_t = double;
 template<typename T>
 struct ParticleHistory
 {
-    size_t cellIndex = 0;
-    int rank = -1;
-    int operation = 0;
-    size_t step = 0;
-    bool reflected = false;
+    cell_index_t cellIndex = 0;
+    std::int32_t rank = -1;
+    std::int32_t operation = 0;
+    particle_step_t step = 0;
+    std::uint8_t reflected = 0;
     T location = T();
     T velocity = T();
     T preReflectLocation = T();
@@ -40,56 +41,79 @@ struct ParticleHistory
 };
 #endif // STORM_WITH_TRACING_HISTORY
 
-template<typename T, typename Grid>
-struct Particle
-                    #ifdef STORM_WITH_MPI
-                        : public Serializable
-                    #endif // STORM_WITH_MPI
+template<typename T>
+struct ParticleRoutingState
 {
-    #ifdef STORM_WITH_MPI
-        rank_t rank = -1;
-        #ifdef STORM_DEBUG
-            size_t cellIndexInPrevRank = std::numeric_limits<size_t>::max();
-            T previousLocation = T(std::numeric_limits<double>::max());
-            size_t particleTHInLastRank = std::numeric_limits<size_t>::max();
-            size_t particleIndexInLastRank = std::numeric_limits<size_t>::max();
-            bool checkedHere = true;
-            size_t ghostIndex = std::numeric_limits<size_t>::max();
-            T newCellValue = T(std::numeric_limits<double>::max());
-            rank_t nextRank = std::numeric_limits<rank_t>::max();
-            rank_t sentByRank = std::numeric_limits<rank_t>::max();
-            bool removedFromRank = false;
-            size_t lastSeen = 0;
-            rank_t lastSeenRank = std::numeric_limits<rank_t>::max();
-            rank_t lastSeenRankBuf = std::numeric_limits<rank_t>::max();
-            size_t lastSeenIndex = std::numeric_limits<size_t>::max();
-        #endif // STORM_DEBUG
-    #endif // STORM_WITH_MPI
-    size_t id = std::numeric_limits<size_t>::max();
-    size_t cellID = std::numeric_limits<size_t>::max();
-    size_t sourceCellID = std::numeric_limits<size_t>::max();
+#ifdef STORM_WITH_MPI
+    rank_t rank = -1;
+#ifdef STORM_DEBUG
+    cell_index_t cellIndexInPrevRank = std::numeric_limits<cell_index_t>::max();
+    T previousLocation = T(std::numeric_limits<double>::max());
+    cell_index_t particleTHInLastRank = std::numeric_limits<cell_index_t>::max();
+    cell_index_t particleIndexInLastRank = std::numeric_limits<cell_index_t>::max();
+    std::uint8_t checkedHere = 1;
+    cell_index_t ghostIndex = std::numeric_limits<cell_index_t>::max();
+    T newCellValue = T(std::numeric_limits<double>::max());
+    rank_t nextRank = std::numeric_limits<rank_t>::max();
+    rank_t sentByRank = std::numeric_limits<rank_t>::max();
+    std::uint8_t removedFromRank = 0;
+    particle_step_t lastSeen = 0;
+    rank_t lastSeenRank = std::numeric_limits<rank_t>::max();
+    rank_t lastSeenRankBuf = std::numeric_limits<rank_t>::max();
+    cell_index_t lastSeenIndex = std::numeric_limits<cell_index_t>::max();
+#endif
+#endif
+    std::uint8_t sent = 0;
+};
+
+// Physics state only.  This is the payload to mirror in device memory; it has
+// no MPI bookkeeping and no Serializable vtable.
+template<typename T>
+struct ParticleTransportData
+{
+    particle_id_t id = std::numeric_limits<particle_id_t>::max();
+    cell_id_t cellID = std::numeric_limits<cell_id_t>::max();
+    cell_id_t sourceCellID = std::numeric_limits<cell_id_t>::max();
     T location = T(std::numeric_limits<typename T::coord_type>::max());
     T velocity = T(std::numeric_limits<typename T::coord_type>::max());
-    size_t cellIndex = std::numeric_limits<size_t>::max();
+    cell_index_t cellIndex = std::numeric_limits<cell_index_t>::max();
     dt_t timeLeft = std::numeric_limits<dt_t>::max();
     double frequency = std::numeric_limits<double>::max();
-    double weight = std::numeric_limits<double>::max();
-    double initialWeight = std::numeric_limits<double>::max();
+    double weight = 0.0;
+    double initialWeight = 0.0;
+    std::uint64_t rngKey = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t rngCounter = 0;
     RadiationTransportState<T> radiationState{};
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
     T polarizationBasis = T();
-    bool polarizationInitialized = false;
+    std::uint8_t polarizationInitialized = 0;
 #endif
-    size_t steps = 0;
-    bool on_track = false;
-    bool sent = false;
+    particle_step_t steps = 0;
+    std::uint8_t on_track = 0;
 
+    ParticleTransportData() = default;
+
+    ParticleTransportData(particle_id_t id_, const T &location_,
+                          const T &velocity_, dt_t timeLeft_)
+        : id(id_), location(location_), velocity(velocity_),
+          timeLeft(timeLeft_) {}
+};
+
+#ifdef STORM_WITH_MPI
+template<typename T>
+struct Particle : public Serializable, public ParticleTransportData<T>,
+                  public ParticleRoutingState<T>
+#else
+template<typename T>
+struct Particle : public ParticleTransportData<T>, public ParticleRoutingState<T>
+#endif
+{
     #ifdef STORM_WITH_TRACING_HISTORY
         ParticleHistory<T> tracingHistory[STORM_WITH_TRACING_HISTORY] = {};
-        size_t tracingHistoryIndex = 0;
-        size_t tracingHistoryCount = 0;
+        std::uint64_t tracingHistoryIndex = 0;
+        std::uint64_t tracingHistoryCount = 0;
 
         inline void recordHistory(size_t cell, int rnk, int op)
         {
@@ -136,12 +160,12 @@ struct Particle
         }
     #endif // STORM_WITH_TRACING_HISTORY
 
-    explicit Particle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(std::numeric_limits<double>::max()), const T &velocity_ = T(std::numeric_limits<double>::max()), dt_t timeLeft_ = dt_t(std::numeric_limits<double>::max())):
-        id(id_), location(location_), velocity(velocity_), cellIndex(std::numeric_limits<size_t>::max()), timeLeft(timeLeft_), frequency(std::numeric_limits<double>::max()), weight(0), initialWeight(0), steps(0), on_track(false)
+    explicit Particle(particle_id_t id_ = std::numeric_limits<particle_id_t>::max(), const T &location_ = T(std::numeric_limits<double>::max()), const T &velocity_ = T(std::numeric_limits<double>::max()), dt_t timeLeft_ = dt_t(std::numeric_limits<double>::max())):
+        ParticleTransportData<T>(id_, location_, velocity_, timeLeft_)
     {
         #ifdef STORM_DEBUG
         this->checkedHere = true;
-        this->ghostIndex = std::numeric_limits<size_t>::max();
+        this->ghostIndex = std::numeric_limits<cell_index_t>::max();
         this->newCellValue = T(std::numeric_limits<double>::max());
         this->nextRank = std::numeric_limits<rank_t>::max();
         this->removedFromRank = false;
@@ -154,8 +178,6 @@ struct Particle
         this->polarizationInitialized = false;
 #endif
     };
-
-    std::pair<size_t, typename T::coord_type> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
 
     friend inline std::ostream &operator<<(std::ostream &stream, const Particle &particle)
     {
@@ -202,102 +224,9 @@ struct Particle
     #endif // STORM_WITH_MPI
 };
 
-template<typename T, typename Grid>
-std::pair<size_t, typename T::coord_type> Particle<T, Grid>::distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const
-{
-    using coord_t = typename T::coord_type;
-    std::pair<size_t, coord_t> best = {std::numeric_limits<size_t>::max(), std::numeric_limits<coord_t>::max()};
-    size_t &min_face = best.first;
-    coord_t &min_alpha = best.second;
-
-    const double velocityAbs = EPSILON * fastabs(this->velocity);
-    const auto &faces = grid.GetCellFaces(this->cellIndex);
-    size_t Nfaces = faces.size();
-
-    for(size_t i = 0; i < Nfaces; ++i)
-    {
-        const size_t &faceIdx = faces[i];
-        const T &normal = normalsOfCell[i];
-
-        double normalVelocityScalarProd = ScalarProd(normal, this->velocity);
-        if(__builtin_expect(normalVelocityScalarProd >= -velocityAbs, 0))
-        {
-            continue;
-        }
-        const T &pointOnFace = pointsOnFaces[i];
-
-        coord_t alpha = ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
-
-        __builtin_prefetch(&Nfaces, 0, 0);
-
-        if(i < Nfaces - 1)
-        {
-            const T *nextNormal = &normalsOfCell[i + 1];
-            __builtin_prefetch(nextNormal, 0, 2);
-        }
-
-        __builtin_prefetch(&min_alpha, 1, 3);
-        __builtin_prefetch(&min_face, 1, 3);
-        if(__builtin_expect(alpha < min_alpha, 0))
-        {
-            if(alpha > 0)
-            {
-                min_alpha = alpha;
-                min_face = faceIdx;
-            }
-        }
-    }
-
-    if(min_alpha != std::numeric_limits<coord_t>::max())
-    {
-        return best;
-    }
-
-    if(grid.IsPointOutsideBox(this->location))
-    {
-        StormError eo("Particle is outside the domain, but still considered");
-        #ifdef STORM_WITH_MPI
-            rank_t rank;
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            eo.addEntry("Rank", rank);
-        #endif // STORM_WITH_MPI
-        eo.addEntry("Particle", *this);
-        eo.addEntry("Cell Index", this->cellIndex);
-        #ifdef STORM_WITH_TRACING_HISTORY
-            this->addTracingHistoryToError(eo);
-        #endif // STORM_WITH_TRACING_HISTORY
-        throw eo;
-    }
-    size_t realContainingCell = grid.GetContainingCell(this->location);
-    if(realContainingCell != this->cellIndex)
-    {
-        StormError eo("Particle::distanceToNearestFace: the containing cellIndex is incorrect");
-        eo.addEntry("Real containing cell index", realContainingCell);
-        eo.addEntry("Declared containing cell", this->cellIndex);
-        eo.addEntry("Particle", (*this));
-        #ifdef STORM_WITH_TRACING_HISTORY
-            this->addTracingHistoryToError(eo);
-        #endif // STORM_WITH_TRACING_HISTORY
-        throw eo;
-    }
-
-    StormError eo("Particle::distanceToNearestFace: no face intersection found");
-    #ifdef STORM_WITH_MPI
-        rank_t rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        eo.addEntry("Rank", rank);
-    #endif // STORM_WITH_MPI
-    eo.addEntry("Particle", *this);
-    eo.addEntry("Cell Index", this->cellIndex);
-    #ifdef STORM_WITH_TRACING_HISTORY
-        this->addTracingHistoryToError(eo);
-    #endif // STORM_WITH_TRACING_HISTORY
-    throw eo;
-}
-
 #ifdef STORM_WITH_MPI
-template<typename T, typename Grid>
-size_t Particle<T, Grid>::dump(Serializer *serializer) const
+template<typename T>
+size_t Particle<T>::dump(Serializer *serializer) const
 {
     size_t bytes = 0;
     bytes += serializer->insert(this->rank);
@@ -311,6 +240,8 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->frequency);
     bytes += serializer->insert(this->weight);
     bytes += serializer->insert(this->initialWeight);
+    bytes += serializer->insert(this->rngKey);
+    bytes += serializer->insert(this->rngCounter);
     bytes += serializer->insert(this->radiationState.flags);
     bytes += serializer->insert(this->radiationState.pendingFlux);
     bytes += serializer->insert(this->radiationState.bypassCellID);
@@ -355,8 +286,8 @@ size_t Particle<T, Grid>::dump(Serializer *serializer) const
     return bytes;
 }
 
-template<typename T, typename Grid>
-size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
+template<typename T>
+size_t Particle<T>::load(const Serializer *serializer, size_t byteOffset)
 {
     size_t bytes = 0;
     bytes += serializer->extract(this->rank, byteOffset);
@@ -370,6 +301,8 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
     bytes += serializer->extract(this->frequency, byteOffset + bytes);
     bytes += serializer->extract(this->weight, byteOffset + bytes);
     bytes += serializer->extract(this->initialWeight, byteOffset + bytes);
+    bytes += serializer->extract(this->rngKey, byteOffset + bytes);
+    bytes += serializer->extract(this->rngCounter, byteOffset + bytes);
     bytes += serializer->extract(this->radiationState.flags, byteOffset + bytes);
     bytes += serializer->extract(this->radiationState.pendingFlux, byteOffset + bytes);
     bytes += serializer->extract(this->radiationState.bypassCellID, byteOffset + bytes);
@@ -418,7 +351,7 @@ size_t Particle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
 } // namespace STORM
 
 // Back-compat alias
-template<typename T, typename Grid>
-using MonteCarloParticle = STORM::Particle<T, Grid>;
+template<typename T>
+using MonteCarloParticle = STORM::Particle<T>;
 
 #endif // STORM_PARTICLE_HPP

@@ -34,7 +34,7 @@ class RankHandler2
 {
 public:
     using index_t = uint32_t;
-    using MCParticle = MonteCarloParticle<T, Grid>;
+    using MCParticle = MonteCarloParticle<T>;
 
     RankHandler2(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm,
                  std::shared_ptr<ReallocationAgent> &reallocationAgent,

@@ -48,7 +48,7 @@
 #include "examples/marshak_wave/MarshakCommon.hpp"
 
 using Grid = MadCart::CartesianMesh3D<Vector3D>;
-using ParticleT = STORM::Particle<Vector3D, Grid>;
+using ParticleT = STORM::Particle<Vector3D>;
 using namespace STORM;
 using namespace STORM::examples;
 using namespace units;

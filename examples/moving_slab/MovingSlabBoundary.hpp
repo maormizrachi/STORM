@@ -27,9 +27,9 @@ public:
         : BoundaryCondition<T, Grid>(grid)
     {}
 
-    ParticleStatus apply(Particle<T, Grid> &particle) override;
+    ParticleStatus apply(Particle<T> &particle) override;
 
-    std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double /*fullDt*/) override
+    std::vector<Particle<T>> generateNewBoundaryParticles(double /*fullDt*/) override
     {
         return {};
     }
@@ -51,7 +51,7 @@ public:
 };
 
 template<typename T, typename Grid>
-ParticleStatus MovingSlabBoundary<T, Grid>::apply(Particle<T, Grid> &particle)
+ParticleStatus MovingSlabBoundary<T, Grid>::apply(Particle<T> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
 

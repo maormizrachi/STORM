@@ -38,7 +38,7 @@ enum class RDMAEngine
 template<typename T, typename Grid>
 class MonteCarloManager
 {
-    using MCParticle = Particle<T, Grid>;
+    using MCParticle = Particle<T>;
 
     struct Concept
     {

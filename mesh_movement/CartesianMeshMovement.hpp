@@ -16,7 +16,7 @@ template<typename PointT>
 struct MeshMovement<PointT, MadCart::CartesianMesh3D<PointT>>
 {
     using Grid = MadCart::CartesianMesh3D<PointT>;
-    using ParticleT = STORM::Particle<PointT, Grid>;
+    using ParticleT = STORM::Particle<PointT>;
 
     static void UpdateNewCells(const Grid &grid, std::vector<ParticleT> &particles);
 

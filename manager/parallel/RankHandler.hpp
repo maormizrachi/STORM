@@ -36,7 +36,7 @@ class RankHandler
 {
 public:
     using index_t = uint32_t;
-    using MCParticle = MonteCarloParticle<T, Grid>;
+    using MCParticle = MonteCarloParticle<T>;
 
     RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA,
                 size_t minimalBuffSize = 50);

@@ -30,8 +30,8 @@ class MovingSideTemperature : public BoundaryCondition<T, Grid>
 public:
     MovingSideTemperature(const Grid &grid, double temperature, size_t Npercell, const std::vector<double> &energyBoundaries = {});
 
-    ParticleStatus apply(Particle<T, Grid> &particle) override;
-    std::vector<Particle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+    ParticleStatus apply(Particle<T> &particle) override;
+    std::vector<Particle<T>> generateNewBoundaryParticles(double fullDt) override;
 
     DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
         size_t faceIdx,
@@ -128,7 +128,7 @@ void MovingSideTemperature<T, Grid>::updateLeftFaceVelocityFromBox(double fullDt
 }
 
 template<typename T, typename Grid>
-ParticleStatus MovingSideTemperature<T, Grid>::apply(Particle<T, Grid> &particle)
+ParticleStatus MovingSideTemperature<T, Grid>::apply(Particle<T> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
@@ -155,7 +155,7 @@ ParticleStatus MovingSideTemperature<T, Grid>::apply(Particle<T, Grid> &particle
 }
 
 template<typename T, typename Grid>
-std::vector<Particle<T, Grid>>
+std::vector<Particle<T>>
 MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
     updateLeftFaceVelocityFromBox(fullDt);
@@ -170,7 +170,7 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
         return static_cast<std::mt19937_64::result_type>(seed);
     }());
 
-    std::vector<Particle<T, Grid>> newParticles;
+    std::vector<Particle<T>> newParticles;
     size_t const N = this->grid.GetPointNo();
 
     for(size_t i = 0; i < N; ++i)
@@ -200,7 +200,7 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                     double totalWeight = 0.0;
                     for(size_t j = 0; j < Npercell_; ++j)
                     {
-                        Particle<T, Grid> p;
+                        Particle<T> p;
                         p.location = RandomPointOnFace<T, Grid>(this->grid, faceIdx);
                         p.location -= 1e-12 * std::sqrt(area) * nOut;
                         p.weight = packetEnergyFace;
