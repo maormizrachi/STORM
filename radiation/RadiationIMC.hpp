@@ -406,7 +406,7 @@ template<typename PointT,
          std::size_t NumGroups,
          typename TraitsT = DirectRadiationIMCTraits<PointT, CellT, ExtensivesT, NumGroups>,
          typename PositionSamplerT = RandomInCellPositionSampler<PointT, GridT>>
-class RadiationIMC : public MonteCarloPhysics<PointT, GridT>
+class RadiationIMC final : public MonteCarloPhysics<PointT, GridT>
 {
 public:
     static_assert(NumGroups > 0, "RadiationIMC requires at least one frequency group");
@@ -525,6 +525,7 @@ public:
 
     const std::vector<double> &getFactorFleck() const { return this->factorFleck_; }
     const std::vector<double> &getPlanckOpacities() const { return this->planckOpacities_; }
+    const std::vector<double> &getScatteringOpacities() const { return this->scatteringOpacities_; }
     const std::vector<ComptonCellData> &getComptonData() const { return this->comptonData_; }
     const GroupArray &getComptonGroupCenters() const { return this->comptonGroupCenters_; }
     const GroupArray &getComptonGroupWidths() const { return this->comptonGroupWidths_; }
@@ -773,6 +774,10 @@ private:
     void tallyMaterialEnergy(std::size_t cellIndex, double energy,
                              bool addToTotalEnergy = false);
     void tallyMomentum(std::size_t cellIndex, const PointT &momentum);
+    void tallyRadiationEnergy(std::size_t cellIndex, double integratedEnergy);
+    void tallyGroupRadiationEnergy(std::size_t cellIndex,
+                                   std::size_t group,
+                                   double integratedEnergy);
     void applyTransportTallies();
     void synchronizeMaterialCell(std::size_t cellIndex);
     void throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where);
@@ -881,6 +886,7 @@ private:
     GroupBoundaries energyBoundaries_{};
     std::vector<double> factorFleck_;
     std::vector<double> planckOpacities_;
+    std::vector<double> scatteringOpacities_;
     std::vector<double> Erad_time_avg_;
     std::vector<GroupArray> Eg_time_avg_;
     std::vector<std::size_t> lastSourcePhotonsPerCell_;
@@ -909,6 +915,8 @@ private:
     std::vector<double> pendingMaterialEnergy_;
     std::vector<double> pendingTotalEnergy_;
     std::vector<PointT> pendingMomentum_;
+    std::vector<double> pendingRadiationEnergy_;
+    std::vector<GroupArray> pendingGroupRadiationEnergy_;
 
             // Use one source-group averaged multiplier for every sampled
             // target. This is the variance-reduced Monte Carlo split; the
@@ -1373,6 +1381,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->pendingMaterialEnergy_.assign(cellCount, 0.0);
     this->pendingTotalEnergy_.assign(cellCount, 0.0);
     this->pendingMomentum_.assign(cellCount, PointT{});
+    this->pendingRadiationEnergy_.assign(cellCount, 0.0);
+    this->pendingGroupRadiationEnergy_.assign(cellCount, GroupArray{});
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
@@ -1394,6 +1404,20 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tallyRadiationEnergy(
+    std::size_t cellIndex, double integratedEnergy)
+{
+    this->pendingRadiationEnergy_[cellIndex] += integratedEnergy;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tallyGroupRadiationEnergy(
+    std::size_t cellIndex, std::size_t group, double integratedEnergy)
+{
+    this->pendingGroupRadiationEnergy_[cellIndex][group] += integratedEnergy;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyTransportTallies()
 {
     for(std::size_t i = 0; i < this->pendingMaterialEnergy_.size(); ++i)
@@ -1405,10 +1429,23 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         {
             this->extensives_[i].momentum += this->pendingMomentum_[i];
         }
+        this->Erad_time_avg_[i] += this->pendingRadiationEnergy_[i];
+        if((this->parameters_.withEgTimeAvg ||
+            this->parameters_.withCompton) &&
+           this->parameters_.withMultigroupOpacity)
+        {
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                this->Eg_time_avg_[i][group] +=
+                    this->pendingGroupRadiationEnergy_[i][group];
+            }
+        }
     }
     this->pendingMaterialEnergy_.clear();
     this->pendingTotalEnergy_.clear();
     this->pendingMomentum_.clear();
+    this->pendingRadiationEnergy_.clear();
+    this->pendingGroupRadiationEnergy_.clear();
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
@@ -1701,7 +1738,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     for(std::size_t i = 0; i < Ncells; ++i)
     {
         const CellT &cell = this->cells_[i];
-        double scatOp = this->opacity_->CalcScatteringOpacity(cell);
+        double scatOp = this->scatteringOpacities_[i];
         if(!std::isfinite(scatOp) || scatOp < 0.0)
         {
             StormError eo("RadiationIMC random-walk precompute received an invalid scattering opacity");
@@ -1887,13 +1924,16 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
     if(rwAbsRate > 0.0)
     {
-        this->Erad_time_avg_[cellIndex] += particle.weight * rwExp * (-1.0 / rwAbsRate);
+        this->tallyRadiationEnergy(
+            cellIndex, particle.weight * rwExp * (-1.0 / rwAbsRate));
         if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
         {
             std::size_t g = this->opacity_->findGroup(particle.frequency, this->energyBoundaries_);
             if(g < NumGroups)
             {
-                this->Eg_time_avg_[cellIndex][g] += particle.weight * rwExp * (-1.0 / rwAbsRate);
+                this->tallyGroupRadiationEnergy(
+                    cellIndex, g,
+                    particle.weight * rwExp * (-1.0 / rwAbsRate));
             }
         }
     }
@@ -2109,7 +2149,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         DDMCCellData &data = this->ddmcCellData_[i];
         const CellT &cell = this->cells_[i];
         data.eligibilityReason = ddmc::EligibilityReason::InvalidGeometry;
-        double scatOp = this->opacity_->CalcScatteringOpacity(cell);
+        double scatOp = this->scatteringOpacities_[i];
         if(!std::isfinite(scatOp) || scatOp < 0.0)
         {
             StormError eo("RadiationIMC DDMC precompute received an invalid scattering opacity");
@@ -3076,8 +3116,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     if(this->polarizationEnabled())
     {
         double const fHistory = this->factorFleck_[cellIndex];
-        double const scatteringOpacity = std::max(0.0,
-            this->opacity_->CalcScatteringOpacity(this->cells_[cellIndex]));
+        double const scatteringOpacity =
+            this->scatteringOpacities_[cellIndex];
         double const explicitResetOpacity = upscatterRate / units::clight;
         ParticleCounterEngine polarizationEngine(
             particle.rngKey, particle.rngCounter);
@@ -3132,7 +3172,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double integratedForTally = (absRate > 0.0)
         ? oldWeight * expFactor * (-1.0 / absRate)
         : oldWeight * dt;
-    this->Erad_time_avg_[cellIndex] += integratedForTally;
+    this->tallyRadiationEnergy(cellIndex, integratedForTally);
 
     if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
     {
@@ -3149,8 +3189,9 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 {
                     double const groupMass = ddmc::PlanckBandMass(
                         this->energyBoundaries_, kT, g, g + 1);
-                    this->Eg_time_avg_[cellIndex][g] += integratedForTally *
-                        groupMass / bandMass;
+                    this->tallyGroupRadiationEnergy(
+                        cellIndex, g,
+                        integratedForTally * groupMass / bandMass);
                 }
             }
         }
@@ -3160,7 +3201,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 particle.frequency, this->energyBoundaries_);
             if(g < NumGroups)
             {
-                this->Eg_time_avg_[cellIndex][g] += integratedForTally;
+                this->tallyGroupRadiationEnergy(
+                    cellIndex, g, integratedForTally);
             }
         }
     }
@@ -6540,6 +6582,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         this->planckOpacities_.assign(Ncells, 0.0);
         this->factorFleck_.assign(Ncells, 1.0);
     }
+    this->scatteringOpacities_.assign(Ncells, 0.0);
     this->Erad_time_avg_.assign(Ncells, 0.0);
     if((this->parameters_.withEgTimeAvg ||
         this->parameters_.withCompton) &&
@@ -6589,6 +6632,16 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             StormError eo("RadiationIMC::preStep received an invalid Planck opacity");
             eo.addEntry("Cell index", i);
             eo.addEntry("Planck opacity", this->planckOpacities_[i]);
+            throw eo;
+        }
+        this->scatteringOpacities_[i] =
+            this->opacity_->CalcScatteringOpacity(cell);
+        if(!std::isfinite(this->scatteringOpacities_[i]) ||
+           this->scatteringOpacities_[i] < 0.0)
+        {
+            StormError eo("RadiationIMC::preStep received an invalid scattering opacity");
+            eo.addEntry("Cell index", i);
+            eo.addEntry("Scattering opacity", this->scatteringOpacities_[i]);
             throw eo;
         }
         const auto &tracers = this->traits_.tracers(cell);
@@ -6777,7 +6830,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         ? 0.0
         : (this->parameters_.withMultigroupOpacity
             ? this->opacity_->CalcScatteringOpacity(cell, shiftedFrequency)
-            : this->opacity_->CalcScatteringOpacity(cell));
+            : this->scatteringOpacities_[cellIndex]);
     if(!std::isfinite(absorptionOpacity) || absorptionOpacity < 0.0 ||
        !std::isfinite(elasticScatteringOpacity) || elasticScatteringOpacity < 0.0)
     {
@@ -6864,7 +6917,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             }
         }
     }
-    this->Erad_time_avg_[cellIndex] += integratedForTally;
+    this->tallyRadiationEnergy(cellIndex, integratedForTally);
     if((this->parameters_.withEgTimeAvg ||
         this->parameters_.withCompton) &&
        this->parameters_.withMultigroupOpacity)
@@ -6872,7 +6925,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         std::size_t g = this->opacity_->findGroup(particle.frequency, this->energyBoundaries_);
         if(g < NumGroups)
         {
-            this->Eg_time_avg_[cellIndex][g] += integratedForTally;
+            this->tallyGroupRadiationEnergy(
+                cellIndex, g, integratedForTally);
         }
     }
     double const weightBeforeContinuousDecay = particle.weight;
