@@ -20,6 +20,7 @@
 #include "../../boundary/BoundaryCondition.hpp"
 #include "../../utils/GhostMap.hpp"
 #include "../../utils/RankSync.hpp"
+#include "../LocalTransportExecutor.hpp"
 #include "RankHandler2.hpp"
 #include "ReallocationAgent.hpp"
 #ifdef MEMORY_DEBUG
@@ -379,6 +380,7 @@ private:
     size_t sendBufferPendingParticles;
     size_t activeRankScanCursor;
     size_t activeRankScanRemaining;
+    HostLocalTransportExecutor<MCParticle> localTransportExecutor;
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -1044,11 +1046,10 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
             handler->DetachLocalParticles(localParticles);
         }
 
-        while(not localParticles.empty())
-        {
-                int currentN = static_cast<int>(localParticles.size());
-                size_t particleIndex = static_cast<size_t>(currentN - 1);
-                MCParticle &particle = localParticles[particleIndex];
+        this->localTransportExecutor.execute(
+            localParticles, this->config.localTransportBatchSize,
+            [&](MCParticle &particle, size_t particleIndex)
+            {
                 bool removeCurrent = false;
                 bool debug = false;
 
@@ -1487,8 +1488,7 @@ bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData
                 }
 
                 assert(removeCurrent);
-                localParticles.pop_back();
-        }
+            });
 
         if(not localParticles.empty())
         {

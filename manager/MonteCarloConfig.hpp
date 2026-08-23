@@ -47,6 +47,9 @@ public:
     size_t asyncReallocationIncomingPollIdleCycles = 8;
     size_t asyncReallocationMaxIncomingRequestsPerPoll = 4;
     size_t activeRankScanChunk        = 64;
+    // Bound one local compute slice so the host returns regularly to MPI/RMA
+    // progress.  This is also the initial host-to-device packet batch size.
+    size_t localTransportBatchSize    = 4096;
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;
     size_t minimalBuffSize            = 50;
