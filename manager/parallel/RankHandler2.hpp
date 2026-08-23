@@ -237,6 +237,14 @@ void RankHandler2<T, Grid>::Destroy(void)
 
     if(this->size_internal > 1)
     {
+        // A handler may be retired and its storage reused for a different
+        // peer after a rebalance. Complete every operation that can still
+        // name this peer's memory before either endpoint unregisters it.
+        // The barrier is on the old pair communicator, so both OFI/IBV MRs
+        // and MPI windows remain valid until both endpoints have quiesced.
+        this->particles_agent->QuiesceTarget(this->other_rank);
+        this->lengths_agent->QuiesceTarget(this->other_rank);
+        MPI_Barrier(this->comm);
         this->particles_agent->Free();
         this->lengths_agent->Free();
         MPI_Group_free(&this->group_world);

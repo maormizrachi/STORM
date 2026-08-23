@@ -53,6 +53,7 @@ public:
     double bufferShrinkFactor         = 0.5;
     double bufferShrinkNeighborFactor = 0.5;
     double shrinkPercent              = 0.25;
+    bool retireStaleHandlers          = true;
     bool holdSmallIdleFlushes = true;
     size_t sendBufferMinIdleDrainSize = 512;
     size_t sendBufferIdleDrainPatienceCycles = 16384;

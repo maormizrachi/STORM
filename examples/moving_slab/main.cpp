@@ -152,7 +152,7 @@ static std::vector<Vector3D> BuildAllPoints(double t, double vSlab, double L_sla
 // ============================================================
 // SyncParticleCellIDs: keep particle.cellID in sync with
 // the current cell's ID (like RICH's MonteCarloManager3D
-// wrappers and Voronoi3DMovement.cpp post-UNC sync).
+// wrappers and STORM movement adapter post-UNC sync).
 // ============================================================
 
 static void SyncParticleCellIDs(const std::vector<MovingSlabCell> &cells,

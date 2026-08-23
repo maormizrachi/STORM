@@ -42,10 +42,10 @@ constexpr size_t FACE_WALK_MAX_HOPS = 64;
 // Partial specialization for Voronoi3D
 // ============================================================
 
-template<typename PointT>
-struct MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>
+template<typename PointT, typename GridT>
+struct VoronoiMeshMovement
 {
-    using Grid = MadVoro::Voronoi3D<PointT>;
+    using Grid = GridT;
     using ParticleT = STORM::Particle<PointT, Grid>;
     using IVec = IndexedVector<PointT>;
 
@@ -66,12 +66,17 @@ private:
 #endif // STORM_WITH_MPI
 };
 
+template<typename PointT>
+struct MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>
+    : VoronoiMeshMovement<PointT, MadVoro::Voronoi3D<PointT>>
+{};
+
 // ============================================================
 // AssertLocations
 // ============================================================
 
-template<typename PointT>
-void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::AssertLocations(const Grid &grid, const std::vector<ParticleT> &particles)
+template<typename PointT, typename Grid>
+void VoronoiMeshMovement<PointT, Grid>::AssertLocations(const Grid &grid, const std::vector<ParticleT> &particles)
 {
     START_TIMER("Assert Locations");
     size_t N = grid.GetPointNo();
@@ -103,8 +108,8 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::AssertLocations(const Gri
 // UpdateNewCells -- serial + MPI paths
 // ============================================================
 
-template<typename PointT>
-void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid &grid, std::vector<ParticleT> &particles, const std::vector<size_t> &cellIDs)
+template<typename PointT, typename Grid>
+void VoronoiMeshMovement<PointT, Grid>::UpdateNewCells(const Grid &grid, std::vector<ParticleT> &particles, const std::vector<size_t> &cellIDs)
 {
     START_TIMER("Update New Cells");
 
@@ -424,8 +429,8 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
 // UpdateNewCells -- convenience overload without cellIDs
 // ============================================================
 
-template<typename PointT>
-void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid &grid, std::vector<ParticleT> &particles)
+template<typename PointT, typename Grid>
+void VoronoiMeshMovement<PointT, Grid>::UpdateNewCells(const Grid &grid, std::vector<ParticleT> &particles)
 {
     size_t N = grid.GetPointNo();
     std::vector<size_t> cellIDs(N);
@@ -446,8 +451,8 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCells(const Grid
 // InternalMovements -- fast remap via persistent cellID
 // ============================================================
 
-template<typename PointT>
-void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::InternalMovements(const Grid &grid, std::vector<ParticleT> &particles, const std::vector<size_t> &cellIDs)
+template<typename PointT, typename Grid>
+void VoronoiMeshMovement<PointT, Grid>::InternalMovements(const Grid &grid, std::vector<ParticleT> &particles, const std::vector<size_t> &cellIDs)
 {
     START_TIMER("Internal Movement");
     size_t count = 0;
@@ -489,8 +494,8 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::InternalMovements(const G
 // FirstInaccurateMovements
 // ============================================================
 
-template<typename PointT>
-void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::FirstInaccurateMovements(const Grid &grid, std::vector<ParticleT> &particles)
+template<typename PointT, typename Grid>
+void VoronoiMeshMovement<PointT, Grid>::FirstInaccurateMovements(const Grid &grid, std::vector<ParticleT> &particles)
 {
     rank_t rank, worldSize;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -560,8 +565,8 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::FirstInaccurateMovements(
 // ResolveRemainingParticles
 // ============================================================
 
-template<typename PointT>
-size_t MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::ResolveRemainingParticles(
+template<typename PointT, typename Grid>
+size_t VoronoiMeshMovement<PointT, Grid>::ResolveRemainingParticles(
     const Grid &grid, std::vector<ParticleT> &particles, const OctTree<IVec> &octTree)
 {
     rank_t rank, worldSize;
@@ -775,8 +780,8 @@ size_t MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::ResolveRemainingParticl
 // TransferParticlesWithTranslationMap
 // ============================================================
 
-template<typename PointT>
-void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::TransferParticlesWithTranslationMap(
+template<typename PointT, typename Grid>
+void VoronoiMeshMovement<PointT, Grid>::TransferParticlesWithTranslationMap(
     const Grid &grid, std::vector<ParticleT> &particles,
     const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &cellsTranslation)
 {
@@ -840,8 +845,8 @@ void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::TransferParticlesWithTran
 // does not have ExchangeChain.
 // ============================================================
 
-template<typename PointT>
-void MeshMovement<PointT, MadVoro::Voronoi3D<PointT>>::UpdateNewCellsAfterExchange(
+template<typename PointT, typename Grid>
+void VoronoiMeshMovement<PointT, Grid>::UpdateNewCellsAfterExchange(
     const Grid &grid, std::vector<ParticleT> &particles)
 {
     rank_t rank, worldSize;
