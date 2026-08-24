@@ -50,6 +50,12 @@ public:
     // Bound one local compute slice so the host returns regularly to MPI/RMA
     // progress.  This is also the initial host-to-device packet batch size.
     size_t localTransportBatchSize    = 4096;
+#ifdef STORM_WITH_GPU
+    size_t gpuMaxInnerSteps           = 512;
+    // Zero means transport every particle currently detached from one rank
+    // buffer. Unlike the host slice, this should be large enough to fill a GCD.
+    size_t gpuLaunchSize              = 0;
+#endif
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;
     size_t minimalBuffSize            = 50;

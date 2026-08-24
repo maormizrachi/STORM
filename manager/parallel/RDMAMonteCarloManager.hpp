@@ -21,6 +21,9 @@
 #include "../../utils/GhostMap.hpp"
 #include "../../utils/RankSync.hpp"
 #include "../LocalTransportExecutor.hpp"
+#ifdef STORM_WITH_GPU
+#include "../../gpu/KokkosLocalTransportExecutor.hpp"
+#endif // STORM_WITH_GPU
 #include "RankHandler2.hpp"
 #include "ReallocationAgent.hpp"
 #ifdef MEMORY_DEBUG
@@ -36,6 +39,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <random>
@@ -385,10 +389,68 @@ private:
     size_t activeRankScanCursor;
     size_t activeRankScanRemaining;
     HostLocalTransportExecutor<MCParticle> localTransportExecutor;
+#ifdef STORM_WITH_GPU
+    std::unique_ptr<gpu::KokkosLocalTransportExecutor> gpuTransportExecutor;
+    double gpuPackSeconds = 0.0;
+    double gpuDeviceSeconds = 0.0;
+    double gpuCopyBackSeconds = 0.0;
+    double gpuProgressSeconds = 0.0;
+    double gpuHostEventSeconds = 0.0;
+    unsigned long long gpuLaunchCount = 0;
+    unsigned long long gpuParticleCount = 0;
+#endif // STORM_WITH_GPU
+
+    // Reused across transport rounds so the merge does not reallocate and
+    // page-fault the whole local population on every iteration.
+    std::vector<MCParticle> mergedParticleBuffer;
+    std::vector<MCParticle> mergeScratchBuffer;
+
+    // Splits the transport loop time that the GPU phase timers do not cover.
+    double loopRmaSeconds = 0.0;
+    double loopAmountSeconds = 0.0;
+    double loopHandleSeconds = 0.0;
+    double loopMergeSeconds = 0.0;
+    unsigned long long loopRounds = 0;
+    unsigned long long loopIdleRounds = 0;
+
+    // Outcome of applying one physics event to a particle: either the particle
+    // stays local and keeps stepping, or it left this rank's transport loop
+    // (censused, removed, or handed to a send buffer).
+    enum class TransportEventAction
+    {
+        Continue,
+        Finished
+    };
+
+    // Pre-step state that only the STORM_DEBUG diagnostics read. Empty in
+    // release so the shared event handler keeps the same signature at no cost.
+    struct TransportStepContext
+    {
+#ifdef STORM_DEBUG
+        T beforeStepLocation;
+        T beforeStepVelocity;
+        dt_t beforeStepTimeLeft;
+        T previousLocation;
+#endif // STORM_DEBUG
+    };
+
+    TransportEventAction ApplyTransportEvent(MCParticle &particle,
+                                             const MonteCarloFunctionality &functionality,
+                                             rank_t bufferRank, size_t particleIndex,
+                                             MonteCarloStepFinalData &stepData,
+                                             const TransportStepContext &context);
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
+#ifdef STORM_WITH_GPU
+    bool TransportBatchOnDevice(std::vector<MCParticle> &localParticles, rank_t bufferRank,
+                                MonteCarloStepFinalData &stepData, bool &isEmpty);
+#endif // STORM_WITH_GPU
+
     void PutSelfParticles(std::vector<MCParticle> &&particles);
+
+    void StageLocalParticlesForDevice(std::vector<MCParticle> &&particles,
+                                      bool assignNewIDs);
 
     void PrepareHandlers(void);
 
@@ -441,6 +503,10 @@ RDMAMonteCarloManager<T, Grid, Physics>::RDMAMonteCarloManager(const Grid &grid,
 {
     this->myIDCounter = 0;
     this->currentStep = 0;
+#ifdef STORM_WITH_GPU
+    // The executor allocates Kokkos DualViews, so it must not be built until
+    // physics->preStep() has constructed KokkosRuntime.
+#endif // STORM_WITH_GPU
     // this->progress = std::make_shared<ProgressCounter>(comm);
     this->comm_world = comm;
     MPI_Comm_rank(this->comm_world, &this->rank_world);
@@ -750,6 +816,32 @@ void RDMAMonteCarloManager<T, Grid, Physics>::PutSelfParticles(std::vector<MCPar
 }
 
 template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::StageLocalParticlesForDevice(
+    std::vector<MCParticle> &&particles,
+    bool assignNewIDs)
+{
+    if(particles.empty())
+    {
+        return;
+    }
+
+    std::vector<MCParticle> &staged =
+        this->detachedRankParticles[static_cast<size_t>(this->rank_world)];
+    staged.reserve(staged.size() + particles.size());
+    for(MCParticle &particle : particles)
+    {
+        if(assignNewIDs or
+           particle.id == std::numeric_limits<particle_id_t>::max())
+        {
+            particle.rank = this->rank_world;
+            particle.id = this->myIDCounter++;
+        }
+        staged.push_back(std::move(particle));
+    }
+    std::vector<MCParticle>().swap(particles);
+}
+
+template<typename T, typename Grid, typename Physics>
 void RDMAMonteCarloManager<T, Grid, Physics>::TransferParticles(rank_t fromRank, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
 {
     if(indicesInToHandle.empty())
@@ -961,6 +1053,335 @@ void RDMAMonteCarloManager<T, Grid, Physics>::TransferParticles(const std::vecto
     }
 }
 
+// Applies one physics event to a particle. This is the single copy of the
+// transport/communication policy: the host loop calls it after every
+// physics->step(), and the device path calls it for whatever event the batched
+// kernel stopped on. Returning Continue means the particle is still local and
+// owned by this rank.
+template<typename T, typename Grid, typename Physics>
+typename RDMAMonteCarloManager<T, Grid, Physics>::TransportEventAction
+RDMAMonteCarloManager<T, Grid, Physics>::ApplyTransportEvent(MCParticle &particle,
+                                                             const MonteCarloFunctionality &functionality,
+                                                             rank_t bufferRank, size_t particleIndex,
+                                                             MonteCarloStepFinalData &stepData,
+                                                             const TransportStepContext &context)
+{
+    (void) bufferRank;
+    (void) particleIndex;
+    (void) context;
+
+    if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
+    {
+        size_t nextCellIndex = functionality.nextCellIndex;
+
+        assert(nextCellIndex != particle.cellIndex);
+        assert(particle.timeLeft >= 0);
+
+        #ifdef STORM_DEBUG
+        auto throwCellMoveOutsideBox = [&](const std::string &cellMoveTarget)
+        {
+            auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
+            double relDrift = 0.0;
+            double maxAxisRelDrift = 0.0;
+            ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
+
+            STORMError eo("RDMAMonteCarloManager: CELL_MOVE moved particle outside box before a non-boundary cell move");
+            eo.addEntry("Rank", this->rank_world);
+            eo.addEntry("Particle after step", particle);
+            eo.addEntry("Cell move target", cellMoveTarget);
+            eo.addEntry("Next cell index", nextCellIndex);
+            eo.addEntry("Location before step", context.beforeStepLocation);
+            eo.addEntry("Velocity before step", context.beforeStepVelocity);
+            eo.addEntry("Time left before step", context.beforeStepTimeLeft);
+            eo.addEntry("Box lower", boxLL);
+            eo.addEntry("Box upper", boxUR);
+            eo.addEntry("Relative drift", relDrift);
+            eo.addEntry("Max axis relative drift", maxAxisRelDrift);
+            eo.addEntry("Cell count", this->Ncells);
+            if(particle.cellIndex < this->Ncells)
+            {
+                eo.addEntry("Cell index", particle.cellIndex);
+                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+            }
+            throw eo;
+        };
+        #endif // STORM_DEBUG
+
+        if(__builtin_expect(nextCellIndex < this->Ncells, 1))
+        {
+            #ifdef STORM_DEBUG
+            if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
+                throwCellMoveOutsideBox("local cell move");
+            #endif // STORM_DEBUG
+
+            #ifdef STORM_DEBUG
+            size_t previousCell = particle.cellIndex;
+            #endif // STORM_DEBUG
+            particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+            particle.cellIndex = nextCellIndex;
+            #ifdef STORM_DEBUG
+            if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
+            {
+                const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
+                size_t containingIdx = this->grid.GetContainingCell(particle.location);
+                const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+                STORMError eo("Particle is in Wrong Location");
+                eo.addEntry("rank", this->rank_world);
+                eo.addEntry("Particle", particle);
+                eo.addEntry("Previous Cell Index", previousCell);
+                eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
+                eo.addEntry("Previous Location", context.previousLocation);
+                eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(context.previousLocation, previousCell));
+                eo.addEntry("Declared Cell Index", particle.cellIndex);
+                eo.addEntry("Declared Cell", declaredCell);
+                eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
+                eo.addEntry("Real Containing Cell Index", containingIdx);
+                eo.addEntry("Real Containing Cell", containingCell);
+                eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
+                throw eo;
+            }
+            #endif // STORM_DEBUG
+            return TransportEventAction::Continue;
+        }
+        else
+        {
+            auto it = ranks_ghost_map.find(nextCellIndex);
+            if(it == ranks_ghost_map.end())
+            {
+                #ifdef STORM_WITH_TRACING_HISTORY
+                    T preReflectLoc = particle.location;
+                    T preReflectVel = particle.velocity;
+                #endif // STORM_WITH_TRACING_HISTORY
+                MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
+                this->physics->onBoundaryResult(particle, status, functionality.boundaryCrossing && this->boundaryCondition->isEscape(status));
+                if(status == MonteCarloParticleStatus::REFLECT)
+                {
+                    #ifdef STORM_WITH_TRACING_HISTORY
+                        particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
+                    #endif // STORM_WITH_TRACING_HISTORY
+                    particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                        MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
+                    return TransportEventAction::Continue;
+                }
+                else if(status == MonteCarloParticleStatus::REMOVE)
+                {
+                    stepData.leavingCount++;
+                    this->allStepsCounter += particle.steps;
+                    this->localDecrementAmount += 1;
+                    ++this->progressRemovedCount_;
+                }
+                else
+                {
+                    STORMError eo("Unknown boundary condition for particle");
+                    eo.addEntry("Particle", particle);
+                    eo.addEntry("Status", status);
+                    throw eo;
+                }
+                return TransportEventAction::Finished;
+            }
+
+            #ifdef STORM_DEBUG
+            if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
+                throwCellMoveOutsideBox("remote rank transfer");
+            #endif // STORM_DEBUG
+
+            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+            auto [otherRank, neighborIndexInRank] = it->second;
+            #ifdef STORM_DEBUG
+            particle.checkedHere = false;
+            if(particle.nextRank != std::numeric_limits<rank_t>::max())
+            {
+                STORMError eo("Particle was already sent, and not sent again");
+                eo.addEntry("Particle", particle);
+                eo.addEntry("Already Transferred To Rank", particle.nextRank);
+                eo.addEntry("Being Transferred To Rank", otherRank);
+                eo.addEntry("Being Transferred To Index In Rank", neighborIndexInRank);
+                throw eo;
+            }
+            const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
+            if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
+            {
+                STORMError eo("Particle is going to be transffered to a non-neighboring rank");
+                eo.addEntry("Particle", particle);
+                eo.addEntry("My Rank", this->rank_world);
+                eo.addEntry("Next Rank", otherRank);
+                eo.addEntry("Index In Remote Rank", neighborIndexInRank);
+                throw eo;
+            }
+            particle.cellIndexInPrevRank = particle.cellIndex;
+            particle.sentByRank = this->rank_world;
+            particle.ghostIndex = nextCellIndex;
+            particle.newCellValue = this->grid.GetMeshPoint(nextCellIndex);
+            particle.particleIndexInLastRank = particleIndex;
+            particle.particleTHInLastRank = particleIndex;
+            particle.nextRank = otherRank;
+            if(particle.nextRank == this->rank_world)
+            {
+                STORMError eo("Particle is going to be sent to the same rank");
+                eo.addEntry("Particle", particle);
+                eo.addEntry("My Rank", this->rank_world);
+                eo.addEntry("Next Rank", otherRank);
+                eo.addEntry("Index In Remote Rank", neighborIndexInRank);
+                throw eo;
+            }
+            #endif // STORM_DEBUG
+
+            particle.sent = true;
+            particle.cellIndex = neighborIndexInRank;
+            particle.sent = false;
+            RegisteredSendBuffer &buffer = this->GetSendBuffer(otherRank);
+            size_t previousSize = buffer.size();
+            buffer.push_back(particle);
+            this->NoteSendBufferGrowth(otherRank, previousSize, buffer, 1);
+            return TransportEventAction::Finished;
+        }
+    }
+    else if(functionality.change == MonteCarloParticleStatus::REMOVE)
+    {
+        this->allStepsCounter += particle.steps;
+        this->localDecrementAmount += 1;
+        return TransportEventAction::Finished;
+    }
+    else if(functionality.change == MonteCarloParticleStatus::DONE)
+    {
+        stepData.remaining.push_back(particle);
+        this->allStepsCounter += particle.steps;
+        this->localDecrementAmount += 1;
+        return TransportEventAction::Finished;
+    }
+    else if(functionality.change == MonteCarloParticleStatus::NO_CELL_MOVE)
+    {
+        return TransportEventAction::Continue;
+    }
+
+    STORMError eo("Unknown Monte Carlo particle status");
+    eo.addEntry("Particle", particle);
+    eo.addEntry("Status", functionality.change);
+    throw eo;
+}
+
+#ifdef STORM_WITH_GPU
+// Runs one batch of local particles through the Kokkos kernel. The kernel takes
+// a bounded number of inner steps per particle and resolves purely local events
+// (scatters and in-rank cell moves) on the device; everything that crosses the
+// transport/communication boundary comes back here and goes through the same
+// ApplyTransportEvent policy the host loop uses.
+template<typename T, typename Grid, typename Physics>
+bool RDMAMonteCarloManager<T, Grid, Physics>::TransportBatchOnDevice(std::vector<MCParticle> &localParticles,
+                                                                     rank_t bufferRank,
+                                                                     MonteCarloStepFinalData &stepData,
+                                                                     bool &isEmpty)
+{
+    if constexpr(not gpu::HasDeviceTransport<Physics>::value)
+    {
+        (void) localParticles;
+        (void) bufferRank;
+        (void) stepData;
+        (void) isEmpty;
+        return false;
+    }
+    else
+    {
+        if(localParticles.empty() or not this->physics->UsesDeviceTransport())
+        {
+            return false;
+        }
+        if(not this->gpuTransportExecutor)
+        {
+            this->gpuTransportExecutor =
+                std::make_unique<gpu::KokkosLocalTransportExecutor>(this->config.gpuMaxInnerSteps);
+        }
+
+        // The host batch size exists to return frequently to RMA. A GCD needs
+        // a much fatter launch, so zero means all currently detached particles.
+        const size_t launchSize = this->config.gpuLaunchSize == 0
+            ? localParticles.size()
+            : std::min(this->config.gpuLaunchSize, localParticles.size());
+        const size_t count = std::max<size_t>(1, launchSize);
+
+        // Particles that just arrived over RMA are nudged towards their cell
+        // centre on arrival. The kernel has no notion of routing state, so this
+        // has to happen before packing.
+        for(size_t i = 0; i < count; ++i)
+        {
+            MCParticle &particle = localParticles[localParticles.size() - 1 - i];
+            if(particle.sent)
+            {
+                particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                    MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
+                particle.sent = false;
+            }
+        }
+
+        isEmpty = false;
+        gpu::CompletedBatch completed = this->gpuTransportExecutor->Execute(
+            localParticles, count, this->physics->GetDeviceTransportViews(),
+            [this]()
+            {
+                // The HIP launch is asynchronous. Make RMA progress while its
+                // wavefronts run; the executor fences when it reads compaction.
+                this->PumpRMAProgress();
+            });
+        this->gpuPackSeconds += completed.packSeconds;
+        this->gpuDeviceSeconds += completed.deviceSeconds;
+        this->gpuCopyBackSeconds += completed.copyBackSeconds;
+        this->gpuProgressSeconds += completed.progressSeconds;
+        this->gpuLaunchCount += completed.launchCount;
+        this->gpuParticleCount += count;
+
+        const size_t countedCells = std::min(this->Ncells, completed.cellSteps.size());
+        for(size_t i = 0; i < countedCells; ++i)
+        {
+            this->cellsStepsCounters[i] += completed.cellSteps[i];
+        }
+
+        const TransportStepContext context;
+        std::vector<MCParticle> carried;
+        const std::chrono::steady_clock::time_point hostEventStart = std::chrono::steady_clock::now();
+        for(size_t i = 0; i < completed.particles.size(); ++i)
+        {
+            const gpu::CompletedTransport &transported = completed.particles[i];
+            const size_t particleIndex = transported.sourceIndex;
+            MCParticle &particle = localParticles[particleIndex];
+            gpu::UnpackParticle(transported.particle, particle);
+
+            if(transported.result.error != gpu::TransportError::None)
+            {
+                STORMError eo("RDMAMonteCarloManager: device grey transport failed");
+                eo.addEntry("Rank", this->rank_world);
+                eo.addEntry("Handler rank buffer", bufferRank);
+                eo.addEntry("Particle", particle);
+                eo.addEntry("Cell index", particle.cellIndex);
+                eo.addEntry("Transport error", static_cast<int>(transported.result.error));
+                throw eo;
+            }
+
+            // NO_CELL_MOVE here means the kernel exhausted its bounded inner
+            // loop while the particle was still local, so it simply resumes in
+            // a later batch rather than having reached an event.
+            if(transported.result.step.change == MonteCarloParticleStatus::NO_CELL_MOVE or
+               this->ApplyTransportEvent(particle, transported.result.step, bufferRank, particleIndex,
+                                         stepData, context) == TransportEventAction::Continue)
+            {
+                carried.push_back(particle);
+            }
+        }
+        this->gpuHostEventSeconds +=
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - hostEventStart).count();
+
+        // Every selected packet ran resident on the device until it reached a
+        // host-required event, so the complete selected tail is consumed.
+        localParticles.resize(localParticles.size() - count);
+        localParticles.insert(localParticles.end(),
+                              std::make_move_iterator(carried.begin()),
+                              std::make_move_iterator(carried.end()));
+        return true;
+    }
+}
+#endif // STORM_WITH_GPU
+
 template<typename T, typename Grid, typename Physics>
 bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &stepData)
 {
@@ -1033,22 +1454,127 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
     bool isEmpty = true;
     size_t activeRanksNum = active_ranks.size();
 
-
-    for(size_t index = 0; index < activeRanksNum; index++)
+    bool handledDeviceSweep = false;
+#ifdef STORM_WITH_GPU
+    if constexpr(gpu::HasDeviceTransport<Physics>::value)
     {
-        rank_t _rank = active_ranks[index];
-        RankHandler_t *handler = this->rankHandlers[_rank];
-        std::vector<MCParticle> &deferredParticles = this->detachedRankParticles[static_cast<size_t>(_rank)];
-        std::vector<MCParticle> localParticles;
+        if(activeRanksNum > 0 && this->physics->UsesDeviceTransport())
+        {
+            const std::chrono::steady_clock::time_point mergeStart =
+                std::chrono::steady_clock::now();
 
-        if(not deferredParticles.empty())
-        {
-            localParticles.swap(deferredParticles);
+            std::vector<MCParticle> &mergedParticles = this->mergedParticleBuffer;
+            const rank_t primaryRank = active_ranks.front();
+            std::vector<MCParticle> &primaryDeferred =
+                this->detachedRankParticles[static_cast<size_t>(primaryRank)];
+
+            if(activeRanksNum == 1 and not primaryDeferred.empty())
+            {
+                // Once local particles are staged directly, a single active rank
+                // is the common case. Hand the vector over instead of copying it.
+                mergedParticles.swap(primaryDeferred);
+            }
+            else
+            {
+                std::size_t mergedCapacity = 0;
+                for(rank_t activeRank : active_ranks)
+                {
+                    const std::vector<MCParticle> &deferred =
+                        this->detachedRankParticles[static_cast<size_t>(activeRank)];
+                    mergedCapacity += deferred.empty()
+                        ? this->rankHandlers[activeRank]->LocalSize()
+                        : deferred.size();
+                }
+
+                mergedParticles.clear();
+                mergedParticles.reserve(mergedCapacity);
+                for(rank_t activeRank : active_ranks)
+                {
+                    std::vector<MCParticle> &deferred =
+                        this->detachedRankParticles[static_cast<size_t>(activeRank)];
+                    if(not deferred.empty())
+                    {
+                        mergedParticles.insert(
+                            mergedParticles.end(),
+                            std::make_move_iterator(deferred.begin()),
+                            std::make_move_iterator(deferred.end()));
+                        deferred.clear();
+                    }
+                    else
+                    {
+                        this->rankHandlers[activeRank]->DetachLocalParticles(
+                            this->mergeScratchBuffer);
+                        mergedParticles.insert(
+                            mergedParticles.end(),
+                            std::make_move_iterator(this->mergeScratchBuffer.begin()),
+                            std::make_move_iterator(this->mergeScratchBuffer.end()));
+                        this->mergeScratchBuffer.clear();
+                    }
+                }
+            }
+            this->loopMergeSeconds +=
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - mergeStart).count();
+
+            const bool transported =
+                not mergedParticles.empty() and
+                this->TransportBatchOnDevice(
+                    mergedParticles, primaryRank, stepData, isEmpty);
+
+            // REFLECT is the only normal host event that remains local. It can
+            // safely resume from any active local rank buffer. Draining
+            // unconditionally also keeps the batch if the device path declines.
+            if(not mergedParticles.empty())
+            {
+                if(primaryDeferred.empty())
+                {
+                    primaryDeferred.swap(mergedParticles);
+                }
+                else
+                {
+                    primaryDeferred.insert(
+                        primaryDeferred.end(),
+                        std::make_move_iterator(mergedParticles.begin()),
+                        std::make_move_iterator(mergedParticles.end()));
+                    mergedParticles.clear();
+                }
+            }
+            if(transported)
+            {
+                handledDeviceSweep = true;
+            }
         }
-        else
+    }
+#endif
+
+    if(not handledDeviceSweep)
+    {
+        for(size_t index = 0; index < activeRanksNum; index++)
         {
-            handler->DetachLocalParticles(localParticles);
+            rank_t _rank = active_ranks[index];
+            RankHandler_t *handler = this->rankHandlers[_rank];
+            std::vector<MCParticle> &deferredParticles = this->detachedRankParticles[static_cast<size_t>(_rank)];
+            std::vector<MCParticle> localParticles;
+
+            if(not deferredParticles.empty())
+            {
+                localParticles.swap(deferredParticles);
+            }
+            else
+            {
+                handler->DetachLocalParticles(localParticles);
+            }
+
+#ifdef STORM_WITH_GPU
+        if(this->TransportBatchOnDevice(localParticles, _rank, stepData, isEmpty))
+        {
+            if(not localParticles.empty())
+            {
+                assert(deferredParticles.empty());
+                deferredParticles.swap(localParticles);
+            }
+            continue;
         }
+#endif // STORM_WITH_GPU
 
         this->localTransportExecutor.execute(
             localParticles, this->config.localTransportBatchSize,
@@ -1280,200 +1806,19 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
                             particle.recordHistory(particle.cellIndex, static_cast<int>(this->rank_world), static_cast<int>(functionality.change));
                         #endif // STORM_WITH_TRACING_HISTORY
 
-                        if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
+                        TransportStepContext context;
+                        #ifdef STORM_DEBUG
+                        context.beforeStepLocation = beforeStepLocation;
+                        context.beforeStepVelocity = beforeStepVelocity;
+                        context.beforeStepTimeLeft = beforeStepTimeLeft;
+                        context.previousLocation = prevLoc;
+                        #endif // STORM_DEBUG
+
+                        if(this->ApplyTransportEvent(particle, functionality, _rank, particleIndex,
+                                                     stepData, context) == TransportEventAction::Finished)
                         {
-                            size_t nextCellIndex = functionality.nextCellIndex;
-
-                            assert(nextCellIndex != particle.cellIndex);
-                            assert(particle.timeLeft >= 0);
-
-                            #ifdef STORM_DEBUG
-                            auto throwCellMoveOutsideBox = [&](const std::string &cellMoveTarget)
-                            {
-                                auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
-                                double relDrift = 0.0;
-                                double maxAxisRelDrift = 0.0;
-                                ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
-
-                                STORMError eo("RDMAMonteCarloManager: CELL_MOVE moved particle outside box before a non-boundary cell move");
-                                eo.addEntry("Rank", this->rank_world);
-                                eo.addEntry("Particle after step", particle);
-                                eo.addEntry("Cell move target", cellMoveTarget);
-                                eo.addEntry("Next cell index", nextCellIndex);
-                                eo.addEntry("Location before step", beforeStepLocation);
-                                eo.addEntry("Velocity before step", beforeStepVelocity);
-                                eo.addEntry("Time left before step", beforeStepTimeLeft);
-                                eo.addEntry("Box lower", boxLL);
-                                eo.addEntry("Box upper", boxUR);
-                                eo.addEntry("Relative drift", relDrift);
-                                eo.addEntry("Max axis relative drift", maxAxisRelDrift);
-                                eo.addEntry("Cell count", this->Ncells);
-                                if(particle.cellIndex < this->Ncells)
-                                {
-                                    eo.addEntry("Cell index", particle.cellIndex);
-                                    eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
-                                    eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
-                                }
-                                throw eo;
-                            };
-                            #endif // STORM_DEBUG
-
-                            if(__builtin_expect(nextCellIndex < this->Ncells, 1))
-                            {
-                                #ifdef STORM_DEBUG
-                                if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
-                                    throwCellMoveOutsideBox("local cell move");
-                                #endif // STORM_DEBUG
-
-                                #ifdef STORM_DEBUG
-                                size_t previousCell = particle.cellIndex;
-                                #endif // STORM_DEBUG
-                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
-                                                    MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                                particle.cellIndex = nextCellIndex;
-                                #ifdef STORM_DEBUG
-                                if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
-                                {
-                                    const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
-                                    size_t containingIdx = this->grid.GetContainingCell(particle.location);
-                                    const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                                    STORMError eo("Particle is in Wrong Location");
-                                    eo.addEntry("rank", this->rank_world);
-                                    eo.addEntry("Particle", particle);
-                                    eo.addEntry("Previous Cell Index", previousCell);
-                                    eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
-                                    eo.addEntry("Previous Location", prevLoc);
-                                    eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(prevLoc, previousCell));
-                                    eo.addEntry("Declared Cell Index", particle.cellIndex);
-                                    eo.addEntry("Declared Cell", declaredCell);
-                                    eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
-                                    eo.addEntry("Real Containing Cell Index", containingIdx);
-                                    eo.addEntry("Real Containing Cell", containingCell);
-                                    eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
-                                    throw eo;
-                                }
-                                #endif // STORM_DEBUG
-                            }
-                            else
-                            {
-                                auto it = ranks_ghost_map.find(nextCellIndex);
-                                if(it == ranks_ghost_map.end())
-                                {
-                                    #ifdef STORM_WITH_TRACING_HISTORY
-                                        T preReflectLoc = particle.location;
-                                        T preReflectVel = particle.velocity;
-                                    #endif // STORM_WITH_TRACING_HISTORY
-                                    MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
-                                    this->physics->onBoundaryResult(particle, status, functionality.boundaryCrossing && this->boundaryCondition->isEscape(status));
-                                    if(status == MonteCarloParticleStatus::REFLECT)
-                                    {
-                                        #ifdef STORM_WITH_TRACING_HISTORY
-                                            particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
-                                        #endif // STORM_WITH_TRACING_HISTORY
-                                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
-                                                            MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
-                                        continue;
-                                    }
-                                    else if(status == MonteCarloParticleStatus::REMOVE)
-                                    {
-                                        stepData.leavingCount++;
-                                        this->allStepsCounter += particle.steps;
-                                        this->localDecrementAmount += 1;
-                                        ++this->progressRemovedCount_;
-                                        removeCurrent = true;
-                                    }
-                                    else
-                                    {
-                                        STORMError eo("Unknown boundary condition for particle");
-                                        eo.addEntry("Particle", particle);
-                                        eo.addEntry("Status", status);
-                                        throw eo;
-                                    }
-                                    break;
-                                }
-
-                                #ifdef STORM_DEBUG
-                                if(__builtin_expect(this->grid.IsPointOutsideBox(particle.location), 0))
-                                    throwCellMoveOutsideBox("remote rank transfer");
-                                #endif // STORM_DEBUG
-
-                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                                auto [otherRank, neighborIndexInRank] = it->second;
-                                #ifdef STORM_DEBUG
-                                particle.checkedHere = false;
-                                if(particle.nextRank != std::numeric_limits<rank_t>::max())
-                                {
-                                    STORMError eo("Particle was already sent, and not sent again");
-                                    eo.addEntry("Particle", particle);
-                                    eo.addEntry("Already Transferred To Rank", particle.nextRank);
-                                    eo.addEntry("Being Transferred To Rank", otherRank);
-                                    eo.addEntry("Being Transferred To Index In Rank", neighborIndexInRank);
-                                    throw eo;
-                                }
-                                const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
-                                if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
-                                {
-                                    STORMError eo("Particle is going to be transffered to a non-neighboring rank");
-                                    eo.addEntry("Particle", particle);
-                                    eo.addEntry("My Rank", this->rank_world);
-                                    eo.addEntry("Next Rank", otherRank);
-                                    eo.addEntry("Index In Remote Rank", neighborIndexInRank);
-                                    throw eo;
-                                }
-                                particle.cellIndexInPrevRank = particle.cellIndex;
-                                particle.sentByRank = this->rank_world;
-                                particle.ghostIndex = nextCellIndex;
-                                particle.newCellValue = this->grid.GetMeshPoint(nextCellIndex);
-                                particle.particleIndexInLastRank = particleIndex;
-                                particle.particleTHInLastRank = particleIndex;
-                                particle.nextRank = otherRank;
-                                if(particle.nextRank == this->rank_world)
-                                {
-                                    STORMError eo("Particle is going to be sent to the same rank");
-                                    eo.addEntry("Particle", particle);
-                                    eo.addEntry("My Rank", this->rank_world);
-                                    eo.addEntry("Next Rank", otherRank);
-                                    eo.addEntry("Index In Remote Rank", neighborIndexInRank);
-                                    throw eo;
-                                }
-                                #endif // STORM_DEBUG
-
-                                particle.sent = true;
-                                particle.cellIndex = neighborIndexInRank;
-                                particle.sent = false;
-                                RegisteredSendBuffer &buffer = this->GetSendBuffer(otherRank);
-                                size_t previousSize = buffer.size();
-                                buffer.push_back(particle);
-                                this->NoteSendBufferGrowth(otherRank, previousSize, buffer, 1);
-                                removeCurrent = true;
-                                break;
-                            }
-                        }
-                        else if(functionality.change == MonteCarloParticleStatus::REMOVE)
-                        {
-                            this->allStepsCounter += particle.steps;
-                            this->localDecrementAmount += 1;
                             removeCurrent = true;
                             break;
-                        }
-                        else if(functionality.change == MonteCarloParticleStatus::DONE)
-                        {
-                            stepData.remaining.push_back(particle);
-                            this->allStepsCounter += particle.steps;
-                            this->localDecrementAmount += 1;
-                            removeCurrent = true;
-                            break;
-                        }
-                        else if(functionality.change == MonteCarloParticleStatus::NO_CELL_MOVE)
-                        {
-                            continue;
-                        }
-                        else
-                        {
-                            STORMError eo("Unknown Monte Carlo particle status");
-                            eo.addEntry("Particle", particle);
-                            eo.addEntry("Status", functionality.change);
-                            throw eo;
                         }
                     }
                 }
@@ -1490,10 +1835,11 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
                 assert(removeCurrent);
             });
 
-        if(not localParticles.empty())
-        {
-            assert(deferredParticles.empty());
-            deferredParticles.swap(localParticles);
+            if(not localParticles.empty())
+            {
+                assert(deferredParticles.empty());
+                deferredParticles.swap(localParticles);
+            }
         }
     }
 
@@ -2300,6 +2646,8 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     //     std::cout << "Changed grid for rank " << this->rank_world << ": " << this->Ncells << " -> " << this->grid.GetPointNo() <<  std::endl;
     // }
 
+    auto stepStart = std::chrono::high_resolution_clock::now();
+
     this->Ncells = this->grid.GetPointNo();
     this->ranks_ghost_map = GetGhostMap(this->grid);
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
@@ -2311,6 +2659,21 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     this->nextActiveRanks.clear();
     this->activeRankScanCursor = 0;
     this->activeRankScanRemaining = 0;
+#ifdef STORM_WITH_GPU
+    this->gpuPackSeconds = 0.0;
+    this->gpuDeviceSeconds = 0.0;
+    this->gpuCopyBackSeconds = 0.0;
+    this->gpuProgressSeconds = 0.0;
+    this->gpuHostEventSeconds = 0.0;
+    this->gpuLaunchCount = 0;
+    this->gpuParticleCount = 0;
+#endif
+    this->loopRmaSeconds = 0.0;
+    this->loopAmountSeconds = 0.0;
+    this->loopHandleSeconds = 0.0;
+    this->loopMergeSeconds = 0.0;
+    this->loopRounds = 0;
+    this->loopIdleRounds = 0;
 
 
     bool didRebalance = this->grid.DidRebalance() and (this->lastBuildGeneration != this->grid.GetBuildGeneration());
@@ -2324,10 +2687,31 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     this->initialParticleCount = initialParticlesNum;
     this->cellsParticleCounters.assign(this->Ncells, 0);
     for(const auto &p : particleList) this->cellsParticleCounters[p.cellIndex]++;
+#ifdef STORM_WITH_GPU
+    if constexpr(gpu::HasDeviceTransport<Physics>::value)
+    {
+        if(this->physics->UsesDeviceTransport())
+        {
+            this->StageLocalParticlesForDevice(std::move(particleList), false);
+        }
+        else
+        {
+            this->PutSelfParticles(std::move(particleList));
+        }
+    }
+    else
+    {
+        this->PutSelfParticles(std::move(particleList));
+    }
+#else
     this->PutSelfParticles(std::move(particleList));
+#endif
     this->physics->updateGridData();
 
+    auto generationStart = std::chrono::high_resolution_clock::now();
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
+    double generationSeconds = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - generationStart).count();
 
 
     size_t preStepParticlesNum = newParticles1.size();
@@ -2387,6 +2771,27 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     this->cellsStepsCounters.assign(this->Ncells, 0);
     this->transfersCounter = 0;
 
+    auto initializeExistingParticle = [fullDt](MCParticle &p)
+    {
+        #ifdef STORM_DEBUG
+        p.checkedHere = true;
+        p.nextRank = std::numeric_limits<rank_t>::max();
+        p.removedFromRank = false;
+        p.sentByRank = std::numeric_limits<rank_t>::max();
+        p.lastSeen = 0;
+        p.lastSeenRank = std::numeric_limits<rank_t>::max();
+        p.lastSeenRankBuf = std::numeric_limits<rank_t>::max();
+        p.lastSeenIndex = std::numeric_limits<size_t>::max();
+        #endif // STORM_DEBUG
+        #ifdef STORM_WITH_TRACING_HISTORY
+        p.tracingHistoryIndex = 0;
+        p.tracingHistoryCount = 0;
+        #endif // STORM_WITH_TRACING_HISTORY
+        p.timeLeft = fullDt;
+        p.initialWeight = std::abs(p.weight);
+        p.steps = 0;
+    };
+
     for(RankHandler_t *handler : this->rankHandlers)
     {
         if(handler == nullptr)
@@ -2394,29 +2799,38 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
             continue;
         }
 
-        handler->ForEachLocalParticle([fullDt](MCParticle &p, size_t)
+        handler->ForEachLocalParticle([&initializeExistingParticle](MCParticle &p, size_t)
         {
-            #ifdef STORM_DEBUG
-            p.checkedHere = true;
-            p.nextRank = std::numeric_limits<rank_t>::max();
-            p.removedFromRank = false;
-            p.sentByRank = std::numeric_limits<rank_t>::max();
-            p.lastSeen = 0;
-            p.lastSeenRank = std::numeric_limits<rank_t>::max();
-            p.lastSeenRankBuf = std::numeric_limits<rank_t>::max();
-            p.lastSeenIndex = std::numeric_limits<size_t>::max();
-            #endif // STORM_DEBUG
-            #ifdef STORM_WITH_TRACING_HISTORY
-            p.tracingHistoryIndex = 0;
-            p.tracingHistoryCount = 0;
-            #endif // STORM_WITH_TRACING_HISTORY
-            p.timeLeft = fullDt;
-            p.initialWeight = std::abs(p.weight);
-            p.steps = 0;
+            initializeExistingParticle(p);
         });
     }
+    for(std::vector<MCParticle> &particles : this->detachedRankParticles)
     {
+        for(MCParticle &particle : particles)
+        {
+            initializeExistingParticle(particle);
+        }
+    }
+    {
+#ifdef STORM_WITH_GPU
+        if constexpr(gpu::HasDeviceTransport<Physics>::value)
+        {
+            if(this->physics->UsesDeviceTransport())
+            {
+                this->StageLocalParticlesForDevice(std::move(newParticles1), true);
+            }
+            else
+            {
+                this->AddParticles(newParticles1);
+            }
+        }
+        else
+        {
+            this->AddParticles(newParticles1);
+        }
+#else
         this->AddParticles(newParticles1);
+#endif
         std::vector<MCParticle>().swap(newParticles1);
     }
     MPI_Barrier(this->comm_world);
@@ -2457,6 +2871,8 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         ? std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles)
         : 1;
     auto loopStart = std::chrono::high_resolution_clock::now();
+    double setupSeconds = std::chrono::duration<double>(loopStart - stepStart).count()
+        - generationSeconds;
     this->progressStartTime_ = loopStart;
     this->lastProgressPrintTime_ = 0.0;
     int64_t globalInitialForProgress = amountManager.GetValue();
@@ -2491,6 +2907,9 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     {
         while(not done)
         {
+            ++this->loopRounds;
+            auto phaseStart = std::chrono::steady_clock::now();
+
             this->PumpRMAProgress();
             bool shouldProgressReallocations = (not usesAsyncReallocation) or
                 (this->iteration % reallocationProgressMinCycles == 0) or
@@ -2500,9 +2919,25 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
                 this->ProgressReallocations();
             }
             this->MakeRDMAProgress();
+            auto handleStart = std::chrono::steady_clock::now();
+            this->loopRmaSeconds +=
+                std::chrono::duration<double>(handleStart - phaseStart).count();
+
+            // HandleAll returns true when this rank found nothing to transport.
             bool localWorkDone = this->HandleAll(data);
+            phaseStart = std::chrono::steady_clock::now();
+            this->loopHandleSeconds +=
+                std::chrono::duration<double>(phaseStart - handleStart).count();
+            if(localWorkDone)
+            {
+                ++this->loopIdleRounds;
+            }
+
             this->PumpRMAProgress();
             this->FlushSendBuffers(localWorkDone);
+            auto amountStart = std::chrono::steady_clock::now();
+            this->loopRmaSeconds +=
+                std::chrono::duration<double>(amountStart - phaseStart).count();
 
             amountManager.Decrease(this->localDecrementAmount);
             this->localDecrementAmount = 0;
@@ -2510,6 +2945,9 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
             if(this->iteration % amountProgressMinCycles == 0)
             {
                 amountManager.Progress();
+                this->loopAmountSeconds +=
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - amountStart).count();
 
                 auto now = std::chrono::high_resolution_clock::now();
                 double elapsed_s = std::chrono::duration<double>(now - this->progressStartTime_).count();
@@ -2628,9 +3066,84 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         std::cout << "Loop time: " << loopTime << " seconds, max steps: " << maxSteps << ", avg steps: " << avgSteps << std::endl;
     }
 
+#ifdef STORM_WITH_GPU
+    double localGpuTimes[5] = {
+        this->gpuPackSeconds,
+        this->gpuDeviceSeconds,
+        this->gpuCopyBackSeconds,
+        this->gpuProgressSeconds,
+        this->gpuHostEventSeconds
+    };
+    double maximumGpuTimes[5] = {};
+    MPI_Reduce(localGpuTimes, maximumGpuTimes, 5, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    unsigned long long globalGpuLaunches = this->gpuLaunchCount;
+    unsigned long long globalGpuParticles = this->gpuParticleCount;
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalGpuLaunches,
+               &globalGpuLaunches, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalGpuParticles,
+               &globalGpuParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    if(this->rank_world == 0 && globalGpuParticles > 0)
+    {
+        std::cout << "GPU transport max-rank time: pack=" << maximumGpuTimes[0]
+                  << " s, device+compact=" << maximumGpuTimes[1]
+                  << " s, compact-copy=" << maximumGpuTimes[2]
+                  << " s, overlapped-rma=" << maximumGpuTimes[3]
+                  << " s, host-events=" << maximumGpuTimes[4]
+                  << " s; global launches=" << globalGpuLaunches
+                  << ", particles=" << globalGpuParticles << std::endl;
+    }
+#endif
 
+    {
+        double localLoopTimes[4] = {
+            this->loopRmaSeconds,
+            this->loopAmountSeconds,
+            this->loopHandleSeconds,
+            this->loopMergeSeconds
+        };
+        double maximumLoopTimes[4] = {};
+        double minimumLoopTimes[4] = {};
+        MPI_Reduce(localLoopTimes, maximumLoopTimes, 4, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(localLoopTimes, minimumLoopTimes, 4, MPI_DOUBLE, MPI_MIN, 0, this->comm_world);
+        unsigned long long roundCounts[2] = {this->loopRounds, this->loopIdleRounds};
+        unsigned long long maximumRounds[2] = {};
+        unsigned long long totalRounds[2] = {};
+        MPI_Reduce(roundCounts, maximumRounds, 2, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(roundCounts, totalRounds, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        if(this->rank_world == 0)
+        {
+            std::cout << "MC loop split max-rank: rma=" << maximumLoopTimes[0]
+                      << " s, amount=" << maximumLoopTimes[1]
+                      << " s, handle=" << maximumLoopTimes[2]
+                      << " s, merge=" << maximumLoopTimes[3]
+                      << " s; min-rank: rma=" << minimumLoopTimes[0]
+                      << " s, amount=" << minimumLoopTimes[1]
+                      << " s, handle=" << minimumLoopTimes[2]
+                      << " s; rounds max=" << maximumRounds[0]
+                      << " idle_max=" << maximumRounds[1]
+                      << " rounds_sum=" << totalRounds[0]
+                      << " idle_sum=" << totalRounds[1] << std::endl;
+        }
+    }
+
+
+    auto censusStart = std::chrono::high_resolution_clock::now();
     data.remaining = this->populationControl->activate(data.remaining);
     this->physics->postStep(data.remaining, fullDt);
+    double censusSeconds = std::chrono::duration<double>(
+        std::chrono::high_resolution_clock::now() - censusStart).count();
+
+    double localStepTimes[4] = {setupSeconds, generationSeconds, loopTime, censusSeconds};
+    double maximumStepTimes[4] = {};
+    MPI_Reduce(localStepTimes, maximumStepTimes, 4, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        std::cout << "MC step max-rank time: setup=" << maximumStepTimes[0]
+                  << " s, generation=" << maximumStepTimes[1]
+                  << " s, loop=" << maximumStepTimes[2]
+                  << " s, census=" << maximumStepTimes[3]
+                  << " s" << std::endl;
+    }
 
     size_t newParticlesNum = data.remaining.size();
     this->endParticleCount = newParticlesNum;
