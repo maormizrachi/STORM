@@ -78,6 +78,7 @@ option(STORM_WITH_VTK    "Build with VTK support for mesh output (requires MadVo
 option(STORM_WITH_HDF5   "Build with HDF5 support" OFF)
 option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
 option(STORM_WITH_COMPTON "Build internal CMMC Compton support" ON)
+option(STORM_WITH_GPU     "Build Kokkos GPU transport support" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -269,6 +270,10 @@ target_include_directories(storm INTERFACE
 target_link_libraries(storm INTERFACE Boost::boost)
 if(OpenMP_CXX_FOUND)
   target_link_libraries(storm INTERFACE OpenMP::OpenMP_CXX)
+endif()
+
+if(STORM_WITH_GPU)
+  add_subdirectory(gpu)
 endif()
 
 if(STORM_WITH_MPI)
