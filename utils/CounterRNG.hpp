@@ -3,12 +3,19 @@
 
 #include <cstdint>
 
+#ifdef STORM_WITH_GPU
+#include "../gpu/KokkosTypes.hpp"
+#define STORM_RNG_INLINE STORM_GPU_INLINE_FUNCTION
+#else
+#define STORM_RNG_INLINE inline
+#endif
+
 namespace STORM {
 
 class CounterRNG
 {
 public:
-    static std::uint64_t mix(std::uint64_t value)
+    STORM_RNG_INLINE static std::uint64_t mix(std::uint64_t value)
     {
         value += 0x9e3779b97f4a7c15ULL;
         value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
@@ -16,21 +23,21 @@ public:
         return value ^ (value >> 31U);
     }
 
-    static std::uint64_t makeKey(std::uint64_t seed,
-                                 std::uint64_t creationRank,
-                                 std::uint64_t particleID)
+    STORM_RNG_INLINE static std::uint64_t makeKey(std::uint64_t seed,
+                                                  std::uint64_t creationRank,
+                                                  std::uint64_t particleID)
     {
         return mix(seed ^ mix(creationRank) ^ mix(particleID));
     }
 
-    static std::uint64_t next(std::uint64_t key, std::uint64_t counter)
+    STORM_RNG_INLINE static std::uint64_t next(std::uint64_t key, std::uint64_t counter)
     {
         // A counter-based stream: the result is a pure function of key and
         // counter, so scheduling and rank migration cannot change the stream.
         return mix(key + counter * 0x9e3779b97f4a7c15ULL);
     }
 
-    static double unitOpen(std::uint64_t key, std::uint64_t counter)
+    STORM_RNG_INLINE static double unitOpen(std::uint64_t key, std::uint64_t counter)
     {
         const std::uint64_t mantissa = next(key, counter) >> 11U;
         return (static_cast<double>(mantissa) + 0.5) * 0x1.0p-53;
@@ -62,5 +69,7 @@ private:
 };
 
 } // namespace STORM
+
+#undef STORM_RNG_INLINE
 
 #endif // STORM_COUNTER_RNG_HPP

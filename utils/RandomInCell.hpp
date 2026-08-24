@@ -7,18 +7,38 @@
 #include <random>
 #include <vector>
 
+/// Volume-weighted tetrahedral decomposition of one cell, reusable across every
+/// particle emitted from that cell. Depends only on the grid geometry.
+struct CellVolumeDecomposition
+{
+    std::vector<double> cumVolumes;
+    std::vector<std::array<std::size_t, 3>> tris;
+
+    void clear()
+    {
+        cumVolumes.clear();
+        tris.clear();
+    }
+
+    bool empty() const
+    {
+        return tris.empty();
+    }
+};
+
 template<typename PointT, typename GridT>
 struct RandomInCellPositionSampler
 {
-    PointT operator()(const GridT &grid,
-                      std::size_t cellIndex,
-                      std::mt19937_64 &rng,
-                      std::uniform_real_distribution<double> &dist) const
-    {
-        PointT center = grid.GetMeshPoint(cellIndex);
+    using Decomposition = CellVolumeDecomposition;
 
-        std::vector<double> cumVolumes;
-        std::vector<std::array<std::size_t, 3>> tris;
+    /// Retains `out`'s capacity so repeated calls across cells do not reallocate.
+    void BuildDecomposition(const GridT &grid,
+                            std::size_t cellIndex,
+                            Decomposition &out) const
+    {
+        out.clear();
+        PointT center = grid.GetMeshPoint(cellIndex);
+        const auto &verts = grid.GetFacePoints();
         double totalVolume = 0;
 
         for(const std::size_t &faceIdx : grid.GetCellFaces(cellIndex))
@@ -28,7 +48,6 @@ struct RandomInCellPositionSampler
             {
                 continue;
             }
-            const auto &verts = grid.GetFacePoints();
             for(std::size_t i = 1; i + 1 < fv.size(); ++i)
             {
                 PointT a = verts[fv[0]] - center;
@@ -36,24 +55,36 @@ struct RandomInCellPositionSampler
                 PointT c = verts[fv[i + 1]] - center;
                 double vol = std::abs(STORM::fallback::ScalarProd(a, STORM::fallback::CrossProduct(b, c)));
                 totalVolume += vol;
-                cumVolumes.push_back(totalVolume);
-                tris.push_back({fv[0], fv[i], fv[i + 1]});
+                out.cumVolumes.push_back(totalVolume);
+                out.tris.push_back({fv[0], fv[i], fv[i + 1]});
             }
         }
+    }
 
-        if(tris.empty())
+    /// Draws exactly four values from `dist(rng)` when `decomp` is non-empty and
+    /// none when it is, matching the draw order of `operator()`.
+    PointT Sample(const GridT &grid,
+                  std::size_t cellIndex,
+                  const Decomposition &decomp,
+                  std::mt19937_64 &rng,
+                  std::uniform_real_distribution<double> &dist) const
+    {
+        PointT center = grid.GetMeshPoint(cellIndex);
+
+        if(decomp.tris.empty())
         {
             return center;
         }
 
         const auto &verts = grid.GetFacePoints();
 
-        double r = dist(rng) * totalVolume;
+        double r = dist(rng) * decomp.cumVolumes.back();
         std::size_t idx = static_cast<std::size_t>(
-            std::lower_bound(cumVolumes.begin(), cumVolumes.end(), r) - cumVolumes.begin());
-        if(idx >= tris.size())
+            std::lower_bound(decomp.cumVolumes.begin(), decomp.cumVolumes.end(), r) -
+            decomp.cumVolumes.begin());
+        if(idx >= decomp.tris.size())
         {
-            idx = tris.size() - 1;
+            idx = decomp.tris.size() - 1;
         }
 
         double s = dist(rng), t = dist(rng), u = dist(rng);
@@ -61,8 +92,18 @@ struct RandomInCellPositionSampler
         if(t > u) std::swap(t, u);
         if(s > t) std::swap(s, t);
 
-        const auto &tv = tris[idx];
+        const auto &tv = decomp.tris[idx];
         return s * verts[tv[0]] + (t - s) * verts[tv[1]] + (u - t) * verts[tv[2]] + (1 - u) * center;
+    }
+
+    PointT operator()(const GridT &grid,
+                      std::size_t cellIndex,
+                      std::mt19937_64 &rng,
+                      std::uniform_real_distribution<double> &dist) const
+    {
+        Decomposition decomp;
+        this->BuildDecomposition(grid, cellIndex, decomp);
+        return this->Sample(grid, cellIndex, decomp, rng, dist);
     }
 };
 
