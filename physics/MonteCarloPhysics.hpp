@@ -1,6 +1,10 @@
 #ifndef STORM_MONTE_CARLO_PHYSICS_HPP
 #define STORM_MONTE_CARLO_PHYSICS_HPP
 
+#ifdef STORM_WITH_GPU
+#include <cstdint>
+#endif
+#include <limits>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -52,11 +56,20 @@ protected:
     struct FlatGridData
     {
         std::vector<std::size_t> cellFaceOffsets;
+#ifdef STORM_WITH_GPU
+        std::vector<T> cellCenters;
+#endif
         std::vector<std::size_t> faceIndices;
         std::vector<T> normals;
         std::vector<T> pointsOnFaces;
         std::vector<cell_index_t> nextCellIndices;
+#ifdef STORM_WITH_GPU
+        std::vector<std::uint8_t> boundaryCrossings;
+        std::vector<std::uint8_t> deviceBoundaryBehaviors;
+#endif
     } gridData;
+    std::size_t gridDataBuildGeneration_ =
+        std::numeric_limits<std::size_t>::max();
 };
 
 template<typename T, typename Grid>
@@ -68,8 +81,18 @@ template<typename T, typename Grid>
 void MonteCarloPhysics<T, Grid>::updateGridData(void)
 {
     size_t Ncells = this->grid.GetPointNo();
+    const std::size_t buildGeneration = this->grid.GetBuildGeneration();
+    if(buildGeneration == this->gridDataBuildGeneration_ &&
+       this->gridData.cellFaceOffsets.size() == Ncells + 1)
+    {
+        return;
+    }
+    this->gridDataBuildGeneration_ = buildGeneration;
 
     this->gridData.cellFaceOffsets.assign(Ncells + 1, 0);
+#ifdef STORM_WITH_GPU
+    this->gridData.cellCenters.resize(Ncells);
+#endif
     std::size_t directedFaceCount = 0;
     for(std::size_t i = 0; i < Ncells; ++i)
     {
@@ -80,9 +103,16 @@ void MonteCarloPhysics<T, Grid>::updateGridData(void)
     this->gridData.normals.resize(directedFaceCount);
     this->gridData.pointsOnFaces.resize(directedFaceCount);
     this->gridData.nextCellIndices.resize(directedFaceCount);
+#ifdef STORM_WITH_GPU
+    this->gridData.boundaryCrossings.resize(directedFaceCount);
+    this->gridData.deviceBoundaryBehaviors.resize(directedFaceCount);
+#endif
 
     for(std::size_t i = 0; i < Ncells; ++i)
     {
+#ifdef STORM_WITH_GPU
+        this->gridData.cellCenters[i] = this->grid.GetMeshPoint(i);
+#endif
         const auto &faces = this->grid.GetCellFaces(i);
         std::size_t directedFace = this->gridData.cellFaceOffsets[i];
         for(const std::size_t faceIdx : faces)
@@ -93,13 +123,26 @@ void MonteCarloPhysics<T, Grid>::updateGridData(void)
                 normalTowardsCenterOfCell *= -1;
             }
             const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
-            const std::size_t nextCell = neighbors.first == i
-                ? neighbors.second : neighbors.first;
+            const std::size_t nextCell = neighbors.first == i ? neighbors.second : neighbors.first;
             this->gridData.faceIndices[directedFace] = faceIdx;
             this->gridData.normals[directedFace] = normalize(normalTowardsCenterOfCell);
             this->gridData.pointsOnFaces[directedFace] = this->grid.FaceCM(faceIdx);
-            this->gridData.nextCellIndices[directedFace] =
-                static_cast<cell_index_t>(nextCell);
+            this->gridData.nextCellIndices[directedFace] = static_cast<cell_index_t>(nextCell);
+#ifdef STORM_WITH_GPU
+            const bool boundaryCrossing = this->grid.IsPointOutsideBox(nextCell);
+            this->gridData.boundaryCrossings[directedFace] = boundaryCrossing;
+#ifdef STORM_WITH_TRACING_HISTORY
+            this->gridData.deviceBoundaryBehaviors[directedFace] =
+                static_cast<std::uint8_t>(DeviceBoundaryFaceBehavior::HostOnly);
+#else
+            this->gridData.deviceBoundaryBehaviors[directedFace] =
+                static_cast<std::uint8_t>(
+                    boundaryCrossing
+                        ? this->boundary->getDeviceBoundaryFaceBehavior(
+                              faceIdx, i, nextCell)
+                        : DeviceBoundaryFaceBehavior::HostOnly);
+#endif
+#endif
             ++directedFace;
         }
     }

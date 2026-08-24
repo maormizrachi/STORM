@@ -55,6 +55,11 @@
 #include "../utils/CounterRNG.hpp"
 #include "../mesh_movement/MeshMovement.hpp"
 
+#ifdef STORM_WITH_GPU
+    #include "../gpu/GreyIMCData.hpp"
+    #include "../gpu/KokkosRuntime.hpp"
+#endif
+
 namespace STORM {
 
 namespace radiation_imc_detail {
@@ -387,6 +392,29 @@ void lorentzTransformToLab(ParticleT &particle, const CellT &cell)
 template<typename PointT, typename GridT>
 struct CellCenterPositionSampler
 {
+    using Decomposition = CellVolumeDecomposition;
+
+    void BuildDecomposition(const GridT &grid,
+                            std::size_t cellIndex,
+                            Decomposition &out) const
+    {
+        (void) grid;
+        (void) cellIndex;
+        out.clear();
+    }
+
+    PointT Sample(const GridT &grid,
+                  std::size_t cellIndex,
+                  const Decomposition &decomp,
+                  std::mt19937_64 &rng,
+                  std::uniform_real_distribution<double> &dist) const
+    {
+        (void) decomp;
+        (void) rng;
+        (void) dist;
+        return grid.GetMeshPoint(cellIndex);
+    }
+
     PointT operator()(const GridT &grid,
                       std::size_t cellIndex,
                       std::mt19937_64 &rng,
@@ -397,6 +425,25 @@ struct CellCenterPositionSampler
         return grid.GetMeshPoint(cellIndex);
     }
 };
+
+namespace radiation_imc_detail {
+
+/// Detects position samplers exposing the reusable-decomposition API.
+template<typename SamplerT, typename = void>
+struct sampler_decomposition
+{
+    struct type {};
+    static constexpr bool supported = false;
+};
+
+template<typename SamplerT>
+struct sampler_decomposition<SamplerT, std::void_t<typename SamplerT::Decomposition>>
+{
+    using type = typename SamplerT::Decomposition;
+    static constexpr bool supported = true;
+};
+
+} // namespace radiation_imc_detail
 
 template<typename PointT,
          typename GridT,
@@ -419,6 +466,10 @@ public:
     using OpacityModel = RadiationOpacityModel<PointT, GridT, CellT, NumGroups>;
     using Traits = TraitsT;
     using PositionSampler = PositionSamplerT;
+    using PositionDecomposition =
+        typename radiation_imc_detail::sampler_decomposition<PositionSamplerT>::type;
+    static constexpr bool kSamplerHasDecomposition =
+        radiation_imc_detail::sampler_decomposition<PositionSamplerT>::supported;
     using GroupArray = std::array<double, NumGroups>;
     using GroupBoundaries = std::array<double, NumGroups + 1>;
     using GroupCdf = std::array<double, NumGroups + 1>;
@@ -520,6 +571,9 @@ public:
                           bool escaped) override;
 
     MCParticle generateSingleParticle(std::size_t cellIndex, const CellT &cell);
+    /// `decomposition` may be null, in which case the sampler rebuilds it internally.
+    MCParticle generateSingleParticle(std::size_t cellIndex, const CellT &cell,
+                                      const PositionDecomposition *decomposition);
     std::vector<MCParticle> generateInitialParticles(std::size_t particlesPerCell);
     void adjustExistingParticles(std::vector<MCParticle> &particles, double fullDt);
 
@@ -533,6 +587,17 @@ public:
     std::vector<double> &getEradTimeAvg() { return this->Erad_time_avg_; }
     const std::vector<GroupArray> &getEgTimeAvg() const { return this->Eg_time_avg_; }
     std::vector<GroupArray> &getEgTimeAvg() { return this->Eg_time_avg_; }
+#ifdef STORM_WITH_GPU
+    bool UsesDeviceTransport() const
+    {
+        return this->gpuTransportEnabled_;
+    }
+
+    gpu::GreyIMCViews<gpu::DeviceVec3> GetDeviceTransportViews() const
+    {
+        return this->gpuData_->Views(units::clight, !this->parameters_.noHydroFeedback);
+    }
+#endif
     const GroupBoundaries &getEnergyBoundaries() const { return this->energyBoundaries_; }
     const Parameters &getParameters() const { return this->parameters_; }
     const SourceAllocationSummary &getLastSourceAllocationSummary() const { return this->lastSourceAllocationSummary_; }
@@ -651,6 +716,46 @@ private:
         Scatter,
         Census
     };
+
+#ifdef STORM_WITH_GPU
+    bool GreyKernelEligible() const
+    {
+#if defined(STORM_DEBUG) || defined(STORM_WITH_TRACING_HISTORY)
+        return false;
+#else
+        return !this->parameters_.withMultigroupOpacity &&
+               !this->parameters_.withRandomWalk &&
+               !this->parameters_.withDDMC &&
+               !this->parameters_.withCompton &&
+               !this->parameters_.withHydro &&
+               !this->parameters_.postProcess.enabled &&
+               !this->observer_ &&
+               !this->polarizationEnabled();
+#endif
+    }
+
+    gpu::GreyIMCViews<PointT> GetHostTransportViews()
+    {
+        gpu::GreyIMCViews<PointT> result;
+        result.grid.cellFaceOffsets = this->gridData.cellFaceOffsets.data();
+        result.grid.cellCenters = this->gridData.cellCenters.data();
+        result.grid.normals = this->gridData.normals.data();
+        result.grid.pointsOnFaces = this->gridData.pointsOnFaces.data();
+        result.grid.nextCellIndices = this->gridData.nextCellIndices.data();
+        result.grid.boundaryCrossings = this->gridData.boundaryCrossings.data();
+        result.grid.deviceBoundaryBehaviors =
+            this->gridData.deviceBoundaryBehaviors.data();
+        result.grid.cellCount = this->grid.GetPointNo();
+        result.absorptionOpacities = this->planckOpacities_.data();
+        result.scatteringOpacities = this->scatteringOpacities_.data();
+        result.fleckFactors = this->factorFleck_.data();
+        result.pendingMaterialEnergy = this->pendingMaterialEnergy_.data();
+        result.pendingRadiationEnergy = this->pendingRadiationEnergy_.data();
+        result.speedOfLight = units::clight;
+        result.depositMaterialEnergy = !this->parameters_.noHydroFeedback;
+        return result;
+    }
+#endif
 
     struct ComptonProjectionResult
     {
@@ -912,11 +1017,21 @@ private:
     std::uniform_real_distribution<double> dist_;
     std::uint64_t particleRngSeed_ = 42;
     std::uint64_t sourceRngStreamCounter_ = 0;
+    std::uint64_t creationRank_ = 0;
+    bool creationRankCached_ = false;
+    /// Reused across cells so the per-cell decomposition keeps its capacity.
+    PositionDecomposition scratchDecomposition_;
     std::vector<double> pendingMaterialEnergy_;
     std::vector<double> pendingTotalEnergy_;
     std::vector<PointT> pendingMomentum_;
     std::vector<double> pendingRadiationEnergy_;
     std::vector<GroupArray> pendingGroupRadiationEnergy_;
+#ifdef STORM_WITH_GPU
+    std::unique_ptr<gpu::KokkosRuntime> gpuRuntime_;
+    std::unique_ptr<gpu::GreyIMCData> gpuData_;
+    bool gpuTransportEnabled_ = false;
+    std::size_t gpuGridBuildGeneration_ = std::numeric_limits<std::size_t>::max();
+#endif
 
             // Use one source-group averaged multiplier for every sampled
             // target. This is the variance-reduced Monte Carlo split; the
@@ -1322,19 +1437,30 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::initializeParticleRNG(MCParticle &particle)
 {
-    std::uint64_t creationRank = 0;
-#ifdef STORM_WITH_MPI
-    int mpiInitialized = 0;
-    MPI_Initialized(&mpiInitialized);
-    if(mpiInitialized)
+    // Queried once: this runs per emitted particle, and the rank cannot change.
+    if(!this->creationRankCached_)
     {
-        int rank = 0;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        creationRank = static_cast<std::uint64_t>(rank);
-    }
+#ifdef STORM_WITH_MPI
+        int mpiInitialized = 0;
+        MPI_Initialized(&mpiInitialized);
+        if(mpiInitialized)
+        {
+            int rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            this->creationRank_ = static_cast<std::uint64_t>(rank);
+            this->creationRankCached_ = true;
+        }
+        else
+        {
+            this->creationRank_ = 0;
+        }
+#else
+        this->creationRank_ = 0;
+        this->creationRankCached_ = true;
 #endif
+    }
     particle.rngKey = CounterRNG::makeKey(
-        this->particleRngSeed_, creationRank, this->sourceRngStreamCounter_++);
+        this->particleRngSeed_, this->creationRank_, this->sourceRngStreamCounter_++);
     particle.rngCounter = 0;
 }
 
@@ -6748,6 +6874,37 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             emittedPositiveEnergy, emittedNegativeEnergy);
     }
     this->preStepInitialized_ = true;
+#ifdef STORM_WITH_GPU
+    this->gpuTransportEnabled_ = this->GreyKernelEligible();
+    if(this->gpuTransportEnabled_)
+    {
+        if(!this->gpuRuntime_)
+        {
+            this->gpuRuntime_ = std::make_unique<gpu::KokkosRuntime>();
+        }
+        if(!this->gpuData_)
+        {
+            this->gpuData_ = std::make_unique<gpu::GreyIMCData>();
+        }
+        const std::size_t buildGeneration = this->grid.GetBuildGeneration();
+        if(this->gpuGridBuildGeneration_ != buildGeneration)
+        {
+            this->gpuData_->UploadGrid(
+                this->gridData.cellFaceOffsets,
+                this->gridData.cellCenters,
+                this->gridData.normals,
+                this->gridData.pointsOnFaces,
+                this->gridData.nextCellIndices,
+                this->gridData.boundaryCrossings,
+                this->gridData.deviceBoundaryBehaviors);
+            this->gpuGridBuildGeneration_ = buildGeneration;
+        }
+        this->gpuData_->UploadTables(
+            this->planckOpacities_,
+            this->scatteringOpacities_,
+            this->factorFleck_);
+    }
+#endif
     return newParticles;
 }
 
@@ -6807,6 +6964,21 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             return functionality;
         }
     }
+
+#ifdef STORM_WITH_GPU
+    if(this->GreyKernelEligible())
+    {
+        gpu::TransportResult result = gpu::AdvanceOne(particle, this->GetHostTransportViews());
+        if(result.error != gpu::TransportError::None)
+        {
+            StormError eo("RadiationIMC GPU-compatible grey transport failed");
+            eo.addEntry("Cell index", particle.cellIndex);
+            eo.addEntry("Transport error", static_cast<int>(result.error));
+            throw eo;
+        }
+        return result.step;
+    }
+#endif
 
     auto [faceIntersect, timeIntersect, nextCellIndex] =
         this->getIntersectionDetails(particle);
@@ -7210,6 +7382,12 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double fullDt)
 {
     const std::size_t Ncells = this->grid.GetPointNo();
+#ifdef STORM_WITH_GPU
+    if(this->gpuTransportEnabled_)
+    {
+        this->gpuData_->AddTallies(this->pendingMaterialEnergy_, this->pendingRadiationEnergy_);
+    }
+#endif
     this->applyTransportTallies();
     double const tallyDt = this->parameters_.postProcess.enabled
         ? this->parameters_.postProcess.transportTime : fullDt;
@@ -7644,6 +7822,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         this->lastSourceAllocationSummary_.learnedMinPhotons = 0;
     }
 
+    newParticles.reserve(this->lastSourceAllocationSummary_.totalPhotons);
+
     for(std::size_t i = 0; i < Ncells; ++i)
     {
         CellT &cell = this->cells_[i];
@@ -7653,6 +7833,15 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
         if(nPhotonsCell == 0)
         {
             continue;
+        }
+
+        // The decomposition is identical for every photon emitted from this cell.
+        const PositionDecomposition *cellDecomposition = nullptr;
+        if constexpr(kSamplerHasDecomposition)
+        {
+            this->positionSampler_.BuildDecomposition(
+                this->grid, i, this->scratchDecomposition_);
+            cellDecomposition = &this->scratchDecomposition_;
         }
 
         if(!this->parameters_.noHydroFeedback)
@@ -7905,7 +8094,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
             }
             else
             {
-                particle = this->generateSingleParticle(i, cell);
+                particle = this->generateSingleParticle(i, cell, cellDecomposition);
             }
             particle.cellID = radiation_imc_detail::cellID(cell);
             particle.sourceCellID = particle.cellID;
@@ -8039,6 +8228,16 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     std::size_t cellIndex,
     const CellT &cell)
 {
+    return this->generateSingleParticle(cellIndex, cell, nullptr);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateSingleParticle(
+    std::size_t cellIndex,
+    const CellT &cell,
+    const PositionDecomposition *decomposition)
+{
     MCParticle particle;
     this->initializeParticleRNG(particle);
     particle.id = std::numeric_limits<std::size_t>::max();
@@ -8046,7 +8245,18 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     particle.cellID = radiation_imc_detail::cellID(cell);
     particle.sourceCellID = particle.cellID;
     particle.frequency = 0.0;
-    particle.location = this->positionSampler_(this->grid, cellIndex, this->rng_, this->dist_);
+    if constexpr(kSamplerHasDecomposition)
+    {
+        particle.location = (decomposition != nullptr)
+            ? this->positionSampler_.Sample(this->grid, cellIndex, *decomposition,
+                                            this->rng_, this->dist_)
+            : this->positionSampler_(this->grid, cellIndex, this->rng_, this->dist_);
+    }
+    else
+    {
+        (void) decomposition;
+        particle.location = this->positionSampler_(this->grid, cellIndex, this->rng_, this->dist_);
+    }
     if(this->grid.IsPointOutsideBox(particle.location))
     {
         PointT meshPoint = this->grid.GetMeshPoint(cellIndex);

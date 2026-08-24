@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include "../particle/Particle.hpp"
 #include "../particle/ParticleStatus.hpp"
 #include "../elementary/PointOps.hpp"
@@ -27,6 +28,16 @@ enum class DDMCBoundaryFaceBehavior {
     ReflectingRigid
 };
 
+// A boundary may opt a face into a simple device-side action. HostOnly is the
+// correctness-preserving default: arbitrary boundary implementations may
+// inspect or mutate application state and therefore must receive a host
+// Particle. ReflectingRigid opts into the device kernel's specular reflection
+// and established two-stage affine nudge toward the current cell centre.
+enum class DeviceBoundaryFaceBehavior : std::uint8_t {
+    HostOnly,
+    ReflectingRigid
+};
+
 template<typename T, typename Grid>
 class BoundaryCondition
 {
@@ -46,6 +57,17 @@ public:
     }
 
     virtual std::vector<Particle<T>> generateNewBoundaryParticles(double fullDt) = 0;
+
+    virtual DeviceBoundaryFaceBehavior getDeviceBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const
+    {
+        (void)faceIdx;
+        (void)insideCellIndex;
+        (void)outsidePointIndex;
+        return DeviceBoundaryFaceBehavior::HostOnly;
+    }
 
     virtual DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
         size_t faceIdx,
