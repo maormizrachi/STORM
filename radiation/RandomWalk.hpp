@@ -136,6 +136,36 @@ public:
         return std::clamp(r0 + tauFrac * (r1 - r0), 0.0, 1.0);
     }
 
+    const std::vector<double> &GetTauTable() const
+    {
+        return this->tauTable_;
+    }
+
+    const std::vector<double> &GetSurvivalTable() const
+    {
+        return this->survivalTable_;
+    }
+
+    const std::vector<double> &GetRadiusTable() const
+    {
+        return this->radiusTable_;
+    }
+
+    static constexpr double GetMinimumTau()
+    {
+        return tauMin_;
+    }
+
+    static constexpr double GetMaximumTau()
+    {
+        return tauMax_;
+    }
+
+    static constexpr std::size_t GetRadiusTableSize()
+    {
+        return radiusTableSize_;
+    }
+
     double computeSurvival(double tau) const
     {
         if(tau <= 0.0)

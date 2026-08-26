@@ -52,10 +52,13 @@ void InstantiateHostSupport(STORM::gpu::GreyIMCData &data,
     const std::vector<STORM::cell_index_t> cells;
     const std::vector<std::uint8_t> boundaries;
     std::vector<double> tables;
+    std::vector<double> radiationTallies;
+    std::size_t randomWalkSteps = 0;
     const STORM::gpu::KokkosRuntime runtime;
     data.UploadGrid(offsets, points, points, planeOffsets, cells, boundaries, boundaries);
     data.UploadTables(tables, tables, tables);
     (void) executor.Execute(particles, particles.size(), data.Views(1.0, true));
+    data.AddTallies(tables, radiationTallies, randomWalkSteps);
 }
 
 } // namespace storm_gpu_compile_test

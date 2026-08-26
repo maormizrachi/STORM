@@ -12,6 +12,7 @@
 
 #include "DeviceParticle.hpp"
 #include "GreyIMCKernel.hpp"
+#include "../radiation/RandomWalk.hpp"
 
 namespace STORM
 {
@@ -31,7 +32,13 @@ public:
           deviceBoundaryBehaviors_("storm_device_boundary_behaviors", 0),
           cellTables_("storm_cell_tables", 0),
           pendingMaterialEnergy_("storm_material_tally", 0),
-          pendingRadiationEnergy_("storm_radiation_tally", 0)
+          pendingRadiationEnergy_("storm_radiation_tally", 0),
+          randomWalkEligible_("storm_rw_eligible", 0),
+          randomWalkTotalOpacity_("storm_rw_total_opacity", 0),
+          randomWalkTau_("storm_rw_tau", 0),
+          randomWalkSurvival_("storm_rw_survival", 0),
+          randomWalkRadius_("storm_rw_radius", 0),
+          randomWalkStepCounter_("storm_rw_step_counter")
     {}
 
     template<typename PointT>
@@ -128,6 +135,54 @@ public:
         this->pendingRadiationEnergy_.modify_device();
     }
 
+    void UploadRandomWalk(
+        const std::vector<std::uint8_t> &cellEligible,
+        const std::vector<double> &cellTotalOpacity,
+        const RandomWalk &randomWalk,
+        const double minimumParticleOpticalDepth)
+    {
+        if(cellEligible.size() != this->cellCount_ ||
+           cellTotalOpacity.size() != this->cellCount_)
+        {
+            throw std::runtime_error(
+                "GreyIMCData::UploadRandomWalk: cell table size mismatch");
+        }
+
+        Resize(this->randomWalkEligible_, cellEligible.size());
+        Resize(this->randomWalkTotalOpacity_, cellTotalOpacity.size());
+        for(std::size_t i = 0; i < cellEligible.size(); ++i)
+        {
+            this->randomWalkEligible_.h_view(i) = cellEligible[i];
+            this->randomWalkTotalOpacity_.h_view(i) =
+                cellTotalOpacity[i];
+        }
+        SyncToDevice(this->randomWalkEligible_);
+        SyncToDevice(this->randomWalkTotalOpacity_);
+
+        CopyToDevice(randomWalk.GetTauTable(), this->randomWalkTau_);
+        CopyToDevice(
+            randomWalk.GetSurvivalTable(), this->randomWalkSurvival_);
+        CopyToDevice(
+            randomWalk.GetRadiusTable(), this->randomWalkRadius_);
+
+        this->randomWalkMinimumTau_ = RandomWalk::GetMinimumTau();
+        this->randomWalkMaximumTau_ = RandomWalk::GetMaximumTau();
+        this->randomWalkRadiusTableSize_ =
+            RandomWalk::GetRadiusTableSize();
+        this->randomWalkMinimumParticleOpticalDepth_ =
+            minimumParticleOpticalDepth;
+        this->randomWalkEnabled_ = true;
+        Kokkos::deep_copy(
+            this->randomWalkStepCounter_, std::size_t(0));
+    }
+
+    void DisableRandomWalk()
+    {
+        this->randomWalkEnabled_ = false;
+        Kokkos::deep_copy(
+            this->randomWalkStepCounter_, std::size_t(0));
+    }
+
     GreyIMCViews<DeviceVec3> Views(double speedOfLight, bool depositMaterialEnergy) const
     {
         GreyIMCViews<DeviceVec3> result;
@@ -147,12 +202,37 @@ public:
             this->cellCount_ > 0 ? this->cellTables_.d_view.data() + 2 * this->cellCount_ : nullptr;
         result.pendingMaterialEnergy = this->pendingMaterialEnergy_.d_view.data();
         result.pendingRadiationEnergy = this->pendingRadiationEnergy_.d_view.data();
+        result.randomWalk.cellEligible =
+            this->randomWalkEligible_.d_view.data();
+        result.randomWalk.cellTotalOpacity =
+            this->randomWalkTotalOpacity_.d_view.data();
+        result.randomWalk.tables.tau =
+            this->randomWalkTau_.d_view.data();
+        result.randomWalk.tables.survival =
+            this->randomWalkSurvival_.d_view.data();
+        result.randomWalk.tables.radius =
+            this->randomWalkRadius_.d_view.data();
+        result.randomWalk.tables.tableSize =
+            this->randomWalkTau_.extent(0);
+        result.randomWalk.tables.radiusTableSize =
+            this->randomWalkRadiusTableSize_;
+        result.randomWalk.tables.tauMin =
+            this->randomWalkMinimumTau_;
+        result.randomWalk.tables.tauMax =
+            this->randomWalkMaximumTau_;
+        result.randomWalk.stepCounter =
+            this->randomWalkStepCounter_.data();
+        result.randomWalk.minimumParticleOpticalDepth =
+            this->randomWalkMinimumParticleOpticalDepth_;
+        result.randomWalk.enabled = this->randomWalkEnabled_;
         result.speedOfLight = speedOfLight;
         result.depositMaterialEnergy = depositMaterialEnergy;
         return result;
     }
 
-    void AddTallies(std::vector<double> &materialEnergy, std::vector<double> &radiationEnergy)
+    void AddTallies(std::vector<double> &materialEnergy,
+                    std::vector<double> &radiationEnergy,
+                    std::size_t &randomWalkSteps)
     {
         this->pendingMaterialEnergy_.sync_host();
         this->pendingRadiationEnergy_.sync_host();
@@ -161,6 +241,10 @@ public:
             materialEnergy[i] += this->pendingMaterialEnergy_.h_view(i);
             radiationEnergy[i] += this->pendingRadiationEnergy_.h_view(i);
         }
+        std::size_t deviceRandomWalkSteps = 0;
+        Kokkos::deep_copy(
+            deviceRandomWalkSteps, this->randomWalkStepCounter_);
+        randomWalkSteps += deviceRandomWalkSteps;
     }
 
 private:
@@ -180,6 +264,17 @@ private:
         view.sync_device();
     }
 
+    template<typename T>
+    static void CopyToDevice(const std::vector<T> &source,
+                             Kokkos::DualView<T*> &destination)
+    {
+        Resize(destination, source.size());
+        for(std::size_t i = 0; i < source.size(); ++i)
+        {
+            destination.h_view(i) = source[i];
+        }
+        SyncToDevice(destination);
+    }
 
     Kokkos::DualView<std::size_t*> cellFaceOffsets_;
     Kokkos::DualView<DeviceVec3*> cellCenters_;
@@ -192,6 +287,17 @@ private:
     Kokkos::DualView<double*> cellTables_;
     Kokkos::DualView<double*> pendingMaterialEnergy_;
     Kokkos::DualView<double*> pendingRadiationEnergy_;
+    Kokkos::DualView<std::uint8_t*> randomWalkEligible_;
+    Kokkos::DualView<double*> randomWalkTotalOpacity_;
+    Kokkos::DualView<double*> randomWalkTau_;
+    Kokkos::DualView<double*> randomWalkSurvival_;
+    Kokkos::DualView<double*> randomWalkRadius_;
+    Kokkos::View<std::size_t> randomWalkStepCounter_;
+    double randomWalkMinimumTau_ = 0.0;
+    double randomWalkMaximumTau_ = 0.0;
+    double randomWalkMinimumParticleOpticalDepth_ = 0.0;
+    std::size_t randomWalkRadiusTableSize_ = 0;
+    bool randomWalkEnabled_ = false;
     std::size_t cellCount_ = 0;
 };
 

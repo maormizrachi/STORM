@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "FlatGridView.hpp"
+#include "GreyRandomWalkKernel.hpp"
 #include "../boundary/BoundaryCondition.hpp"
 #include "../particle/StepResult.hpp"
 #include "../utils/CounterRNG.hpp"
@@ -24,6 +25,7 @@ struct GreyIMCViews
     const double *fleckFactors = nullptr;
     double *pendingMaterialEnergy = nullptr;
     double *pendingRadiationEnergy = nullptr;
+    GreyRandomWalkView randomWalk;
     double speedOfLight = 0.0;
     std::uint8_t depositMaterialEnergy = 1;
 };

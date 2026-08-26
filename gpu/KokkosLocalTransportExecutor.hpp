@@ -168,6 +168,32 @@ public:
                 {
                     ++taken;
                     ++particle.steps;
+                    const GreyRandomWalkResult randomWalk =
+                        TryAdvanceGreyRandomWalk(
+                            particle,
+                            views.grid,
+                            views.randomWalk,
+                            views.absorptionOpacities,
+                            views.fleckFactors,
+                            views.pendingMaterialEnergy,
+                            views.pendingRadiationEnergy,
+                            views.speedOfLight,
+                            views.depositMaterialEnergy);
+                    if(randomWalk.invalid)
+                    {
+                        result.error = TransportError::InvalidOpacity;
+                        break;
+                    }
+                    if(randomWalk.taken)
+                    {
+                        result.step = randomWalk.step;
+                        if(result.step.change ==
+                           ParticleStatus::NO_CELL_MOVE)
+                        {
+                            continue;
+                        }
+                        break;
+                    }
                     result = AdvanceOne(particle, views);
                     if(result.error != TransportError::None)
                     {

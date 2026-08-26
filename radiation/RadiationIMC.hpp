@@ -916,7 +916,6 @@ private:
         return false;
 #else
         return !this->parameters_.withMultigroupOpacity &&
-               !this->parameters_.withRandomWalk &&
                !this->parameters_.withDDMC &&
                !this->parameters_.withCompton &&
                !this->parameters_.withHydro &&
@@ -943,6 +942,30 @@ private:
         result.fleckFactors = this->factorFleck_.data();
         result.pendingMaterialEnergy = this->pendingMaterialEnergy_.data();
         result.pendingRadiationEnergy = this->pendingRadiationEnergy_.data();
+        if(this->parameters_.withRandomWalk && this->randomWalk_)
+        {
+            result.randomWalk.cellEligible =
+                this->rwCellEligible_.data();
+            result.randomWalk.cellTotalOpacity =
+                this->rwCellTotalOpacity_.data();
+            result.randomWalk.tables.tau =
+                this->randomWalk_->GetTauTable().data();
+            result.randomWalk.tables.survival =
+                this->randomWalk_->GetSurvivalTable().data();
+            result.randomWalk.tables.radius =
+                this->randomWalk_->GetRadiusTable().data();
+            result.randomWalk.tables.tableSize =
+                this->randomWalk_->GetTauTable().size();
+            result.randomWalk.tables.radiusTableSize =
+                RandomWalk::GetRadiusTableSize();
+            result.randomWalk.tables.tauMin =
+                RandomWalk::GetMinimumTau();
+            result.randomWalk.tables.tauMax =
+                RandomWalk::GetMaximumTau();
+            result.randomWalk.minimumParticleOpticalDepth =
+                this->parameters_.rwMinParticleOpticalDepth;
+            result.randomWalk.enabled = 1;
+        }
         result.speedOfLight = units::clight;
         result.depositMaterialEnergy = !this->parameters_.noHydroFeedback;
         return result;
@@ -1229,7 +1252,7 @@ private:
             // target. This is the variance-reduced Monte Carlo split; the
             // target-dependent difference remains in residualKernel.
     std::unique_ptr<RandomWalk> randomWalk_;
-    std::vector<bool> rwCellEligible_;
+    std::vector<std::uint8_t> rwCellEligible_;
     std::vector<double> rwCellTotalOpacity_;
     std::vector<PGRWCellData> rwCellData_;
     std::size_t rwStepCount_ = 0;
@@ -2149,6 +2172,39 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, 
 {
     std::size_t cellIndex = particle.cellIndex;
     CellT &cell = this->cells_[cellIndex];
+
+#ifdef STORM_WITH_GPU
+    if(!this->parameters_.withMultigroupOpacity &&
+       this->GreyKernelEligible())
+    {
+        gpu::GreyIMCViews<PointT> views =
+            this->GetHostTransportViews();
+        gpu::GreyRandomWalkResult result =
+            gpu::TryAdvanceGreyRandomWalk(
+                particle,
+                views.grid,
+                views.randomWalk,
+                views.absorptionOpacities,
+                views.fleckFactors,
+                views.pendingMaterialEnergy,
+                views.pendingRadiationEnergy,
+                views.speedOfLight,
+                views.depositMaterialEnergy);
+        if(result.invalid)
+        {
+            StormError eo(
+                "RadiationIMC GPU-compatible random walk received invalid data");
+            eo.addEntry("Cell index", particle.cellIndex);
+            throw eo;
+        }
+        if(!result.taken)
+        {
+            return false;
+        }
+        functionality = result.step;
+        return true;
+    }
+#endif
 
     double Ro = this->computeMinDistanceToFaces(cellIndex, particle.location);
 
@@ -7095,6 +7151,18 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
             this->planckOpacities_,
             this->scatteringOpacities_,
             this->factorFleck_);
+        if(this->parameters_.withRandomWalk)
+        {
+            this->gpuData_->UploadRandomWalk(
+                this->rwCellEligible_,
+                this->rwCellTotalOpacity_,
+                *this->randomWalk_,
+                this->parameters_.rwMinParticleOpticalDepth);
+        }
+        else
+        {
+            this->gpuData_->DisableRandomWalk();
+        }
     }
 #endif
     return newParticles;
@@ -7577,7 +7645,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, 
 #ifdef STORM_WITH_GPU
     if(this->gpuTransportEnabled_)
     {
-        this->gpuData_->AddTallies(this->pendingMaterialEnergy_, this->pendingRadiationEnergy_);
+        this->gpuData_->AddTallies(
+            this->pendingMaterialEnergy_,
+            this->pendingRadiationEnergy_,
+            this->rwStepCount_);
     }
 #endif
     this->applyTransportTallies();
