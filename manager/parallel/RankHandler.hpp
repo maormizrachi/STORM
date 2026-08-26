@@ -905,15 +905,16 @@ bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             this->requestedFactor = static_cast<double>(peerUsed + Np) /
                                     static_cast<double>(this->peer_buffsize) * 1.5;
 
+            // The peer may deregister and replace all four regions as soon
+            // as it handles this request. Complete every operation posted
+            // with the old address/key before releasing the resize mutex.
+            this->particles_agent->QuiesceTarget(this->other_rank);
+            this->av_agent->QuiesceTarget(this->other_rank);
+            this->th_agent->QuiesceTarget(this->other_rank);
+            this->lengths_agent->QuiesceTarget(this->other_rank);
+
             if(this->UsesAsyncReallocation())
             {
-                // The peer may deregister and replace all four regions as soon
-                // as it handles this request. Complete every operation posted
-                // with the old address/key before releasing the resize mutex.
-                this->particles_agent->QuiesceTarget(this->other_rank);
-                this->av_agent->QuiesceTarget(this->other_rank);
-                this->th_agent->QuiesceTarget(this->other_rank);
-                this->lengths_agent->QuiesceTarget(this->other_rank);
                 this->remoteTHMutex->Unlock();
                 this->reallocationAgent->RequestReallocationAsync(this->peer_rank_world, this->requestedFactor);
                 this->requestedFactor = 1;

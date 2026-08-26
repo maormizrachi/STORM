@@ -223,6 +223,8 @@ private:
 
     bool UsesAsyncReallocation(void) const;
 
+    bool NeedsRMAProgress(void) const;
+
     void PumpRMAProgress(void);
 
     void ProgressReallocations(void);
@@ -444,6 +446,23 @@ MonteCarloManagerLegacy<T, Grid>::~MonteCarloManagerLegacy()
 template<typename T, typename Grid>
 bool MonteCarloManagerLegacy<T, Grid>::UsesAsyncReallocation(void) const
 {
+    // Must mirror the decision the handlers themselves make in
+    // RankHandler::TransferParticles. Deriving it from the backend type alone
+    // makes the manager poll only the asynchronous request queue while the
+    // handlers still issue synchronous asks, which are then never answered.
+    for(const RankHandler_t *handler : this->rankHandlers)
+    {
+        if(handler != nullptr and handler->UsesAsyncReallocation())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+template<typename T, typename Grid>
+bool MonteCarloManagerLegacy<T, Grid>::NeedsRMAProgress(void) const
+{
     RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
                              ? RMAFactory::ResolveAutoRDMA()
                              : this->rdma_type;
@@ -453,7 +472,7 @@ bool MonteCarloManagerLegacy<T, Grid>::UsesAsyncReallocation(void) const
 template<typename T, typename Grid>
 void MonteCarloManagerLegacy<T, Grid>::PumpRMAProgress(void)
 {
-    if(this->UsesAsyncReallocation())
+    if(this->NeedsRMAProgress())
     {
         RMAFactory::MakeProgress(this->rdma_type);
     }
@@ -467,10 +486,9 @@ void MonteCarloManagerLegacy<T, Grid>::ProgressReallocations(void)
     {
         this->reallocationAgent->ProgressAsyncReallocations();
     }
-    else
-    {
-        this->reallocationAgent->HandleAllWaitingReallocations();
-    }
+    // Handlers may fall back to the synchronous protocol per peer, so the
+    // synchronous queue is serviced unconditionally.
+    this->reallocationAgent->HandleAllWaitingReallocations();
 }
 
 template<typename T, typename Grid>
