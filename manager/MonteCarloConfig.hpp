@@ -51,10 +51,19 @@ public:
     // progress.  This is also the initial host-to-device packet batch size.
     size_t localTransportBatchSize    = 4096;
 #ifdef STORM_WITH_GPU
-    size_t gpuMaxInnerSteps           = 512;
-    // Zero means transport every particle currently detached from one rank
-    // buffer. Unlike the host slice, this should be large enough to fill a GCD.
+    // Events per particle per device wave. A wavefront retires only when its
+    // slowest lane stops, so a long cap makes thin lanes idle behind thick
+    // ones; 64 bounds that tail and beat 4096 by ~1.7x on CrookedPipe.
+    size_t gpuMaxInnerSteps           = 64;
+    // Unused by the resident pool (the whole active set is launched). Kept so
+    // callers can still cap a wave later without an ABI break.
     size_t gpuLaunchSize              = 0;
+    // Do not launch a wave while the device pool is below this size if host
+    // arrivals are still arriving. 0 disables the hold.
+    size_t gpuMinLaunchSize           = 0;
+    // Force a wave after this many consecutive holds, even if the pool is
+    // still small. 0 means hold until arrivals stop (empty Collect).
+    size_t gpuHoldMaxSkips            = 0;
 #endif
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;

@@ -54,7 +54,10 @@ TransportResult AdvanceOne(ParticleT &particle, const GreyIMCViews<PointT> &view
         return result;
     }
 
-    const Intersection intersection = FindIntersection(particle, views.grid);
+    const double speed = Kokkos::sqrt(particle.velocity.x * particle.velocity.x +
+                                      particle.velocity.y * particle.velocity.y +
+                                      particle.velocity.z * particle.velocity.z);
+    const Intersection intersection = FindIntersection(particle, views.grid, speed);
     if(!intersection.valid)
     {
         result.error = TransportError::NoIntersection;
@@ -81,9 +84,6 @@ TransportResult AdvanceOne(ParticleT &particle, const GreyIMCViews<PointT> &view
     const double scatteringDistance = eventOpacity > 0.0
         ? randomDistance / eventOpacity
         : DBL_MAX;
-    const double speed = Kokkos::sqrt(particle.velocity.x * particle.velocity.x +
-                                      particle.velocity.y * particle.velocity.y +
-                                      particle.velocity.z * particle.velocity.z);
     const double scatteringTime = speed > 0.0
         ? scatteringDistance / speed
         : DBL_MAX;

@@ -932,7 +932,7 @@ private:
         result.grid.cellFaceOffsets = this->gridData.cellFaceOffsets.data();
         result.grid.cellCenters = this->gridData.cellCenters.data();
         result.grid.normals = this->gridData.normals.data();
-        result.grid.pointsOnFaces = this->gridData.pointsOnFaces.data();
+        result.grid.facePlaneOffsets = this->gridData.facePlaneOffsets.data();
         result.grid.nextCellIndices = this->gridData.nextCellIndices.data();
         result.grid.boundaryCrossings = this->gridData.boundaryCrossings.data();
         result.grid.deviceBoundaryBehaviors =
@@ -7085,7 +7085,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
                 this->gridData.cellFaceOffsets,
                 this->gridData.cellCenters,
                 this->gridData.normals,
-                this->gridData.pointsOnFaces,
+                this->gridData.facePlaneOffsets,
                 this->gridData.nextCellIndices,
                 this->gridData.boundaryCrossings,
                 this->gridData.deviceBoundaryBehaviors);

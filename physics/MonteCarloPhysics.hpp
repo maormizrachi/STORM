@@ -62,6 +62,7 @@ protected:
         std::vector<std::size_t> faceIndices;
         std::vector<T> normals;
         std::vector<T> pointsOnFaces;
+        std::vector<double> facePlaneOffsets;
         std::vector<cell_index_t> nextCellIndices;
 #ifdef STORM_WITH_GPU
         std::vector<std::uint8_t> boundaryCrossings;
@@ -102,6 +103,7 @@ void MonteCarloPhysics<T, Grid>::updateGridData(void)
     this->gridData.faceIndices.resize(directedFaceCount);
     this->gridData.normals.resize(directedFaceCount);
     this->gridData.pointsOnFaces.resize(directedFaceCount);
+    this->gridData.facePlaneOffsets.resize(directedFaceCount);
     this->gridData.nextCellIndices.resize(directedFaceCount);
 #ifdef STORM_WITH_GPU
     this->gridData.boundaryCrossings.resize(directedFaceCount);
@@ -125,8 +127,12 @@ void MonteCarloPhysics<T, Grid>::updateGridData(void)
             const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
             const std::size_t nextCell = neighbors.first == i ? neighbors.second : neighbors.first;
             this->gridData.faceIndices[directedFace] = faceIdx;
-            this->gridData.normals[directedFace] = normalize(normalTowardsCenterOfCell);
-            this->gridData.pointsOnFaces[directedFace] = this->grid.FaceCM(faceIdx);
+            const T normal = normalize(normalTowardsCenterOfCell);
+            const T pointOnFace = this->grid.FaceCM(faceIdx);
+            this->gridData.normals[directedFace] = normal;
+            this->gridData.pointsOnFaces[directedFace] = pointOnFace;
+            this->gridData.facePlaneOffsets[directedFace] =
+                ScalarProd(pointOnFace, normal);
             this->gridData.nextCellIndices[directedFace] = static_cast<cell_index_t>(nextCell);
 #ifdef STORM_WITH_GPU
             const bool boundaryCrossing = this->grid.IsPointOutsideBox(nextCell);
@@ -172,9 +178,10 @@ inline std::tuple<size_t, dt_t, cell_index_t> MonteCarloPhysics<T, Grid>::getInt
         const double normalVelocity = ScalarProd(normal, particle.velocity);
         if(normalVelocity >= -velocityTolerance)
             continue;
-        const coord_t time = ScalarProd(
-            this->gridData.pointsOnFaces[directedFace] - particle.location,
-            normal) / normalVelocity;
+        const coord_t time =
+            (this->gridData.facePlaneOffsets[directedFace] -
+             ScalarProd(particle.location, normal)) /
+            normalVelocity;
         if(time > 0 && time < bestTime)
         {
             bestTime = time;

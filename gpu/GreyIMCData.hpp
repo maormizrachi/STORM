@@ -25,7 +25,7 @@ public:
         : cellFaceOffsets_("storm_cell_face_offsets", 0),
           cellCenters_("storm_cell_centers", 0),
           normals_("storm_face_normals", 0),
-          pointsOnFaces_("storm_face_points", 0),
+          facePlaneOffsets_("storm_face_plane_offsets", 0),
           nextCellIndices_("storm_next_cells", 0),
           boundaryCrossings_("storm_boundary_crossings", 0),
           deviceBoundaryBehaviors_("storm_device_boundary_behaviors", 0),
@@ -38,13 +38,13 @@ public:
     void UploadGrid(const std::vector<std::size_t> &cellFaceOffsets,
                     const std::vector<PointT> &cellCenters,
                     const std::vector<PointT> &normals,
-                    const std::vector<PointT> &pointsOnFaces,
+                    const std::vector<double> &facePlaneOffsets,
                     const std::vector<cell_index_t> &nextCellIndices,
                     const std::vector<std::uint8_t> &boundaryCrossings,
                     const std::vector<std::uint8_t> &deviceBoundaryBehaviors)
     {
         const std::size_t directedFaceCount = normals.size();
-        if(pointsOnFaces.size() != directedFaceCount ||
+        if(facePlaneOffsets.size() != directedFaceCount ||
            nextCellIndices.size() != directedFaceCount ||
            boundaryCrossings.size() != directedFaceCount ||
            deviceBoundaryBehaviors.size() != directedFaceCount)
@@ -54,7 +54,7 @@ public:
         Resize(this->cellFaceOffsets_, cellFaceOffsets.size());
         Resize(this->cellCenters_, cellCenters.size());
         Resize(this->normals_, normals.size());
-        Resize(this->pointsOnFaces_, pointsOnFaces.size());
+        Resize(this->facePlaneOffsets_, facePlaneOffsets.size());
         Resize(this->nextCellIndices_, nextCellIndices.size());
         Resize(this->boundaryCrossings_, boundaryCrossings.size());
         Resize(this->deviceBoundaryBehaviors_, deviceBoundaryBehaviors.size());
@@ -70,7 +70,7 @@ public:
         for(std::size_t i = 0; i < normals.size(); ++i)
         {
             this->normals_.h_view(i) = DeviceVec3(normals[i].x, normals[i].y, normals[i].z);
-            this->pointsOnFaces_.h_view(i) = DeviceVec3(pointsOnFaces[i].x, pointsOnFaces[i].y, pointsOnFaces[i].z);
+            this->facePlaneOffsets_.h_view(i) = facePlaneOffsets[i];
             this->nextCellIndices_.h_view(i) = nextCellIndices[i];
             this->boundaryCrossings_.h_view(i) = boundaryCrossings[i];
             this->deviceBoundaryBehaviors_.h_view(i) = deviceBoundaryBehaviors[i];
@@ -79,7 +79,7 @@ public:
         SyncToDevice(this->cellFaceOffsets_);
         SyncToDevice(this->cellCenters_);
         SyncToDevice(this->normals_);
-        SyncToDevice(this->pointsOnFaces_);
+        SyncToDevice(this->facePlaneOffsets_);
         SyncToDevice(this->nextCellIndices_);
         SyncToDevice(this->boundaryCrossings_);
         SyncToDevice(this->deviceBoundaryBehaviors_);
@@ -134,7 +134,7 @@ public:
         result.grid.cellFaceOffsets = this->cellFaceOffsets_.d_view.data();
         result.grid.cellCenters = this->cellCenters_.d_view.data();
         result.grid.normals = this->normals_.d_view.data();
-        result.grid.pointsOnFaces = this->pointsOnFaces_.d_view.data();
+        result.grid.facePlaneOffsets = this->facePlaneOffsets_.d_view.data();
         result.grid.nextCellIndices = this->nextCellIndices_.d_view.data();
         result.grid.boundaryCrossings = this->boundaryCrossings_.d_view.data();
         result.grid.deviceBoundaryBehaviors =
@@ -180,10 +180,11 @@ private:
         view.sync_device();
     }
 
+
     Kokkos::DualView<std::size_t*> cellFaceOffsets_;
     Kokkos::DualView<DeviceVec3*> cellCenters_;
     Kokkos::DualView<DeviceVec3*> normals_;
-    Kokkos::DualView<DeviceVec3*> pointsOnFaces_;
+    Kokkos::DualView<double*> facePlaneOffsets_;
     Kokkos::DualView<cell_index_t*> nextCellIndices_;
     Kokkos::DualView<std::uint8_t*> boundaryCrossings_;
     Kokkos::DualView<std::uint8_t*> deviceBoundaryBehaviors_;

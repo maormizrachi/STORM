@@ -48,11 +48,12 @@ void InstantiateHostSupport(STORM::gpu::GreyIMCData &data,
 {
     const std::vector<std::size_t> offsets = {0};
     const std::vector<TestPoint> points;
+    const std::vector<double> planeOffsets;
     const std::vector<STORM::cell_index_t> cells;
     const std::vector<std::uint8_t> boundaries;
-    const std::vector<double> tables;
+    std::vector<double> tables;
     const STORM::gpu::KokkosRuntime runtime;
-    data.UploadGrid(offsets, points, points, points, cells, boundaries, boundaries);
+    data.UploadGrid(offsets, points, points, planeOffsets, cells, boundaries, boundaries);
     data.UploadTables(tables, tables, tables);
     (void) executor.Execute(particles, particles.size(), data.Views(1.0, true));
 }

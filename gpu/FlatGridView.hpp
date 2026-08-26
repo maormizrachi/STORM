@@ -19,7 +19,7 @@ struct FlatGridView
     const std::size_t *cellFaceOffsets = nullptr;
     const PointT *cellCenters = nullptr;
     const PointT *normals = nullptr;
-    const PointT *pointsOnFaces = nullptr;
+    const double *facePlaneOffsets = nullptr;
     const cell_index_t *nextCellIndices = nullptr;
     const std::uint8_t *boundaryCrossings = nullptr;
     const std::uint8_t *deviceBoundaryBehaviors = nullptr;
@@ -37,7 +37,9 @@ struct Intersection
 
 template<typename ParticleT, typename PointT>
 STORM_GPU_INLINE_FUNCTION
-Intersection FindIntersection(const ParticleT &particle, const FlatGridView<PointT> &grid)
+Intersection FindIntersection(const ParticleT &particle,
+                              const FlatGridView<PointT> &grid,
+                              const double speed)
 {
     Intersection result;
     const std::size_t cellIndex = static_cast<std::size_t>(particle.cellIndex);
@@ -46,9 +48,6 @@ Intersection FindIntersection(const ParticleT &particle, const FlatGridView<Poin
         return result;
     }
 
-    const double speed = Kokkos::sqrt(particle.velocity.x * particle.velocity.x +
-                                      particle.velocity.y * particle.velocity.y +
-                                      particle.velocity.z * particle.velocity.z);
     const double velocityTolerance = 1.0e-12 * speed;
     const std::size_t begin = grid.cellFaceOffsets[cellIndex];
     const std::size_t end = grid.cellFaceOffsets[cellIndex + 1];
@@ -64,10 +63,13 @@ Intersection FindIntersection(const ParticleT &particle, const FlatGridView<Poin
             continue;
         }
 
-        const PointT &point = grid.pointsOnFaces[directedFace];
-        const double time = ((point.x - particle.location.x) * normal.x +
-                             (point.y - particle.location.y) * normal.y +
-                             (point.z - particle.location.z) * normal.z) / normalVelocity;
+        const double locationPlane =
+            particle.location.x * normal.x +
+            particle.location.y * normal.y +
+            particle.location.z * normal.z;
+        const double time =
+            (grid.facePlaneOffsets[directedFace] - locationPlane) /
+            normalVelocity;
         if(time > 0.0 && time < result.time)
         {
             result.time = time;
