@@ -126,6 +126,7 @@ MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial(const Grid &grid, cons
     this->particlesData.av_length = 0;
     this->particlesData.th = nullptr;
     this->particlesData.th_length = 0;
+    this->beginningParticleCount_.assign(this->grid.GetPointNo(), 0);
 }
 
 template<typename T, typename Grid>
