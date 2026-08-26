@@ -18,7 +18,7 @@ namespace examples {
 constexpr size_t N_DENSMORE_GROUPS = 30;
 
 template<typename PointT, typename GridT>
-class DensmoreOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, N_DENSMORE_GROUPS>
+class DensmoreOpacity final : public RadiationOpacityModel<PointT, GridT, RadiationCell, N_DENSMORE_GROUPS>
 {
 public:
     using Base = RadiationOpacityModel<PointT, GridT, RadiationCell, N_DENSMORE_GROUPS>;

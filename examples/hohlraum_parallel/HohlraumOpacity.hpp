@@ -12,9 +12,11 @@ namespace STORM {
 namespace examples {
 
 template<typename PointT, typename GridT>
-class HohlraumOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
+class HohlraumOpacity final : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
 {
 public:
+    using RadiationOpacityModel<PointT, GridT, RadiationCell, 1>::CalcScatteringOpacity;
+
     HohlraumOpacity(const std::vector<int> &materialFlags, const std::vector<RadiationCell> &cells)
         : materialFlags_(materialFlags), cells_(&cells)
     {}

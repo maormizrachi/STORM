@@ -487,7 +487,8 @@ int main(int argc, char *argv[])
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
     using IMC = STORM::RadiationIMC<Vector3D, Grid, MovingSlabCell, MovingSlabExtensives,
-                                    MovingSlabEOS, G>;
+                                    MovingSlabEOS, G,
+                                    STORM::examples::MovingSlabOpacity<Vector3D, Grid, MovingSlabCell>>;
 
     size_t newPhotonsPerCell = (argc >= 2) ? std::stoul(argv[1]) : 30000 / (NYZ * NYZ);
 

@@ -121,7 +121,8 @@ int main(int argc, char *argv[])
 
     constexpr size_t G = STORM::examples::N_DENSMORE_GROUPS;
     using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
-                                    DensmoreEOS, G>;
+                                    DensmoreEOS, G,
+                                    STORM::examples::DensmoreOpacity<Vector3D, Grid>>;
 
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 512;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 16;

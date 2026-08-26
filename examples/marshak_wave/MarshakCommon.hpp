@@ -267,7 +267,8 @@ inline std::vector<double> BuildMarshak4MeshEdges(double xOffset, double xMax)
 
 inline int RunMarshakWave(int problem, int argc, char *argv[])
 {
-    using IMC = RadiationIMC<Vector3D, MarshakGrid, RadiationCell, SimpleExtensives, MarshakEOS, 1>;
+    using IMC = RadiationIMC<Vector3D, MarshakGrid, RadiationCell, SimpleExtensives,
+                             MarshakEOS, 1, MarshakOpacity<Vector3D, MarshakGrid>>;
 
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 256;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 15;

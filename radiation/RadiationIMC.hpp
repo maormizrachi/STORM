@@ -146,6 +146,171 @@ struct has_dT2e<EOST, TracersT, TracerNamesT, std::void_t<decltype(
         std::declval<const TracersT &>(),
         std::declval<const TracerNamesT &>()))>> : std::true_type {};
 
+template<typename OpacityT, typename CellT, typename = void>
+struct has_opacity_calc_planck : std::false_type {};
+
+template<typename OpacityT, typename CellT>
+struct has_opacity_calc_planck<OpacityT, CellT, std::void_t<
+    decltype(std::declval<OpacityT &>().CalcPlanckOpacity(std::declval<const CellT &>()))
+    >> : std::is_convertible<
+        decltype(std::declval<OpacityT &>().CalcPlanckOpacity(std::declval<const CellT &>())),
+        double> {};
+
+template<typename OpacityT, typename CellT, typename = void>
+struct has_opacity_calc_absorption : std::false_type {};
+
+template<typename OpacityT, typename CellT>
+struct has_opacity_calc_absorption<OpacityT, CellT, std::void_t<
+    decltype(std::declval<OpacityT &>().CalcAbsorptionOpacity(
+        std::declval<const CellT &>(), std::declval<double>()))
+    >> : std::is_convertible<
+        decltype(std::declval<OpacityT &>().CalcAbsorptionOpacity(
+            std::declval<const CellT &>(), std::declval<double>())),
+        double> {};
+
+template<typename OpacityT, typename CellT, typename = void>
+struct has_opacity_calc_scattering : std::false_type {};
+
+template<typename OpacityT, typename CellT>
+struct has_opacity_calc_scattering<OpacityT, CellT, std::void_t<
+    decltype(std::declval<OpacityT &>().CalcScatteringOpacity(std::declval<const CellT &>()))
+    >> : std::is_convertible<
+        decltype(std::declval<OpacityT &>().CalcScatteringOpacity(std::declval<const CellT &>())),
+        double> {};
+
+template<typename OpacityT, typename CellT, typename = void>
+struct has_opacity_calc_scattering_frequency : std::false_type {};
+
+template<typename OpacityT, typename CellT>
+struct has_opacity_calc_scattering_frequency<OpacityT, CellT, std::void_t<
+    decltype(std::declval<OpacityT &>().CalcScatteringOpacity(
+        std::declval<const CellT &>(), std::declval<double>()))
+    >> : std::is_convertible<
+        decltype(std::declval<OpacityT &>().CalcScatteringOpacity(
+            std::declval<const CellT &>(), std::declval<double>())),
+        double> {};
+
+template<typename OpacityT, typename PointT, typename CellT, typename = void>
+struct has_opacity_random_velocity : std::false_type {};
+
+template<typename OpacityT, typename PointT, typename CellT>
+struct has_opacity_random_velocity<OpacityT, PointT, CellT, std::void_t<
+    decltype(std::declval<OpacityT &>().getRandomVelocity(
+        std::declval<const CellT &>(), std::declval<double>(), std::declval<double>()))
+    >> : std::is_convertible<
+        decltype(std::declval<OpacityT &>().getRandomVelocity(
+            std::declval<const CellT &>(), std::declval<double>(), std::declval<double>())),
+        PointT> {};
+
+template<typename OpacityT, typename PointT, typename CellT, typename = void>
+struct has_opacity_scatter_velocity : std::false_type {};
+
+template<typename OpacityT, typename PointT, typename CellT>
+struct has_opacity_scatter_velocity<OpacityT, PointT, CellT, std::void_t<
+    decltype(std::declval<OpacityT &>().getNewScatterVelocity(
+        std::declval<const CellT &>(), std::declval<const PointT &>(),
+        std::declval<double>(), std::declval<double>(), std::declval<double>()))
+    >> : std::is_convertible<
+        decltype(std::declval<OpacityT &>().getNewScatterVelocity(
+            std::declval<const CellT &>(), std::declval<const PointT &>(),
+            std::declval<double>(), std::declval<double>(), std::declval<double>())),
+        PointT> {};
+
+template<typename OpacityT, std::size_t NumGroups, typename = void>
+struct has_opacity_find_group : std::false_type {};
+
+template<typename OpacityT, std::size_t NumGroups>
+struct has_opacity_find_group<OpacityT, NumGroups, std::void_t<
+    decltype(std::declval<const OpacityT &>().findGroup(
+        std::declval<double>(),
+        std::declval<const std::array<double, NumGroups + 1> &>()))
+    >> : std::is_convertible<
+        decltype(std::declval<const OpacityT &>().findGroup(
+            std::declval<double>(),
+            std::declval<const std::array<double, NumGroups + 1> &>())),
+        std::size_t> {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups, typename = void>
+struct has_opacity_thermal_energy : std::false_type {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups>
+struct has_opacity_thermal_energy<OpacityT, CellT, NumGroups, std::void_t<
+    decltype(std::declval<const OpacityT &>().GetThermalEnergy(
+        std::declval<const CellT &>(), std::declval<double>(),
+        std::declval<const std::array<double, NumGroups + 1> &>()))
+    >> : std::is_convertible<
+        decltype(std::declval<const OpacityT &>().GetThermalEnergy(
+            std::declval<const CellT &>(), std::declval<double>(),
+            std::declval<const std::array<double, NumGroups + 1> &>())),
+        double> {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups, typename = void>
+struct has_opacity_sample_thermal_in_group : std::false_type {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups>
+struct has_opacity_sample_thermal_in_group<OpacityT, CellT, NumGroups, std::void_t<
+    decltype(std::declval<const OpacityT &>().SampleThermalEnergyInGroup(
+        std::declval<const CellT &>(), std::declval<std::size_t>(),
+        std::declval<double>(),
+        std::declval<const std::array<double, NumGroups + 1> &>()))
+    >> : std::is_convertible<
+        decltype(std::declval<const OpacityT &>().SampleThermalEnergyInGroup(
+            std::declval<const CellT &>(), std::declval<std::size_t>(),
+            std::declval<double>(),
+            std::declval<const std::array<double, NumGroups + 1> &>())),
+        double> {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups, typename = void>
+struct has_opacity_thermal_group_pdf : std::false_type {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups>
+struct has_opacity_thermal_group_pdf<OpacityT, CellT, NumGroups, std::void_t<
+    decltype(std::declval<const OpacityT &>().GetThermalGroupPdf(
+        std::declval<const CellT &>(),
+        std::declval<const std::array<double, NumGroups + 1> &>()))
+    >> : std::is_same<
+        std::remove_cv_t<std::remove_reference_t<
+            decltype(std::declval<const OpacityT &>().GetThermalGroupPdf(
+                std::declval<const CellT &>(),
+                std::declval<const std::array<double, NumGroups + 1> &>()))>>,
+        std::array<double, NumGroups>> {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups, typename = void>
+struct has_opacity_cumulative_opacity : std::false_type {};
+
+template<typename OpacityT, typename CellT, std::size_t NumGroups>
+struct has_opacity_cumulative_opacity<OpacityT, CellT, NumGroups, std::void_t<
+    decltype(std::declval<const OpacityT &>().GetCumulativeOpacity(
+        std::declval<const CellT &>(),
+        std::declval<const std::array<double, NumGroups + 1> &>()))
+    >> : std::is_same<
+        std::remove_cv_t<std::remove_reference_t<
+            decltype(std::declval<const OpacityT &>().GetCumulativeOpacity(
+                std::declval<const CellT &>(),
+                std::declval<const std::array<double, NumGroups + 1> &>()))>>,
+        std::array<double, NumGroups>> {};
+
+template<typename OpacityT, std::size_t NumGroups, typename = void>
+struct has_opacity_energy_centers : std::false_type {};
+
+template<typename OpacityT, std::size_t NumGroups>
+struct has_opacity_energy_centers<OpacityT, NumGroups, std::void_t<
+    decltype(std::declval<const OpacityT &>().getEnergyCenters(
+        std::declval<const std::array<double, NumGroups + 1> &>()))
+    >> : std::is_same<
+        std::remove_cv_t<std::remove_reference_t<
+            decltype(std::declval<const OpacityT &>().getEnergyCenters(
+                std::declval<const std::array<double, NumGroups + 1> &>()))>>,
+        std::array<double, NumGroups>> {};
+
+template<typename OpacityT, typename = void>
+struct has_opacity_reseed : std::false_type {};
+
+template<typename OpacityT>
+struct has_opacity_reseed<OpacityT, std::void_t<
+    decltype(std::declval<OpacityT &>().reseed(std::declval<std::uint64_t>()))
+    >> : std::true_type {};
+
 template<typename CellT>
 std::size_t cellID(const CellT &cell)
 {
@@ -451,19 +616,46 @@ template<typename PointT,
          typename ExtensivesT,
          typename EOST,
          std::size_t NumGroups,
+         typename OpacityT = RadiationOpacityModel<PointT, GridT, CellT, NumGroups>,
          typename TraitsT = DirectRadiationIMCTraits<PointT, CellT, ExtensivesT, NumGroups>,
          typename PositionSamplerT = RandomInCellPositionSampler<PointT, GridT>>
 class RadiationIMC final : public MonteCarloPhysics<PointT, GridT>
 {
 public:
     static_assert(NumGroups > 0, "RadiationIMC requires at least one frequency group");
+    static_assert(radiation_imc_detail::has_opacity_calc_planck<OpacityT, CellT>::value,
+        "OpacityT must provide CalcPlanckOpacity(const CellT &)");
+    static_assert(radiation_imc_detail::has_opacity_calc_absorption<OpacityT, CellT>::value,
+        "OpacityT must provide CalcAbsorptionOpacity(const CellT &, double)");
+    static_assert(radiation_imc_detail::has_opacity_calc_scattering<OpacityT, CellT>::value,
+        "OpacityT must provide CalcScatteringOpacity(const CellT &)");
+    static_assert(radiation_imc_detail::has_opacity_calc_scattering_frequency<OpacityT, CellT>::value,
+        "OpacityT must provide CalcScatteringOpacity(const CellT &, double)");
+    static_assert(radiation_imc_detail::has_opacity_random_velocity<OpacityT, PointT, CellT>::value,
+        "OpacityT must provide getRandomVelocity(const CellT &, double, double)");
+    static_assert(radiation_imc_detail::has_opacity_scatter_velocity<OpacityT, PointT, CellT>::value,
+        "OpacityT must provide getNewScatterVelocity(const CellT &, const PointT &, double, double, double)");
+    static_assert(radiation_imc_detail::has_opacity_find_group<OpacityT, NumGroups>::value,
+        "OpacityT must provide findGroup(double, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_thermal_energy<OpacityT, CellT, NumGroups>::value,
+        "OpacityT must provide GetThermalEnergy(const CellT &, double, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_sample_thermal_in_group<OpacityT, CellT, NumGroups>::value,
+        "OpacityT must provide SampleThermalEnergyInGroup(const CellT &, size_t, double, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_thermal_group_pdf<OpacityT, CellT, NumGroups>::value,
+        "OpacityT must provide GetThermalGroupPdf(const CellT &, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_cumulative_opacity<OpacityT, CellT, NumGroups>::value,
+        "OpacityT must provide GetCumulativeOpacity(const CellT &, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_energy_centers<OpacityT, NumGroups>::value,
+        "OpacityT must provide getEnergyCenters(const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_reseed<OpacityT>::value,
+        "OpacityT must provide reseed(uint64_t)");
 
     using Base = MonteCarloPhysics<PointT, GridT>;
     using MCParticle = Particle<PointT>;
     using Functionality = StepResult;
     using BoundaryCond = BoundaryCondition<PointT, GridT>;
     using Parameters = RadiationIMCParameters<NumGroups>;
-    using OpacityModel = RadiationOpacityModel<PointT, GridT, CellT, NumGroups>;
+    using OpacityModel = OpacityT;
     using Traits = TraitsT;
     using PositionSampler = PositionSamplerT;
     using PositionDecomposition =
@@ -1121,8 +1313,8 @@ private:
 // Constructor
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::RadiationIMC(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::RadiationIMC(
     const GridT &grid,
     const std::shared_ptr<BoundaryCond> &boundary,
     std::vector<CellT> &cells,
@@ -1210,8 +1402,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 // Validation helpers
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::validateGridSizedState() const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::validateGridSizedState() const
 {
     const std::size_t Ncells = this->grid.GetPointNo();
     if(this->cells_.size() < Ncells)
@@ -1230,8 +1422,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::validateEnergyBoundaries() const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::validateEnergyBoundaries() const
 {
     for(std::size_t g = 0; g < NumGroups; ++g)
     {
@@ -1248,16 +1440,16 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::rejectUnsupportedParameter(const std::string &name) const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::rejectUnsupportedParameter(const std::string &name) const
 {
     StormError eo("RadiationIMC option is planned but not implemented in the initial STORM port");
     eo.addEntry("Unsupported option", name);
     throw eo;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::rejectUnsupportedParameters() const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::rejectUnsupportedParameters() const
 {
     if(this->parameters_.withCompton && this->parameters_.withDDMC)
     {
@@ -1419,8 +1611,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 // Small utilities
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::randomUnitOpen()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::randomUnitOpen()
 {
     double value = this->dist_(this->rng_);
     if(value <= 0.0)
@@ -1434,8 +1626,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return value;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::initializeParticleRNG(MCParticle &particle)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::initializeParticleRNG(MCParticle &particle)
 {
     // Queried once: this runs per emitted particle, and the rank cannot change.
     if(!this->creationRankCached_)
@@ -1464,8 +1656,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     particle.rngCounter = 0;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::randomUnitOpen(MCParticle &particle)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::randomUnitOpen(MCParticle &particle)
 {
     if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
     {
@@ -1482,8 +1674,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::sampleRandomVelocity(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::sampleRandomVelocity(
     const CellT &cell, MCParticle &particle)
 {
     const double random1 = this->randomUnitOpen(particle);
@@ -1491,8 +1683,8 @@ PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return this->opacity_->getRandomVelocity(cell, random1, random2);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::sampleScatterVelocity(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::sampleScatterVelocity(
     const CellT &cell, MCParticle &particle)
 {
     const double random1 = this->randomUnitOpen(particle);
@@ -1501,8 +1693,8 @@ PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
         cell, particle.velocity, particle.frequency, random1, random2);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::resetTransportTallies(std::size_t cellCount)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::resetTransportTallies(std::size_t cellCount)
 {
     this->pendingMaterialEnergy_.assign(cellCount, 0.0);
     this->pendingTotalEnergy_.assign(cellCount, 0.0);
@@ -1511,8 +1703,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->pendingGroupRadiationEnergy_.assign(cellCount, GroupArray{});
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tallyMaterialEnergy(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::tallyMaterialEnergy(
     std::size_t cellIndex, double energy, bool addToTotalEnergy)
 {
     this->pendingMaterialEnergy_[cellIndex] += energy;
@@ -1522,29 +1714,29 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tallyMomentum(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::tallyMomentum(
     std::size_t cellIndex, const PointT &momentum)
 {
     this->pendingMomentum_[cellIndex] += momentum;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tallyRadiationEnergy(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::tallyRadiationEnergy(
     std::size_t cellIndex, double integratedEnergy)
 {
     this->pendingRadiationEnergy_[cellIndex] += integratedEnergy;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tallyGroupRadiationEnergy(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::tallyGroupRadiationEnergy(
     std::size_t cellIndex, std::size_t group, double integratedEnergy)
 {
     this->pendingGroupRadiationEnergy_[cellIndex][group] += integratedEnergy;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyTransportTallies()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::applyTransportTallies()
 {
     for(std::size_t i = 0; i < this->pendingMaterialEnergy_.size(); ++i)
     {
@@ -1574,14 +1766,14 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->pendingGroupRadiationEnergy_.clear();
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setInitialWeightFromWeight(MCParticle &particle) const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::setInitialWeightFromWeight(MCParticle &particle) const
 {
     particle.initialWeight = std::abs(particle.weight);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::density(std::size_t cellIndex) const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::density(std::size_t cellIndex) const
 {
     if constexpr(radiation_imc_detail::has_member_density<CellT>::value)
     {
@@ -1595,16 +1787,16 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::specificInternalEnergy(std::size_t cellIndex) const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::specificInternalEnergy(std::size_t cellIndex) const
 {
     static_assert(radiation_imc_detail::has_member_mass<ExtensivesT>::value,
                   "RadiationIMC requires ExtensivesT::mass for specific internal energy");
     return this->extensives_[cellIndex].internal_energy / this->extensives_[cellIndex].mass;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::totalRadiationEnergy(std::size_t cellIndex) const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::totalRadiationEnergy(std::size_t cellIndex) const
 {
     if constexpr(radiation_imc_detail::has_member_radiation_energy<CellT>::value &&
                  radiation_imc_detail::has_member_density<CellT>::value)
@@ -1630,8 +1822,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where)
 {
     double &E = this->extensives_[cellIndex].internal_energy;
     if(E >= 0.0)
@@ -1678,8 +1870,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     throw eo;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::depositMaterialEnergy(std::size_t cellIndex, double energy)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::depositMaterialEnergy(std::size_t cellIndex, double energy)
 {
     if(this->parameters_.noHydroFeedback)
     {
@@ -1688,8 +1880,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->tallyMaterialEnergy(cellIndex, energy);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::synchronizeMaterialCell(std::size_t cellIndex)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::synchronizeMaterialCell(std::size_t cellIndex)
 {
     CellT &cell = this->cells_[cellIndex];
     const double volume = this->grid.GetVolume(cellIndex);
@@ -1726,20 +1918,20 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clampFrequencyToBounds(double &frequency) const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::clampFrequencyToBounds(double &frequency) const
 {
     frequency = std::clamp(frequency, this->energyBoundaries_[0], this->energyBoundaries_[NumGroups]);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setNewPhotonsPerCell(std::size_t n)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::setNewPhotonsPerCell(std::size_t n)
 {
     this->parameters_.newPhotonsPerCell = n;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setAdaptiveSourceCellScores(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::setAdaptiveSourceCellScores(
     std::unordered_map<std::size_t, double> scores, double strength, double maxFactor,
     double learnedReserveFrac, double learnedMinFactor,
     double observerBudgetMultiplier, std::size_t learnedMinPhotons,
@@ -1758,8 +1950,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->adaptiveSourceScoresEnabled_ = !this->adaptiveSourceScores_.empty();
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clearAdaptiveSourceCellScores()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::clearAdaptiveSourceCellScores()
 {
     this->adaptiveSourceScores_.clear();
     this->adaptiveSourceScoresEnabled_ = false;
@@ -1773,8 +1965,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->adaptiveSourceScorePower_ = 1.0;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setAdaptiveSourceCellGroupScores(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::setAdaptiveSourceCellGroupScores(
     std::unordered_map<std::size_t, GroupArray> scores, double strength, double pdfFloor, double maxBias, double maxWeightCorrection)
 {
     this->adaptiveSourceCellGroupScores_ = std::move(scores);
@@ -1785,8 +1977,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->adaptiveSourceCellGroupScoresEnabled_ = !this->adaptiveSourceCellGroupScores_.empty() && this->adaptiveGroupStrength_ > 0.0;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clearAdaptiveSourceCellGroupScores()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::clearAdaptiveSourceCellGroupScores()
 {
     this->adaptiveSourceCellGroupScores_.clear();
     this->adaptiveSourceCellGroupScoresEnabled_ = false;
@@ -1796,8 +1988,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->adaptiveGroupMaxWeightCorrection_ = 1.0;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setSourceEmissionControl(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::setSourceEmissionControl(
     bool useLearnedScores, bool includeUniformBase, std::size_t baseMultiplier, std::size_t learnedBoostFactor, std::size_t learnedExtraBudget)
 {
     this->sourceEmissionControlEnabled_ = true;
@@ -1808,8 +2000,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->sourceEmissionLearnedExtraBudget_ = learnedExtraBudget;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::clearSourceEmissionControl()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::clearSourceEmissionControl()
 {
     this->sourceEmissionControlEnabled_ = false;
     this->sourceEmissionUseLearnedScores_ = false;
@@ -1823,8 +2015,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 // Random Walk helpers
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::computeMinDistanceToFaces(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::computeMinDistanceToFaces(
     std::size_t cellIndex, const PointT &location) const
 {
     double Ro = std::numeric_limits<double>::max();
@@ -1839,8 +2031,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return (Ro > 0.0) ? Ro : 0.0;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::computeCellSurfaceArea(std::size_t cellIndex) const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::computeCellSurfaceArea(std::size_t cellIndex) const
 {
     double surfaceArea = 0.0;
     for(std::size_t faceIdx : this->grid.GetCellFaces(cellIndex))
@@ -1850,8 +2042,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return surfaceArea;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::precomputeRandomWalkData()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::precomputeRandomWalkData()
 {
     const std::size_t Ncells = this->grid.GetPointNo();
     this->rwCellEligible_.assign(Ncells, false);
@@ -1951,8 +2143,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tryRandomWalkStep(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::tryRandomWalkStep(
     MCParticle &particle, Functionality &functionality)
 {
     std::size_t cellIndex = particle.cellIndex;
@@ -2221,8 +2413,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 // DDMC helpers
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::precomputeDDMCData()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::precomputeDDMCData()
 {
     const std::size_t Ncells = this->grid.GetPointNo();
     this->ddmcCellData_.assign(Ncells, DDMCCellData{});
@@ -2896,8 +3088,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::addDDMCFluxContribution(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::addDDMCFluxContribution(
     std::size_t cellIndex, const PointT &contribution)
 {
     if(cellIndex < this->ddmcFluxRhsIntegrated_.size())
@@ -2906,8 +3098,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyDDMCMomentumFeedback(double fullDt)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::applyDDMCMomentumFeedback(double fullDt)
 {
     (void)fullDt;
     if constexpr(!radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
@@ -2992,8 +3184,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tryDDMCStep(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::tryDDMCStep(
     MCParticle &particle, Functionality &functionality)
 {
     std::size_t cellIndex = particle.cellIndex;
@@ -3815,9 +4007,9 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT,
                   PositionSamplerT>::recordDDMCDiagnosticEvent(
     DDMCDiagnosticEventKind kind,
     std::size_t sourceCellIndex,
@@ -3896,8 +4088,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::tryIMCToDDMCInterface(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::tryIMCToDDMCInterface(
     MCParticle &particle,
     Functionality &functionality,
     std::vector<MCParticle> &particlesToAdd,
@@ -4264,8 +4456,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 // preStep
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::precomputeComptonData(double sourceDt)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::precomputeComptonData(double sourceDt)
 {
     this->comptonRiskPrecomputeDt_ = sourceDt;
     this->comptonGroupCenters_ = this->opacity_->getEnergyCenters(this->energyBoundaries_);
@@ -4439,8 +4631,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::initializeComptonMatrixGenerator()
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::initializeComptonMatrixGenerator()
 {
     if(this->comptonMatrixGen_)
     {
@@ -4462,8 +4654,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 #endif
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-std::vector<double> RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::buildComptonTemperatures() const
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+std::vector<double> RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::buildComptonTemperatures() const
 {
     std::vector<double> temperatures;
     temperatures.reserve(109);
@@ -4485,9 +4677,9 @@ std::vector<double> RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGro
     return temperatures;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::GroupCdf
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::buildSafeComptonCdf(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::GroupCdf
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::buildSafeComptonCdf(
     const GroupArray &weights) const
 {
     GroupCdf cdf{};
@@ -4514,8 +4706,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     return cdf;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::buildComptonMatricesForCell(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::buildComptonMatricesForCell(
     const CellT &cell,
     std::size_t cellIndex,
     ComptonOccupationMode occupationMode,
@@ -4637,9 +4829,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
 double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                    TraitsT, PositionSamplerT>::computeLteTemperature(
+                    OpacityT, TraitsT, PositionSamplerT>::computeLteTemperature(
     const CellT &cell, std::size_t cellIndex) const
 {
     double const rho = this->density(cellIndex);
@@ -4720,8 +4912,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
     return temperature;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::recomputeComptonContractions(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::recomputeComptonContractions(
     ComptonCellData &data) const
 {
     data.Upsilon = 0.0;
@@ -4750,8 +4942,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     data.Gamma = data.planckOpacity + data.Upsilon;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::buildComptonSources(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::buildComptonSources(
     double sourceDt,
     ComptonCellData &data) const
 {
@@ -4782,8 +4974,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::buildComptonEventData(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::buildComptonEventData(
     ComptonCellData &data) const
 {
     data.segmentKernel = GroupMatrix{};
@@ -4879,8 +5071,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::computeComptonRiskForCell(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::computeComptonRiskForCell(
     double fullDt,
     ComptonCellData &data) const
 {
@@ -4958,8 +5150,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-std::size_t RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::sampleComptonTarget(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+std::size_t RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::sampleComptonTarget(
     const ComptonCellData &data, std::size_t sourceGroup,
     MCParticle &particle)
 {
@@ -4971,8 +5163,8 @@ std::size_t RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, Tra
         data.targetCdf[sourceGroup], this->randomUnitOpen(particle));
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::addComptonMaterialExchange(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::addComptonMaterialExchange(
     std::size_t cellIndex, double energy)
 {
     if(this->parameters_.noHydroFeedback || this->parameters_.postProcess.enabled)
@@ -4982,9 +5174,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->tallyMaterialEnergy(cellIndex, energy, true);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateComptonParticles(double fullDt)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::generateComptonParticles(double fullDt)
 {
     std::vector<MCParticle> result;
     for(std::size_t cellIndex = 0; cellIndex < this->comptonData_.size(); ++cellIndex)
@@ -5151,8 +5343,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     return result;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-std::size_t RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::sampleComptonCdf(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+std::size_t RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::sampleComptonCdf(
     const GroupCdf &cdf, double random) const
 {
     double const value = std::clamp(
@@ -5167,8 +5359,8 @@ std::size_t RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, Tra
     return std::min(group, NumGroups - 1);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::frequencyForComptonGroup(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::frequencyForComptonGroup(
     std::size_t group) const
 {
     if(group >= NumGroups)
@@ -5180,15 +5372,15 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return frequency;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::sumComptonGroups(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::sumComptonGroups(
     const GroupArray &values)
 {
     return RadiationIMC::compensatedSumComptonGroups(values);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::compensatedSumComptonGroups(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::compensatedSumComptonGroups(
     const GroupArray &values)
 {
     double sum = 0.0;
@@ -5203,8 +5395,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return sum;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-const char *RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::comptonCorrectionFailureName(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+const char *RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::comptonCorrectionFailureName(
     ComptonCorrectionFailure failure)
 {
     switch(failure)
@@ -5239,15 +5431,15 @@ const char *RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, Tra
     return "Unknown";
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::minComptonGroup(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::minComptonGroup(
     const GroupArray &values)
 {
     return *std::min_element(values.begin(), values.end());
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::maxAbsComptonGroup(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::maxAbsComptonGroup(
     const GroupArray &values)
 {
     double maximum = 0.0;
@@ -5258,8 +5450,8 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return maximum;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::normComptonGroups(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::normComptonGroups(
     const GroupArray &values)
 {
     double sumSquares = 0.0;
@@ -5270,9 +5462,9 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return std::sqrt(sumSquares);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::GroupArray
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::multiplyComptonMatrix(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::GroupArray
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::multiplyComptonMatrix(
     const GroupMatrix &matrix,
     const GroupArray &values)
 {
@@ -5287,8 +5479,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     return result;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::relativeComptonResidual(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::relativeComptonResidual(
     const GroupMatrix &matrix,
     const GroupArray &solution,
     const GroupArray &rhs,
@@ -5303,9 +5495,9 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
         std::max(1.0, std::max(RadiationIMC::normComptonGroups(rhs), scale));
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::ComptonProjectionResult
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::projectNonnegativeConservative(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::ComptonProjectionResult
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::projectNonnegativeConservative(
     const GroupArray &candidate,
     double targetTotal,
     double energyScale,
@@ -5467,8 +5659,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     return result;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::solveComptonGroupSystem(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::solveComptonGroupSystem(
     GroupMatrix matrix,
     GroupArray rhs,
     GroupArray &solution)
@@ -5552,8 +5744,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     return true;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::setPacketFromComovingState(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::setPacketFromComovingState(
     MCParticle &particle,
     const CellT &cell,
     double comovingFrequency,
@@ -5580,8 +5772,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->clampFrequencyToBounds(particle.frequency);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyComptonScatterEvent(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::applyComptonScatterEvent(
     std::size_t cellIndex,
     CellT &cell,
     std::size_t sourceGroup,
@@ -5683,9 +5875,9 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT,
     return oldWeight - newWeight;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::ComptonCorrectionResult
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::solveComptonCorrection(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::ComptonCorrectionResult
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::solveComptonCorrection(
     std::size_t cellIndex,
     double fullDt,
     const ComptonCellData &data,
@@ -6296,8 +6488,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     return result;
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::applyComptonEndOfStepCorrection(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::applyComptonEndOfStepCorrection(
     double fullDt)
 {
     if(!this->parameters_.withCompton)
@@ -6396,8 +6588,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     } // else (has_member_group_energy_mutable)
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::reconcileComptonParticles(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::reconcileComptonParticles(
     std::vector<MCParticle> &particles)
 {
     if(!this->parameters_.withCompton)
@@ -6638,8 +6830,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     } // else (has_member_group_energy_mutable)
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::recordObserverCrossing(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::recordObserverCrossing(
     const MCParticle &particle, const PointT &crossingPoint)
 {
     if(!this->observer_)
@@ -6668,8 +6860,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->observer_->recordCrossing(record);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::onBoundaryResult(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::onBoundaryResult(
     const MCParticle &particle, ParticleStatus status, bool escaped)
 {
     if(escaped && status == ParticleStatus::REMOVE && this->observer_)
@@ -6678,9 +6870,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::preStep(double fullDt)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::preStep(double fullDt)
 {
     if(!std::isfinite(fullDt) || fullDt <= 0.0)
     {
@@ -6912,9 +7104,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 // step
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::Functionality
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::step(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::Functionality
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::step(
     MCParticle &particle,
     std::vector<MCParticle> &particlesToAdd)
 {
@@ -7376,8 +7568,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 // postStep
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::postStep(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::postStep(
     const std::vector<MCParticle> &particles,
     double fullDt)
 {
@@ -7522,9 +7714,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 // generateParticles
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateParticles(double fullDt)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::generateParticles(double fullDt)
 {
     if(this->parameters_.withCompton)
     {
@@ -8222,18 +8414,18 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 // generateSingleParticle
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateSingleParticle(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::MCParticle
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::generateSingleParticle(
     std::size_t cellIndex,
     const CellT &cell)
 {
     return this->generateSingleParticle(cellIndex, cell, nullptr);
 }
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateSingleParticle(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::MCParticle
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::generateSingleParticle(
     std::size_t cellIndex,
     const CellT &cell,
     const PositionDecomposition *decomposition)
@@ -8302,9 +8494,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 // generateInitialParticles
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::MCParticle>
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::generateInitialParticles(std::size_t particlesPerCell)
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::generateInitialParticles(std::size_t particlesPerCell)
 {
     if(particlesPerCell == 0)
     {
@@ -8403,8 +8595,8 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
 // Compton risk splitting
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::splitComptonRiskyParticles(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::splitComptonRiskyParticles(
     std::vector<MCParticle> &particles,
     double fullDt)
 {
@@ -8530,8 +8722,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 // adjustExistingParticles (MMC)
 // ============================================================
 
-template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
-void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::adjustExistingParticles(
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::adjustExistingParticles(
     std::vector<MCParticle> &particles,
     double fullDt)
 {
@@ -8619,10 +8811,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                  TraitsT, PositionSamplerT>::setPostProcessExternalSources(
+                  OpacityT, TraitsT, PositionSamplerT>::setPostProcessExternalSources(
     std::vector<PostProcessExternalSource> sources)
 {
     if(!this->parameters_.postProcess.enabled)
@@ -8799,10 +8991,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                  TraitsT, PositionSamplerT>::clearPostProcessExternalSources()
+                  OpacityT, TraitsT, PositionSamplerT>::clearPostProcessExternalSources()
 {
     this->postProcessExternalSources_.clear();
     this->postProcessExternalSourceLocalCellIndices_.clear();
@@ -8812,10 +9004,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 PointT RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                    TraitsT, PositionSamplerT>::
+                    OpacityT, TraitsT, PositionSamplerT>::
 samplePostProcessExternalSourceDirection(const PointT &outwardNormal,
                                          MCParticle &particle)
 {
@@ -8848,12 +9040,12 @@ samplePostProcessExternalSourceDirection(const PointT &outwardNormal,
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                      TraitsT, PositionSamplerT>::GroupArray
+                      OpacityT, TraitsT, PositionSamplerT>::GroupArray
 RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-             TraitsT, PositionSamplerT>::
+             OpacityT, TraitsT, PositionSamplerT>::
 buildPostProcessExternalSourcePlanckPdf(const CellT &cell) const
 {
     GroupArray pdf{};
@@ -8893,10 +9085,10 @@ buildPostProcessExternalSourcePlanckPdf(const CellT &cell) const
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                    TraitsT, PositionSamplerT>::
+                    OpacityT, TraitsT, PositionSamplerT>::
 samplePostProcessExternalSourcePlanckFrequencyInGroup(
     const CellT &cell, std::size_t group)
 {
@@ -8933,10 +9125,10 @@ samplePostProcessExternalSourcePlanckFrequencyInGroup(
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                    TraitsT, PositionSamplerT>::
+                    OpacityT, TraitsT, PositionSamplerT>::
 samplePostProcessExternalSourcePlanckFrequency(const CellT &cell)
 {
     GroupArray const pdf =
@@ -8958,12 +9150,12 @@ samplePostProcessExternalSourcePlanckFrequency(const CellT &cell)
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                      TraitsT, PositionSamplerT>::MCParticle
+                      OpacityT, TraitsT, PositionSamplerT>::MCParticle
 RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-             TraitsT, PositionSamplerT>::
+             OpacityT, TraitsT, PositionSamplerT>::
 generatePostProcessExternalSourceParticle(
     std::size_t cellIndex, const CellT &cell,
     const PostProcessExternalSource &source)
@@ -8997,10 +9189,10 @@ generatePostProcessExternalSourceParticle(
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                  TraitsT, PositionSamplerT>::
+                  OpacityT, TraitsT, PositionSamplerT>::
 handlePostProcessExternalSourceBoundary(
     MCParticle &particle, std::size_t cellIndex,
     std::size_t faceIndex, Functionality &functionality)
@@ -9084,10 +9276,10 @@ handlePostProcessExternalSourceBoundary(
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                         TraitsT, PositionSamplerT>::
+                         OpacityT, TraitsT, PositionSamplerT>::
 getAccelerationDebugInfo(std::size_t cellIndex, double frequency) const
 {
     if(cellIndex >= this->ddmcCellData_.size())
@@ -9194,10 +9386,10 @@ getAccelerationDebugInfo(std::size_t cellIndex, double frequency) const
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                         TraitsT, PositionSamplerT>::
+                         OpacityT, TraitsT, PositionSamplerT>::
 getDDMCFaceDiagnosticsTSV(double xMin, double xMax) const
 {
     std::ostringstream out;
@@ -9279,10 +9471,10 @@ getDDMCFaceDiagnosticsTSV(double xMin, double xMax) const
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
-         typename EOST, std::size_t NumGroups, typename TraitsT,
+         typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT,
          typename PositionSamplerT>
 std::string RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups,
-                         TraitsT, PositionSamplerT>::
+                         OpacityT, TraitsT, PositionSamplerT>::
 getDDMCInterfaceEventDiagnosticsTSV(double xMin, double xMax) const
 {
     std::ostringstream out;

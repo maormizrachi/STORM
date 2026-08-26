@@ -83,7 +83,7 @@ static const OpacityRow OPACITY_TABLE_124[124] = {
 constexpr size_t N_OPACITY_GROUPS = 124;
 
 template<typename PointT, typename GridT, typename CellT>
-class MovingSlabOpacity : public RadiationOpacityModel<PointT, GridT, CellT, N_OPACITY_GROUPS>
+class MovingSlabOpacity final : public RadiationOpacityModel<PointT, GridT, CellT, N_OPACITY_GROUPS>
 {
 public:
     using Base = RadiationOpacityModel<PointT, GridT, CellT, N_OPACITY_GROUPS>;

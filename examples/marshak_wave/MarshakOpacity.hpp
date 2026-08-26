@@ -20,9 +20,11 @@ namespace examples {
  * so that the total transport opacity equals kappa_R (correct diffusion limit).
  */
 template<typename PointT, typename GridT>
-class MarshakOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
+class MarshakOpacity final : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
 {
 public:
+    using RadiationOpacityModel<PointT, GridT, RadiationCell, 1>::CalcScatteringOpacity;
+
     MarshakOpacity(double kappaP0, double kappaR0, double alpha, double betaRho,
                    const std::vector<double> &densities, const std::vector<RadiationCell> &cells)
         : kappaP0_(kappaP0), kappaR0_(kappaR0), alpha_(alpha), betaRho_(betaRho),

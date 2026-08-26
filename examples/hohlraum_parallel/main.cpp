@@ -302,7 +302,8 @@ int main(int argc, char *argv[])
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
     using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell, STORM::SimpleExtensives,
-                                    STORM::examples::HohlraumEOS, 1>;
+                                    STORM::examples::HohlraumEOS, 1,
+                                    STORM::examples::HohlraumOpacity<Vector3D, Grid>>;
 
     size_t N_base = 15000;
     size_t newPhotonsPerCell = 5;

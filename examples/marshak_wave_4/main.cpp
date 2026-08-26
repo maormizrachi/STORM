@@ -90,7 +90,8 @@ int main(int argc, char *argv[])
     using Traits = DirectRadiationIMCTraits<Vector3D, RadiationCell, SimpleExtensives, 1>;
     using Sampler = RandomInCellPositionSampler<Vector3D, Grid>;
     using IMC = RadiationIMC<Vector3D, Grid, RadiationCell, SimpleExtensives,
-                             MarshakEOS, 1, Traits, Sampler>;
+                             MarshakEOS, 1, MarshakOpacity<Vector3D, Grid>,
+                             Traits, Sampler>;
 
     size_t newPhotonsPerCell = (argc >= 2) ? std::stoul(argv[1]) : 15;
     size_t boundaryPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 100;

@@ -21,7 +21,7 @@ namespace examples {
  * frequencies) to CalcAbsorptionOpacity.
  */
 template<typename PointT, typename GridT, typename CellT, std::size_t NumGroups>
-class TillComptonOpacity
+class TillComptonOpacity final
     : public RadiationOpacityModel<PointT, GridT, CellT, NumGroups>
 {
 public:

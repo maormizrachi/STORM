@@ -428,7 +428,8 @@ int main(int argc, char **argv)
 
         using Opacity = STORM::examples::TillComptonOpacity<
             Vector3D, Grid, TillCell, groups>;
-        using IMC = STORM::RadiationIMC<Vector3D, Grid, TillCell, TillExtensives, TillEOS, groups>;
+        using IMC = STORM::RadiationIMC<Vector3D, Grid, TillCell, TillExtensives,
+                                       TillEOS, groups, Opacity>;
 
         STORM::RadiationIMCParameters<groups> parameters;
         parameters.newPhotonsPerCell = options.newPhotonsPerCell;
