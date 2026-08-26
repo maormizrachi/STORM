@@ -72,6 +72,7 @@ RDMAMonteCarloManager<T, Grid, Physics>::RDMAMonteCarloManager(const Grid &grid,
     }
     this->cellsStepsCounters.assign(this->grid.GetPointNo(), 0);
     this->cellsParticleCounters.assign(this->grid.GetPointNo(), 0);
+    this->beginningParticleCount.assign(this->grid.GetPointNo(), 0);
     this->lastBuildGeneration = std::numeric_limits<size_t>::max();
     this->readySendBufferCursor = 0;
     this->sendBufferPendingRanks = 0;

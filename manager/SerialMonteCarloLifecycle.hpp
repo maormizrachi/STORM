@@ -4,7 +4,9 @@
 template<typename T, typename Grid>
 MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl, const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition) :
     grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), myIDCounter(0), transportCore(this->localTransportExecutor)
-{}
+{
+    this->beginningParticleCount_.assign(this->grid.GetPointNo(), 0);
+}
 
 template<typename T, typename Grid>
 void MonteCarloManagerSerial<T, Grid>::PrepareForStep(void)

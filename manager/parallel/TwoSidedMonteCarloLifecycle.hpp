@@ -14,6 +14,7 @@ TwoSidedMonteCarloManager<T, Grid>::TwoSidedMonteCarloManager(const Grid &grid, 
     this->myIDCounter = 0;
     this->currentStep = 0;
     this->cellsStepsCounters.assign(this->grid.GetPointNo(), 0);
+    this->beginningParticleCount_.assign(this->grid.GetPointNo(), 0);
 }
 
 template<typename T, typename Grid>
