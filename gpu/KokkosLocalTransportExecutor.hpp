@@ -177,6 +177,10 @@ public:
                             views.fleckFactors,
                             views.pendingMaterialEnergy,
                             views.pendingRadiationEnergy,
+                            views.pendingGroupRadiationEnergy,
+                            views.energyBoundaries,
+                            views.thermalEmissionCdf,
+                            views.groupCount,
                             views.speedOfLight,
                             views.depositMaterialEnergy);
                     if(randomWalk.invalid)
@@ -194,7 +198,7 @@ public:
                         }
                         break;
                     }
-                    result = AdvanceOne(particle, views);
+                    result = transport::AdvanceIMC(particle, views);
                     if(result.error != TransportError::None)
                     {
                         break;

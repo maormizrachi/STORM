@@ -31,10 +31,16 @@ public:
           boundaryCrossings_("storm_boundary_crossings", 0),
           deviceBoundaryBehaviors_("storm_device_boundary_behaviors", 0),
           cellTables_("storm_cell_tables", 0),
+          cellVelocities_("storm_cell_velocities", 0),
           pendingMaterialEnergy_("storm_material_tally", 0),
           pendingRadiationEnergy_("storm_radiation_tally", 0),
+          pendingMomentum_("storm_momentum_tally", 0),
+          energyBoundaries_("storm_energy_boundaries", 0),
+          spectralAbsorptionScale_("storm_spectral_absorption_scale", 0),
+          thermalEmissionCdf_("storm_thermal_emission_cdf", 0),
           randomWalkEligible_("storm_rw_eligible", 0),
           randomWalkTotalOpacity_("storm_rw_total_opacity", 0),
+          randomWalkPGRWCells_("storm_rw_pgrw_cells", 0),
           randomWalkTau_("storm_rw_tau", 0),
           randomWalkSurvival_("storm_rw_survival", 0),
           randomWalkRadius_("storm_rw_radius", 0),
@@ -93,6 +99,69 @@ public:
         this->cellCount_ = cellFaceOffsets.empty() ? 0 : cellFaceOffsets.size() - 1;
     }
 
+    template<typename PointT>
+    void UploadHydro(const std::vector<PointT> &cellVelocities)
+    {
+        if(cellVelocities.size() != this->cellCount_)
+        {
+            throw std::runtime_error(
+                "GreyIMCData::UploadHydro: cell count mismatch");
+        }
+        Resize(this->cellVelocities_, cellVelocities.size());
+        Resize(this->pendingMomentum_, cellVelocities.size());
+        for(std::size_t i = 0; i < cellVelocities.size(); ++i)
+        {
+            this->cellVelocities_.h_view(i) = DeviceVec3(
+                cellVelocities[i].x,
+                cellVelocities[i].y,
+                cellVelocities[i].z);
+        }
+        SyncToDevice(this->cellVelocities_);
+        Kokkos::deep_copy(
+            this->pendingMomentum_.d_view, DeviceVec3{});
+        this->pendingMomentum_.modify_device();
+    }
+
+    void DisableHydro()
+    {
+        Resize(this->cellVelocities_, 0);
+        Resize(this->pendingMomentum_, 0);
+    }
+
+    void UploadSpectral(
+        const std::vector<double> &energyBoundaries,
+        const std::vector<double> &absorptionScale,
+        const std::vector<double> &thermalEmissionCdf)
+    {
+        if(absorptionScale.size() != this->cellCount_)
+        {
+            throw std::runtime_error(
+                "GreyIMCData::UploadSpectral: cell count mismatch");
+        }
+        const std::size_t groupCount =
+            energyBoundaries.empty() ? 0 : energyBoundaries.size() - 1;
+        if(thermalEmissionCdf.size() !=
+           this->cellCount_ * (groupCount + 1))
+        {
+            throw std::runtime_error(
+                "GreyIMCData::UploadSpectral: CDF size mismatch");
+        }
+        CopyToDevice(energyBoundaries, this->energyBoundaries_);
+        CopyToDevice(absorptionScale, this->spectralAbsorptionScale_);
+        CopyToDevice(thermalEmissionCdf, this->thermalEmissionCdf_);
+        this->groupCount_ = groupCount;
+        this->spectralEnabled_ = true;
+    }
+
+    void DisableSpectral()
+    {
+        this->spectralEnabled_ = false;
+        this->groupCount_ = 0;
+        Resize(this->energyBoundaries_, 0);
+        Resize(this->spectralAbsorptionScale_, 0);
+        Resize(this->thermalEmissionCdf_, 0);
+    }
+
     void UploadTables(const std::vector<double> &absorptionOpacities,
                       const std::vector<double> &scatteringOpacities,
                       const std::vector<double> &fleckFactors)
@@ -138,11 +207,14 @@ public:
     void UploadRandomWalk(
         const std::vector<std::uint8_t> &cellEligible,
         const std::vector<double> &cellTotalOpacity,
+        const std::vector<PGRWCellData> &pgrwCellData,
         const RandomWalk &randomWalk,
         const double minimumParticleOpticalDepth)
     {
         if(cellEligible.size() != this->cellCount_ ||
-           cellTotalOpacity.size() != this->cellCount_)
+           cellTotalOpacity.size() != this->cellCount_ ||
+           (!pgrwCellData.empty() &&
+            pgrwCellData.size() != this->cellCount_))
         {
             throw std::runtime_error(
                 "GreyIMCData::UploadRandomWalk: cell table size mismatch");
@@ -158,6 +230,19 @@ public:
         }
         SyncToDevice(this->randomWalkEligible_);
         SyncToDevice(this->randomWalkTotalOpacity_);
+        Resize(this->randomWalkPGRWCells_, pgrwCellData.size());
+        for(std::size_t i = 0; i < pgrwCellData.size(); ++i)
+        {
+            const PGRWCellData &source = pgrwCellData[i];
+            PGRWCellView &destination =
+                this->randomWalkPGRWCells_.h_view(i);
+            destination.groupCutoff = source.groupCutoff;
+            destination.sigmaA = source.sigmaA_bar;
+            destination.sigmaT = source.sigmaT_bar;
+            destination.diffusionCoefficient = source.D;
+            destination.gamma = source.gamma;
+        }
+        SyncToDevice(this->randomWalkPGRWCells_);
 
         CopyToDevice(randomWalk.GetTauTable(), this->randomWalkTau_);
         CopyToDevice(
@@ -179,11 +264,16 @@ public:
     void DisableRandomWalk()
     {
         this->randomWalkEnabled_ = false;
+        Resize(this->randomWalkPGRWCells_, 0);
         Kokkos::deep_copy(
             this->randomWalkStepCounter_, std::size_t(0));
     }
 
-    GreyIMCViews<DeviceVec3> Views(double speedOfLight, bool depositMaterialEnergy) const
+    GreyIMCViews<DeviceVec3> Views(
+        double speedOfLight,
+        bool depositMaterialEnergy,
+        bool comovingTransport,
+        bool depositMomentum) const
     {
         GreyIMCViews<DeviceVec3> result;
         result.grid.cellFaceOffsets = this->cellFaceOffsets_.d_view.data();
@@ -200,12 +290,25 @@ public:
             this->cellCount_ > 0 ? this->cellTables_.d_view.data() + this->cellCount_ : nullptr;
         result.fleckFactors =
             this->cellCount_ > 0 ? this->cellTables_.d_view.data() + 2 * this->cellCount_ : nullptr;
+        result.cellVelocities =
+            this->cellVelocities_.d_view.data();
         result.pendingMaterialEnergy = this->pendingMaterialEnergy_.d_view.data();
         result.pendingRadiationEnergy = this->pendingRadiationEnergy_.d_view.data();
+        result.pendingMomentum =
+            this->pendingMomentum_.d_view.data();
+        result.energyBoundaries =
+            this->energyBoundaries_.d_view.data();
+        result.spectralAbsorptionScale =
+            this->spectralAbsorptionScale_.d_view.data();
+        result.thermalEmissionCdf =
+            this->thermalEmissionCdf_.d_view.data();
+        result.groupCount = this->groupCount_;
         result.randomWalk.cellEligible =
             this->randomWalkEligible_.d_view.data();
         result.randomWalk.cellTotalOpacity =
             this->randomWalkTotalOpacity_.d_view.data();
+        result.randomWalk.pgrwCells =
+            this->randomWalkPGRWCells_.d_view.data();
         result.randomWalk.tables.tau =
             this->randomWalkTau_.d_view.data();
         result.randomWalk.tables.survival =
@@ -225,21 +328,44 @@ public:
         result.randomWalk.minimumParticleOpticalDepth =
             this->randomWalkMinimumParticleOpticalDepth_;
         result.randomWalk.enabled = this->randomWalkEnabled_;
+        result.randomWalk.spectralEnabled =
+            this->spectralEnabled_ &&
+            this->randomWalkPGRWCells_.extent(0) ==
+                this->cellCount_;
         result.speedOfLight = speedOfLight;
         result.depositMaterialEnergy = depositMaterialEnergy;
+        result.comovingTransport = comovingTransport;
+        result.depositMomentum = depositMomentum;
+        result.spectralEnabled = this->spectralEnabled_;
         return result;
     }
 
+    template<typename PointT>
     void AddTallies(std::vector<double> &materialEnergy,
                     std::vector<double> &radiationEnergy,
+                    std::vector<PointT> &momentum,
                     std::size_t &randomWalkSteps)
     {
         this->pendingMaterialEnergy_.sync_host();
         this->pendingRadiationEnergy_.sync_host();
+        if(this->pendingMomentum_.extent(0) > 0)
+        {
+            this->pendingMomentum_.sync_host();
+        }
         for(std::size_t i = 0; i < this->cellCount_; ++i)
         {
             materialEnergy[i] += this->pendingMaterialEnergy_.h_view(i);
             radiationEnergy[i] += this->pendingRadiationEnergy_.h_view(i);
+            if(i < momentum.size() &&
+               i < this->pendingMomentum_.extent(0))
+            {
+                momentum[i].x +=
+                    this->pendingMomentum_.h_view(i).x;
+                momentum[i].y +=
+                    this->pendingMomentum_.h_view(i).y;
+                momentum[i].z +=
+                    this->pendingMomentum_.h_view(i).z;
+            }
         }
         std::size_t deviceRandomWalkSteps = 0;
         Kokkos::deep_copy(
@@ -285,10 +411,16 @@ private:
     Kokkos::DualView<std::uint8_t*> deviceBoundaryBehaviors_;
     /// Packed [absorption | scattering | fleck], each of length cellCount_.
     Kokkos::DualView<double*> cellTables_;
+    Kokkos::DualView<DeviceVec3*> cellVelocities_;
     Kokkos::DualView<double*> pendingMaterialEnergy_;
     Kokkos::DualView<double*> pendingRadiationEnergy_;
+    Kokkos::DualView<DeviceVec3*> pendingMomentum_;
+    Kokkos::DualView<double*> energyBoundaries_;
+    Kokkos::DualView<double*> spectralAbsorptionScale_;
+    Kokkos::DualView<double*> thermalEmissionCdf_;
     Kokkos::DualView<std::uint8_t*> randomWalkEligible_;
     Kokkos::DualView<double*> randomWalkTotalOpacity_;
+    Kokkos::DualView<PGRWCellView*> randomWalkPGRWCells_;
     Kokkos::DualView<double*> randomWalkTau_;
     Kokkos::DualView<double*> randomWalkSurvival_;
     Kokkos::DualView<double*> randomWalkRadius_;
@@ -298,6 +430,8 @@ private:
     double randomWalkMinimumParticleOpticalDepth_ = 0.0;
     std::size_t randomWalkRadiusTableSize_ = 0;
     bool randomWalkEnabled_ = false;
+    bool spectralEnabled_ = false;
+    std::size_t groupCount_ = 0;
     std::size_t cellCount_ = 0;
 };
 

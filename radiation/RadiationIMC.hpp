@@ -1,12 +1,16 @@
 #ifndef STORM_RADIATION_IMC_HPP
 #define STORM_RADIATION_IMC_HPP
 
+// Define STORM_IMC_DIFF only for the host differential harness.  Production
+// CPU and GPU transport must execute the shared kernel.
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -54,6 +58,7 @@
 #include "../utils/LinearInterpolation.hpp"
 #include "../utils/CounterRNG.hpp"
 #include "../mesh_movement/MeshMovement.hpp"
+#include "../gpu/GreyIMCKernel.hpp"
 
 #ifdef STORM_WITH_GPU
     #include "../gpu/GreyIMCData.hpp"
@@ -757,6 +762,7 @@ public:
 
     std::vector<MCParticle> preStep(double fullDt) override;
     Functionality step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) override;
+    Functionality stepImpl(MCParticle &particle, std::vector<MCParticle> &particlesToAdd);
     void postStep(const std::vector<MCParticle> &particles, double fullDt) override;
     void onBoundaryResult(const MCParticle &particle,
                           ParticleStatus status,
@@ -787,7 +793,29 @@ public:
 
     gpu::GreyIMCViews<gpu::DeviceVec3> GetDeviceTransportViews() const
     {
-        return this->gpuData_->Views(units::clight, !this->parameters_.noHydroFeedback);
+        bool comovingTransport = false;
+        bool depositMomentum = false;
+        if constexpr(
+            radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            comovingTransport =
+                this->parameters_.withHydro &&
+                !this->parameters_.MMC;
+        }
+        if constexpr(
+            radiation_imc_detail::has_member_momentum<
+                ExtensivesT>::value)
+        {
+            depositMomentum =
+                this->parameters_.withHydro &&
+                !this->parameters_.diffusionPressureGradient &&
+                !this->parameters_.noHydroFeedback;
+        }
+        return this->gpuData_->Views(
+            units::clight,
+            !this->parameters_.noHydroFeedback,
+            comovingTransport,
+            depositMomentum);
     }
 #endif
     const GroupBoundaries &getEnergyBoundaries() const { return this->energyBoundaries_; }
@@ -909,7 +937,6 @@ private:
         Census
     };
 
-#ifdef STORM_WITH_GPU
     bool GreyKernelEligible() const
     {
 #if defined(STORM_DEBUG) || defined(STORM_WITH_TRACING_HISTORY)
@@ -918,7 +945,8 @@ private:
         return !this->parameters_.withMultigroupOpacity &&
                !this->parameters_.withDDMC &&
                !this->parameters_.withCompton &&
-               !this->parameters_.withHydro &&
+               !(this->parameters_.withHydro &&
+                 this->parameters_.withRandomWalk) &&
                !this->parameters_.postProcess.enabled &&
                !this->observer_ &&
                !this->polarizationEnabled();
@@ -940,8 +968,18 @@ private:
         result.absorptionOpacities = this->planckOpacities_.data();
         result.scatteringOpacities = this->scatteringOpacities_.data();
         result.fleckFactors = this->factorFleck_.data();
+        result.cellVelocities =
+            this->transportCellVelocities_.data();
         result.pendingMaterialEnergy = this->pendingMaterialEnergy_.data();
         result.pendingRadiationEnergy = this->pendingRadiationEnergy_.data();
+        result.pendingMomentum = this->pendingMomentum_.data();
+        result.energyBoundaries = this->energyBoundaries_.data();
+        result.spectralAbsorptionScale =
+            this->spectralAbsorptionScale_.data();
+        result.thermalEmissionCdf =
+            this->thermalEmissionCdf_.data();
+        result.pendingGroupRadiationEnergy = nullptr;
+        result.groupCount = NumGroups;
         if(this->parameters_.withRandomWalk && this->randomWalk_)
         {
             result.randomWalk.cellEligible =
@@ -968,9 +1006,152 @@ private:
         }
         result.speedOfLight = units::clight;
         result.depositMaterialEnergy = !this->parameters_.noHydroFeedback;
+        if constexpr(
+            radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            result.comovingTransport =
+                this->parameters_.withHydro &&
+                !this->parameters_.MMC;
+        }
+        if constexpr(
+            radiation_imc_detail::has_member_momentum<
+                ExtensivesT>::value)
+        {
+            result.depositMomentum =
+                this->parameters_.withHydro &&
+                !this->parameters_.diffusionPressureGradient &&
+                !this->parameters_.noHydroFeedback;
+        }
+        result.spectralEnabled =
+            this->SharedFullIMCKernelEligible() ? 1 : 0;
         return result;
     }
+
+    // Set while the differential harness replays a step through the legacy
+    // event code so both paths can be compared on identical input.
+    bool imcDiffForceLegacy_ = false;
+    std::size_t imcDiffReports_ = 0;
+
+    bool SharedFullIMCKernelEligible() const
+    {
+#if STORM_DEBUG
+        return false;
 #endif
+#ifdef STORM_WITH_TRACING_HISTORY
+        return false;
+#endif
+        if(this->imcDiffForceLegacy_)
+        {
+            return false;
+        }
+        return this->parameters_.withMultigroupOpacity &&
+               !this->parameters_.withDDMC &&
+               !this->parameters_.withCompton &&
+               !(this->parameters_.withHydro &&
+                 this->parameters_.withRandomWalk) &&
+               !this->parameters_.postProcess.enabled &&
+               !this->observer_ &&
+               !this->polarizationEnabled();
+    }
+
+    // Host policy for the shared IMC event kernel. Its interface is the same
+    // one a device opacity snapshot will implement; only the storage differs.
+    // Device compilation sees the inert branches below, while the GPU executor
+    // instantiates AdvanceIMC with a device-safe policy.
+    struct HostSpectralOpacityPolicy
+    {
+        RadiationIMC *owner = nullptr;
+
+        template<typename ParticleU, typename ViewsU>
+        STORM_TRANSPORT_INLINE
+        transport::IMCOpacityState Evaluate(
+            const ParticleU &particle,
+            const ViewsU &,
+            const std::size_t cellIndex,
+            const double transportFrequency) const
+        {
+            (void) particle;
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+            (void) cellIndex;
+            (void) transportFrequency;
+            return {};
+#else
+            transport::IMCOpacityState result;
+            CellT &cell = this->owner->cells_[cellIndex];
+            double frequency = transportFrequency;
+            this->owner->clampFrequencyToBounds(frequency);
+            result.group = this->owner->opacity_->findGroup(
+                frequency, this->owner->energyBoundaries_);
+            result.absorption =
+                this->owner->opacity_->CalcAbsorptionOpacity(
+                    cell, frequency);
+            result.scattering =
+                this->owner->opacity_->CalcScatteringOpacity(
+                    cell, frequency);
+            result.fleck = this->owner->factorFleck_[cellIndex];
+            return result;
+#endif
+        }
+
+        template<typename ParticleU, typename ViewsU>
+        STORM_TRANSPORT_INLINE
+        void Scatter(ParticleU &particle,
+                     const ViewsU &,
+                     const std::size_t cellIndex,
+                     const transport::IMCOpacityState &,
+                     const bool effectiveScatter,
+                     const double dopplerShift) const
+        {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+            (void) particle;
+            (void) cellIndex;
+            (void) effectiveScatter;
+            (void) dopplerShift;
+#else
+            CellT &cell = this->owner->cells_[cellIndex];
+            particle.velocity =
+                this->owner->sampleScatterVelocity(cell, particle);
+            particle.frequency *= dopplerShift;
+            this->owner->clampFrequencyToBounds(
+                particle.frequency);
+            if(effectiveScatter)
+            {
+                const double reemitRandom =
+                    this->owner->randomUnitOpen(particle);
+                particle.frequency =
+                    this->owner->opacity_->GetThermalEnergy(
+                        cell, reemitRandom,
+                        this->owner->energyBoundaries_);
+            }
+#endif
+        }
+
+        template<typename ParticleU, typename ViewsU>
+        STORM_TRANSPORT_INLINE
+        void TallyGroupRadiation(
+            const ParticleU &,
+            const ViewsU &,
+            const std::size_t cellIndex,
+            const transport::IMCOpacityState &opacityState,
+            const double integratedEnergy) const
+        {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+            (void) cellIndex;
+            (void) opacityState;
+            (void) integratedEnergy;
+#else
+            if(this->owner->parameters_.withEgTimeAvg &&
+               opacityState.group < NumGroups)
+            {
+                STORM_TRANSPORT_ACCUMULATE(
+                    this->owner
+                        ->pendingGroupRadiationEnergy_[cellIndex]
+                                                       [opacityState.group],
+                    integratedEnergy);
+            }
+#endif
+        }
+    };
 
     struct ComptonProjectionResult
     {
@@ -1239,6 +1420,9 @@ private:
     std::vector<double> pendingMaterialEnergy_;
     std::vector<double> pendingTotalEnergy_;
     std::vector<PointT> pendingMomentum_;
+    std::vector<PointT> transportCellVelocities_;
+    std::vector<double> spectralAbsorptionScale_;
+    std::vector<double> thermalEmissionCdf_;
     std::vector<double> pendingRadiationEnergy_;
     std::vector<GroupArray> pendingGroupRadiationEnergy_;
 #ifdef STORM_WITH_GPU
@@ -1722,8 +1906,21 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, 
     this->pendingMaterialEnergy_.assign(cellCount, 0.0);
     this->pendingTotalEnergy_.assign(cellCount, 0.0);
     this->pendingMomentum_.assign(cellCount, PointT{});
+    this->transportCellVelocities_.assign(cellCount, PointT{});
+    if constexpr(
+        radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        for(std::size_t i = 0; i < cellCount; ++i)
+        {
+            this->transportCellVelocities_[i] =
+                this->cells_[i].velocity;
+        }
+    }
     this->pendingRadiationEnergy_.assign(cellCount, 0.0);
     this->pendingGroupRadiationEnergy_.assign(cellCount, GroupArray{});
+    this->spectralAbsorptionScale_.assign(cellCount, 0.0);
+    this->thermalEmissionCdf_.assign(
+        cellCount * (NumGroups + 1), 0.0);
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
@@ -2173,7 +2370,6 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, 
     std::size_t cellIndex = particle.cellIndex;
     CellT &cell = this->cells_[cellIndex];
 
-#ifdef STORM_WITH_GPU
     if(!this->parameters_.withMultigroupOpacity &&
        this->GreyKernelEligible())
     {
@@ -2188,6 +2384,10 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, 
                 views.fleckFactors,
                 views.pendingMaterialEnergy,
                 views.pendingRadiationEnergy,
+                views.pendingGroupRadiationEnergy,
+                views.energyBoundaries,
+                views.thermalEmissionCdf,
+                views.groupCount,
                 views.speedOfLight,
                 views.depositMaterialEnergy);
         if(result.invalid)
@@ -2204,7 +2404,6 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, 
         functionality = result.step;
         return true;
     }
-#endif
 
     double Ro = this->computeMinDistanceToFaces(cellIndex, particle.location);
 
@@ -7044,7 +7243,36 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
         }
     }
 
-    if(this->parameters_.withRandomWalk || this->parameters_.withDDMC)
+    if(this->SharedFullIMCKernelEligible())
+    {
+        const double referenceEnergy =
+            this->energyBoundaries_[0];
+        const double referenceEnergyCubed =
+            referenceEnergy * referenceEnergy * referenceEnergy;
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            const double absorption =
+                this->opacity_->CalcAbsorptionOpacity(
+                    this->cells_[i], referenceEnergy);
+            this->spectralAbsorptionScale_[i] =
+                absorption * referenceEnergyCubed;
+            const GroupArray upper =
+                this->opacity_->GetCumulativeOpacity(
+                    this->cells_[i], this->energyBoundaries_);
+            this->thermalEmissionCdf_[i * (NumGroups + 1)] = 0.0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                this->thermalEmissionCdf_[
+                    i * (NumGroups + 1) + group + 1] =
+                    upper[group];
+            }
+        }
+    }
+
+    if(this->GreyKernelEligible() ||
+       this->SharedFullIMCKernelEligible() ||
+       this->parameters_.withRandomWalk ||
+       this->parameters_.withDDMC)
     {
         this->updateGridData();
     }
@@ -7092,6 +7320,14 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
         std::vector<MCParticle> boundaryParticles = this->boundary->generateNewBoundaryParticles(fullDt);
         for(MCParticle &particle : boundaryParticles)
         {
+            // Boundary implementations construct fresh packets outside IMC,
+            // so they do not own a transport RNG stream.  The shared host/
+            // device kernel consumes CounterRNG directly and therefore cannot
+            // lazily initialize the sentinel key as the legacy host path did.
+            if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
+            {
+                this->initializeParticleRNG(particle);
+            }
             this->setInitialWeightFromWeight(particle);
             if(this->parameters_.postProcess.enabled)
             {
@@ -7123,7 +7359,9 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
     }
     this->preStepInitialized_ = true;
 #ifdef STORM_WITH_GPU
-    this->gpuTransportEnabled_ = this->GreyKernelEligible();
+    this->gpuTransportEnabled_ =
+        this->GreyKernelEligible() ||
+        this->SharedFullIMCKernelEligible();
     if(this->gpuTransportEnabled_)
     {
         if(!this->gpuRuntime_)
@@ -7151,11 +7389,37 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
             this->planckOpacities_,
             this->scatteringOpacities_,
             this->factorFleck_);
-        if(this->parameters_.withRandomWalk)
+        if(this->parameters_.withHydro)
+        {
+            this->gpuData_->UploadHydro(
+                this->transportCellVelocities_);
+        }
+        else
+        {
+            this->gpuData_->DisableHydro();
+        }
+        if(this->SharedFullIMCKernelEligible())
+        {
+            std::vector<double> energyBoundaries(
+                this->energyBoundaries_.begin(),
+                this->energyBoundaries_.end());
+            this->gpuData_->UploadSpectral(
+                energyBoundaries,
+                this->spectralAbsorptionScale_,
+                this->thermalEmissionCdf_);
+        }
+        else
+        {
+            this->gpuData_->DisableSpectral();
+        }
+        if(this->parameters_.withRandomWalk &&
+           (this->GreyKernelEligible() ||
+            this->SharedFullIMCKernelEligible()))
         {
             this->gpuData_->UploadRandomWalk(
                 this->rwCellEligible_,
                 this->rwCellTotalOpacity_,
+                this->rwCellData_,
                 *this->randomWalk_,
                 this->parameters_.rwMinParticleOpticalDepth);
         }
@@ -7175,6 +7439,176 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
 typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::Functionality
 RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::step(
+    MCParticle &particle,
+    std::vector<MCParticle> &particlesToAdd)
+{
+#ifndef STORM_IMC_DIFF
+    return this->stepImpl(particle, particlesToAdd);
+#else
+    if(!this->SharedFullIMCKernelEligible())
+    {
+        return this->stepImpl(particle, particlesToAdd);
+    }
+
+    const std::size_t cellIndex = particle.cellIndex;
+    struct CellTally
+    {
+        double material = 0.0;
+        double radiation = 0.0;
+        double total = 0.0;
+        GroupArray group{};
+    };
+    auto snapshot = [&]() {
+        CellTally t;
+        t.material = this->pendingMaterialEnergy_[cellIndex];
+        t.radiation = this->pendingRadiationEnergy_[cellIndex];
+        t.total = this->pendingTotalEnergy_[cellIndex];
+        t.group = this->pendingGroupRadiationEnergy_[cellIndex];
+        return t;
+    };
+    auto restore = [&](const CellTally &t) {
+        this->pendingMaterialEnergy_[cellIndex] = t.material;
+        this->pendingRadiationEnergy_[cellIndex] = t.radiation;
+        this->pendingTotalEnergy_[cellIndex] = t.total;
+        this->pendingGroupRadiationEnergy_[cellIndex] = t.group;
+    };
+
+    const CellTally before = snapshot();
+    const MCParticle particleBefore = particle;
+
+    MCParticle sharedParticle = particle;
+    std::vector<MCParticle> sharedAdd;
+    const Functionality sharedResult =
+        this->stepImpl(sharedParticle, sharedAdd);
+    const CellTally sharedTally = snapshot();
+
+    restore(before);
+    MCParticle legacyParticle = particle;
+    std::vector<MCParticle> legacyAdd;
+    this->imcDiffForceLegacy_ = true;
+    Functionality legacyResult;
+    try
+    {
+        legacyResult = this->stepImpl(legacyParticle, legacyAdd);
+    }
+    catch(...)
+    {
+        this->imcDiffForceLegacy_ = false;
+        throw;
+    }
+    this->imcDiffForceLegacy_ = false;
+    const CellTally legacyTally = snapshot();
+
+    auto differs = [](double a, double b) {
+        const double scale = std::max({1.0e-300, std::abs(a), std::abs(b)});
+        return std::abs(a - b) > 1.0e-11 * scale;
+    };
+    std::string mismatch;
+    auto checkScalar = [&](const char *name, double a, double b) {
+        if(mismatch.empty() && differs(a, b))
+        {
+            std::ostringstream os;
+            os << name << ": shared=" << std::setprecision(17) << a
+               << " legacy=" << std::setprecision(17) << b;
+            mismatch = os.str();
+        }
+    };
+    if(sharedResult.change != legacyResult.change)
+    {
+        std::ostringstream os;
+        os << "change: shared=" << static_cast<int>(sharedResult.change)
+           << " legacy=" << static_cast<int>(legacyResult.change);
+        mismatch = os.str();
+    }
+    if(mismatch.empty() &&
+       sharedResult.change == ParticleStatus::CELL_MOVE)
+    {
+        if(sharedResult.nextCellIndex != legacyResult.nextCellIndex)
+        {
+            std::ostringstream os;
+            os << "nextCellIndex: shared=" << sharedResult.nextCellIndex
+               << " legacy=" << legacyResult.nextCellIndex;
+            mismatch = os.str();
+        }
+        else if(sharedResult.boundaryCrossing !=
+                legacyResult.boundaryCrossing)
+        {
+            std::ostringstream os;
+            os << "boundaryCrossing: shared="
+               << sharedResult.boundaryCrossing
+               << " legacy=" << legacyResult.boundaryCrossing;
+            mismatch = os.str();
+        }
+    }
+    checkScalar("weight", sharedParticle.weight, legacyParticle.weight);
+    checkScalar("timeLeft", sharedParticle.timeLeft, legacyParticle.timeLeft);
+    checkScalar("frequency", sharedParticle.frequency, legacyParticle.frequency);
+    checkScalar("location.x", sharedParticle.location.x, legacyParticle.location.x);
+    checkScalar("location.y", sharedParticle.location.y, legacyParticle.location.y);
+    checkScalar("location.z", sharedParticle.location.z, legacyParticle.location.z);
+    checkScalar("velocity.x", sharedParticle.velocity.x, legacyParticle.velocity.x);
+    checkScalar("velocity.y", sharedParticle.velocity.y, legacyParticle.velocity.y);
+    checkScalar("velocity.z", sharedParticle.velocity.z, legacyParticle.velocity.z);
+    checkScalar("tally.material", sharedTally.material, legacyTally.material);
+    checkScalar("tally.radiation", sharedTally.radiation, legacyTally.radiation);
+    checkScalar("tally.total", sharedTally.total, legacyTally.total);
+    if(mismatch.empty() &&
+       sharedParticle.rngCounter != legacyParticle.rngCounter)
+    {
+        std::ostringstream os;
+        os << "rngCounter: shared=" << sharedParticle.rngCounter
+           << " legacy=" << legacyParticle.rngCounter;
+        mismatch = os.str();
+    }
+
+    if(!mismatch.empty() && this->imcDiffReports_ < 20)
+    {
+        ++this->imcDiffReports_;
+        std::ostringstream os;
+        os << std::setprecision(17)
+           << "[IMC-DIFF] " << mismatch << "\n"
+           << "  cell=" << cellIndex
+           << " in.weight=" << particleBefore.weight
+           << " in.initialWeight=" << particleBefore.initialWeight
+           << " in.timeLeft=" << particleBefore.timeLeft
+           << " in.frequency=" << particleBefore.frequency << "\n"
+           << "  in.loc=(" << particleBefore.location.x << ","
+           << particleBefore.location.y << "," << particleBefore.location.z
+           << ") in.vel=(" << particleBefore.velocity.x << ","
+           << particleBefore.velocity.y << "," << particleBefore.velocity.z
+           << ") in.rngCounter=" << particleBefore.rngCounter << "\n"
+           << "  shared: change=" << static_cast<int>(sharedResult.change)
+           << " next=" << sharedResult.nextCellIndex
+           << " bx=" << sharedResult.boundaryCrossing
+           << " w=" << sharedParticle.weight
+           << " tl=" << sharedParticle.timeLeft
+           << " nu=" << sharedParticle.frequency
+           << " dMat=" << (sharedTally.material - before.material)
+           << " dRad=" << (sharedTally.radiation - before.radiation) << "\n"
+           << "  legacy: change=" << static_cast<int>(legacyResult.change)
+           << " next=" << legacyResult.nextCellIndex
+           << " bx=" << legacyResult.boundaryCrossing
+           << " w=" << legacyParticle.weight
+           << " tl=" << legacyParticle.timeLeft
+           << " nu=" << legacyParticle.frequency
+           << " dMat=" << (legacyTally.material - before.material)
+           << " dRad=" << (legacyTally.radiation - before.radiation)
+           << std::endl;
+        std::cerr << os.str();
+    }
+
+    // The legacy path is the reference: keep its state so the run stays on
+    // the known-good trajectory while divergences are collected.
+    restore(legacyTally);
+    particle = legacyParticle;
+    particlesToAdd = legacyAdd;
+    return legacyResult;
+#endif
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename OpacityT, typename TraitsT, typename PositionSamplerT>
+typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::Functionality
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, TraitsT, PositionSamplerT>::stepImpl(
     MCParticle &particle,
     std::vector<MCParticle> &particlesToAdd)
 {
@@ -7225,10 +7659,11 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
         }
     }
 
-#ifdef STORM_WITH_GPU
     if(this->GreyKernelEligible())
     {
-        gpu::TransportResult result = gpu::AdvanceOne(particle, this->GetHostTransportViews());
+        gpu::TransportResult result =
+            transport::AdvanceIMC(
+                particle, this->GetHostTransportViews());
         if(result.error != gpu::TransportError::None)
         {
             StormError eo("RadiationIMC GPU-compatible grey transport failed");
@@ -7238,7 +7673,25 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, Trait
         }
         return result.step;
     }
-#endif
+    if(this->SharedFullIMCKernelEligible())
+    {
+        const HostSpectralOpacityPolicy opacityPolicy{this};
+        const transport::TransportResult result =
+            transport::AdvanceIMC(
+                particle, this->GetHostTransportViews(),
+                opacityPolicy);
+        if(result.error != transport::TransportError::None)
+        {
+            StormError eo(
+                "RadiationIMC shared full transport failed");
+            eo.addEntry("Cell index", particle.cellIndex);
+            eo.addEntry(
+                "Transport error",
+                static_cast<int>(result.error));
+            throw eo;
+        }
+        return result.step;
+    }
 
     auto [faceIntersect, timeIntersect, nextCellIndex] =
         this->getIntersectionDetails(particle);
@@ -7648,6 +8101,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT, 
         this->gpuData_->AddTallies(
             this->pendingMaterialEnergy_,
             this->pendingRadiationEnergy_,
+            this->pendingMomentum_,
             this->rwStepCount_);
     }
 #endif

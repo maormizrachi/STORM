@@ -39,7 +39,7 @@ KOKKOS_FUNCTION
 STORM::gpu::TransportResult InstantiateKernel(
     DeviceParticle &particle, const STORM::gpu::GreyIMCViews<STORM::gpu::DeviceVec3> &views)
 {
-    return STORM::gpu::AdvanceOne(particle, views);
+    return STORM::transport::AdvanceIMC(particle, views);
 }
 
 void InstantiateHostSupport(STORM::gpu::GreyIMCData &data,
@@ -53,12 +53,21 @@ void InstantiateHostSupport(STORM::gpu::GreyIMCData &data,
     const std::vector<std::uint8_t> boundaries;
     std::vector<double> tables;
     std::vector<double> radiationTallies;
+    std::vector<TestPoint> momentumTallies;
     std::size_t randomWalkSteps = 0;
     const STORM::gpu::KokkosRuntime runtime;
     data.UploadGrid(offsets, points, points, planeOffsets, cells, boundaries, boundaries);
     data.UploadTables(tables, tables, tables);
-    (void) executor.Execute(particles, particles.size(), data.Views(1.0, true));
-    data.AddTallies(tables, radiationTallies, randomWalkSteps);
+    data.UploadHydro(points);
+    (void) executor.Execute(
+        particles,
+        particles.size(),
+        data.Views(1.0, true, true, true));
+    data.AddTallies(
+        tables,
+        radiationTallies,
+        momentumTallies,
+        randomWalkSteps);
 }
 
 } // namespace storm_gpu_compile_test

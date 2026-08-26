@@ -80,6 +80,24 @@ public:
         return DDMCBoundaryFaceBehavior::ReflectingRigid;
     }
 
+    DeviceBoundaryFaceBehavior getDeviceBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        (void)insideCellIndex;
+        (void)outsidePointIndex;
+        const auto &[ll, ur] = this->grid.GetBoxCoordinates();
+        const T faceCentre = this->grid.FaceCM(faceIdx);
+        const double scale =
+            std::max(1.0, std::abs(ll.x) + std::abs(ur.x));
+        if(std::abs(faceCentre.x - ll.x) <= 1.0e-12 * scale)
+        {
+            return DeviceBoundaryFaceBehavior::HostOnly;
+        }
+        return DeviceBoundaryFaceBehavior::ReflectingRigid;
+    }
+
     std::vector<Particle<T>> generateNewBoundaryParticles(double fullDt) override
     {
         double T4 = boost::math::pow<4>(temperature_);

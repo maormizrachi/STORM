@@ -37,20 +37,20 @@ struct DeviceParticle
     dt_t timeLeft = 0.0;
     double weight = 0.0;
     double initialWeight = 0.0;
+    double frequency = 0.0;
     std::uint64_t rngKey = 0;
     std::uint64_t rngCounter = 0;
     particle_step_t steps = 0;
+    std::uint8_t radiationFlags = 0;
 };
 
-// State that grey transport does not inspect.  Keep it in a parallel array so
-// the hot kernel only loads and writes DeviceParticle.
+// State that IMC transport does not inspect every event. Keep it in a parallel
+// array so the hot kernel only loads and writes DeviceParticle.
 struct DeviceParticleCold
 {
     particle_id_t id = 0;
     cell_id_t cellID = 0;
     cell_id_t sourceCellID = 0;
-    double frequency = 0.0;
-    std::uint8_t radiationFlags = 0;
     DeviceVec3 pendingFlux{};
     cell_id_t bypassCellID = 0;
 #ifdef MONTECARLO_POLARIZATION
@@ -79,15 +79,15 @@ void PackParticle(const ParticleTransportData<PointT> &source,
     particle.timeLeft = source.timeLeft;
     particle.weight = source.weight;
     particle.initialWeight = source.initialWeight;
+    particle.frequency = source.frequency;
     particle.rngKey = source.rngKey;
     particle.rngCounter = source.rngCounter;
     particle.steps = source.steps;
+    particle.radiationFlags = source.radiationState.flags;
 
     cold.id = source.id;
     cold.cellID = source.cellID;
     cold.sourceCellID = source.sourceCellID;
-    cold.frequency = source.frequency;
-    cold.radiationFlags = source.radiationState.flags;
     cold.pendingFlux = DeviceVec3(source.radiationState.pendingFlux.x,
                                  source.radiationState.pendingFlux.y,
                                  source.radiationState.pendingFlux.z);
@@ -116,12 +116,12 @@ void UnpackParticle(const DeviceParticle &particle,
     destination.velocity = PointT(particle.velocity.x, particle.velocity.y, particle.velocity.z);
     destination.cellIndex = particle.cellIndex;
     destination.timeLeft = particle.timeLeft;
-    destination.frequency = cold.frequency;
+    destination.frequency = particle.frequency;
     destination.weight = particle.weight;
     destination.initialWeight = particle.initialWeight;
     destination.rngKey = particle.rngKey;
     destination.rngCounter = particle.rngCounter;
-    destination.radiationState.flags = cold.radiationFlags;
+    destination.radiationState.flags = particle.radiationFlags;
     destination.radiationState.pendingFlux =
         PointT(cold.pendingFlux.x, cold.pendingFlux.y, cold.pendingFlux.z);
     destination.radiationState.bypassCellID = cold.bypassCellID;

@@ -1,13 +1,14 @@
 #ifndef STORM_GPU_KOKKOS_TYPES_HPP
 #define STORM_GPU_KOKKOS_TYPES_HPP
 
-#ifndef STORM_WITH_GPU
-#error "STORM GPU headers require STORM_WITH_GPU"
-#endif
-
+#ifdef STORM_WITH_GPU
 #include <Kokkos_Core.hpp>
 
 #define STORM_GPU_FUNCTION KOKKOS_FUNCTION
 #define STORM_GPU_INLINE_FUNCTION KOKKOS_INLINE_FUNCTION
+#else
+#define STORM_GPU_FUNCTION
+#define STORM_GPU_INLINE_FUNCTION inline
+#endif
 
 #endif // STORM_GPU_KOKKOS_TYPES_HPP
