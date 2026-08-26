@@ -224,6 +224,16 @@ struct Particle : public ParticleTransportData<T>, public ParticleRoutingState<T
     #endif // STORM_WITH_MPI
 };
 
+template<typename T>
+Particle<T> cloneParticleWithNewIdentity(const Particle<T> &source)
+{
+    Particle<T> clone = source;
+    clone.id = std::numeric_limits<particle_id_t>::max();
+    clone.rngKey = std::numeric_limits<std::uint64_t>::max();
+    clone.rngCounter = 0;
+    return clone;
+}
+
 #ifdef STORM_WITH_MPI
 template<typename T>
 size_t Particle<T>::dump(Serializer *serializer) const

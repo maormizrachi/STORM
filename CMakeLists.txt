@@ -35,6 +35,8 @@ project(STORM
   DESCRIPTION "Scalable Three-dimensional Optimized RDMA Monte Carlo"
 )
 
+include(CTest)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "^(Intel|IntelLLVM)$")
   add_compile_options(-fp-model precise)
 endif()
@@ -274,10 +276,13 @@ endif()
 if(STORM_WITH_MPI)
   target_compile_definitions(storm PUBLIC STORM_WITH_MPI MADVORO_WITH_MPI RICH_MPI SPATIAL_DS_WITH_MPI __WITH_MPI)
   target_link_libraries(storm PUBLIC MPI::MPI_CXX)
+  target_sources(storm PRIVATE examples/static_physics_compile.cpp)
+endif()
 
-  add_library(storm_static_physics_compile_test OBJECT EXCLUDE_FROM_ALL
-    examples/static_physics_compile.cpp)
-  target_link_libraries(storm_static_physics_compile_test PRIVATE storm)
+if(BUILD_TESTING)
+  add_executable(storm_counter_rng_test tests/counter_rng_test.cpp)
+  target_link_libraries(storm_counter_rng_test PRIVATE storm)
+  add_test(NAME storm_counter_rng_test COMMAND storm_counter_rng_test)
 endif()
 
 set(STORM_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CMMC/src")
@@ -344,10 +349,6 @@ if(STORM_WITH_HDF5)
 endif()
 
 # ---------- Examples ----------
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND STORM_BUILD_EXAMPLES)
-  include(CTest)
-endif()
-
 if(STORM_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()

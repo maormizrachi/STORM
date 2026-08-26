@@ -525,7 +525,6 @@ public:
 
     const std::vector<double> &getFactorFleck() const { return this->factorFleck_; }
     const std::vector<double> &getPlanckOpacities() const { return this->planckOpacities_; }
-    const std::vector<double> &getScatteringOpacities() const { return this->scatteringOpacities_; }
     const std::vector<ComptonCellData> &getComptonData() const { return this->comptonData_; }
     const GroupArray &getComptonGroupCenters() const { return this->comptonGroupCenters_; }
     const GroupArray &getComptonGroupWidths() const { return this->comptonGroupWidths_; }
@@ -4119,8 +4118,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     functionality.nextCellIndex = targetCellIndex;
     for(std::size_t copy = 1; copy < splitCount; ++copy)
     {
-        MCParticle extra = particle;
-        extra.id = std::numeric_limits<std::size_t>::max();
+        MCParticle extra = cloneParticleWithNewIdentity(particle);
         extra.cellID = targetID;
         extra.cellIndex = targetCellIndex;
         extra.location = targetCenter;
@@ -8302,9 +8300,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 this->setInitialWeightFromWeight(particles[particleIndex]);
                 for(std::size_t copy = 0; copy < copies; ++copy)
                 {
-                    MCParticle duplicate = particles[particleIndex];
+                    MCParticle duplicate = cloneParticleWithNewIdentity(
+                        particles[particleIndex]);
                     duplicate.weight = splitWeight;
-                    duplicate.id = std::numeric_limits<std::size_t>::max();
                     duplicate.steps = 0;
                     this->setInitialWeightFromWeight(duplicate);
                     particles.push_back(duplicate);

@@ -167,12 +167,11 @@ std::vector<Particle<T>> CombPopulationControl<T, Grid>::activate(const std::vec
             {
                 if(particle->weight > 2 * weight_ideal)
                 {
-                    MCParticle particleCpy = *particle;
+                    MCParticle particleCpy = cloneParticleWithNewIdentity(*particle);
                     size_t Nsplit = std::ceil(particle->weight / weight_ideal);
                     double weight_split = particle->weight / Nsplit;
                     particleCpy.weight = weight_split;
                     particleCpy.initialWeight = std::abs(weight_split);
-                    particleCpy.id = std::numeric_limits<size_t>::max();
                     #ifdef STORM_WITH_MPI
                         particleCpy.rank = std::numeric_limits<rank_t>::max();
                     #endif
@@ -211,8 +210,7 @@ std::vector<Particle<T>> CombPopulationControl<T, Grid>::activate(const std::vec
             while((cum_sum_w + particle->weight) > (comb_index + r) * new_energy)
             {
                 ++comb_index;
-                result.push_back(*particle);
-                result.back().id = std::numeric_limits<size_t>::max();
+                result.push_back(cloneParticleWithNewIdentity(*particle));
                 #ifdef STORM_WITH_MPI
                     result.back().rank = std::numeric_limits<rank_t>::max();
                 #endif
@@ -357,10 +355,9 @@ std::vector<Particle<T>> StratifiedCombPopulationControl<T, Grid>::activate(cons
                 {
                     size_t const splitCount = static_cast<size_t>(std::ceil(particle->weight / idealWeight));
                     double const splitWeight = particle->weight / static_cast<double>(splitCount);
-                    MCParticle particleCopy = *particle;
+                    MCParticle particleCopy = cloneParticleWithNewIdentity(*particle);
                     particleCopy.weight = splitWeight;
                     particleCopy.initialWeight = splitWeight;
-                    particleCopy.id = std::numeric_limits<size_t>::max();
                     #ifdef STORM_WITH_MPI
                     particleCopy.rank = std::numeric_limits<rank_t>::max();
                     #endif
@@ -396,8 +393,7 @@ std::vector<Particle<T>> StratifiedCombPopulationControl<T, Grid>::activate(cons
                   combIndex < target)
             {
                 ++combIndex;
-                result.push_back(*particle);
-                result.back().id = std::numeric_limits<size_t>::max();
+                result.push_back(cloneParticleWithNewIdentity(*particle));
                 #ifdef STORM_WITH_MPI
                 result.back().rank = std::numeric_limits<rank_t>::max();
                 #endif
