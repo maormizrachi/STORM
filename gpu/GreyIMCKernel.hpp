@@ -5,7 +5,7 @@
 #include <cstdint>
 
 #include "FlatGridView.hpp"
-#include "GreyRandomWalkKernel.hpp"
+#include "../radiation/random_walk/AdvanceRandomWalk.hpp"
 #include "../radiation/transport/AdvanceIMC.hpp"
 
 namespace STORM
@@ -24,7 +24,7 @@ struct GreyIMCViews
     double *pendingMaterialEnergy = nullptr;
     double *pendingRadiationEnergy = nullptr;
     PointT *pendingMomentum = nullptr;
-    GreyRandomWalkView randomWalk;
+    transport::RandomWalkView randomWalk;
     const double *energyBoundaries = nullptr;
     const double *spectralAbsorptionScale = nullptr;
     const double *thermalEmissionCdf = nullptr;

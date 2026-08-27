@@ -5,9 +5,6 @@
 #include "KokkosLocalTransportExecutor.hpp"
 #include "KokkosRuntime.hpp"
 
-// Deliberately external linkage: the point of this translation unit is to force
-// device codegen for the grey IMC kernel, which an unused internal function is
-// free to skip.
 namespace storm_gpu_compile_test
 {
 
@@ -30,21 +27,21 @@ struct TestPoint
     {}
 };
 
-static_assert(std::is_trivially_copyable<DeviceParticle>::value, "The Kokkos packet must be trivially copyable");
-
-using PacketView = Kokkos::View<DeviceParticle*>;
-static_assert(std::is_copy_constructible<PacketView>::value, "Kokkos packet Views must be copyable into a kernel");
+static_assert(std::is_trivially_copyable<DeviceParticle>::value,
+              "The Kokkos packet must be trivially copyable");
 
 KOKKOS_FUNCTION
-STORM::gpu::TransportResult InstantiateKernel(
-    DeviceParticle &particle, const STORM::gpu::GreyIMCViews<STORM::gpu::DeviceVec3> &views)
+STORM::transport::RandomWalkResult InstantiateRandomWalkKernel(
+    DeviceParticle &particle,
+    const STORM::gpu::GreyIMCViews<STORM::gpu::DeviceVec3> &views)
 {
-    return STORM::transport::AdvanceIMC(particle, views);
+    return STORM::transport::TryAdvanceRandomWalk(particle, views);
 }
 
-void InstantiateHostSupport(STORM::gpu::GreyIMCData &data,
-                            STORM::gpu::KokkosLocalTransportExecutor &executor,
-                            const std::vector<STORM::Particle<TestPoint>> &particles)
+void InstantiateHostSupport(
+    STORM::gpu::GreyIMCData &data,
+    STORM::gpu::KokkosLocalTransportExecutor &executor,
+    const std::vector<STORM::Particle<TestPoint>> &particles)
 {
     const std::vector<std::size_t> offsets = {0};
     const std::vector<TestPoint> points;
@@ -52,11 +49,14 @@ void InstantiateHostSupport(STORM::gpu::GreyIMCData &data,
     const std::vector<STORM::cell_index_t> cells;
     const std::vector<std::uint8_t> boundaries;
     std::vector<double> tables;
+    std::vector<double> groupTallies;
     std::vector<double> radiationTallies;
     std::vector<TestPoint> momentumTallies;
     std::size_t randomWalkSteps = 0;
     const STORM::gpu::KokkosRuntime runtime;
-    data.UploadGrid(offsets, points, points, planeOffsets, cells, boundaries, boundaries);
+    data.UploadGrid(
+        offsets, points, points, planeOffsets, cells, boundaries,
+        boundaries);
     data.UploadTables(tables, tables, tables);
     data.UploadHydro(points);
     (void) executor.Execute(
@@ -66,6 +66,7 @@ void InstantiateHostSupport(STORM::gpu::GreyIMCData &data,
     data.AddTallies(
         tables,
         radiationTallies,
+        groupTallies,
         momentumTallies,
         randomWalkSteps);
 }

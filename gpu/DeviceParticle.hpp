@@ -24,8 +24,7 @@ struct DeviceVec3
     DeviceVec3() = default;
 
     STORM_GPU_INLINE_FUNCTION
-    DeviceVec3(double x_, double y_, double z_)
-        : x(x_), y(y_), z(z_)
+    DeviceVec3(double x_, double y_, double z_) : x(x_), y(y_), z(z_)
     {}
 };
 
@@ -65,13 +64,10 @@ struct DeviceParticleCold
 
 static_assert(std::is_trivially_copyable<DeviceVec3>::value, "DeviceVec3 must be trivially copyable");
 static_assert(std::is_trivially_copyable<DeviceParticle>::value, "DeviceParticle must be trivially copyable");
-static_assert(std::is_trivially_copyable<DeviceParticleCold>::value,
-              "DeviceParticleCold must be trivially copyable");
+static_assert(std::is_trivially_copyable<DeviceParticleCold>::value, "DeviceParticleCold must be trivially copyable");
 
 template<typename PointT>
-void PackParticle(const ParticleTransportData<PointT> &source,
-                  DeviceParticle &particle,
-                  DeviceParticleCold &cold)
+void PackParticle(const ParticleTransportData<PointT> &source, DeviceParticle &particle, DeviceParticleCold &cold)
 {
     particle.location = DeviceVec3(source.location.x, source.location.y, source.location.z);
     particle.velocity = DeviceVec3(source.velocity.x, source.velocity.y, source.velocity.z);
@@ -88,26 +84,20 @@ void PackParticle(const ParticleTransportData<PointT> &source,
     cold.id = source.id;
     cold.cellID = source.cellID;
     cold.sourceCellID = source.sourceCellID;
-    cold.pendingFlux = DeviceVec3(source.radiationState.pendingFlux.x,
-                                 source.radiationState.pendingFlux.y,
-                                 source.radiationState.pendingFlux.z);
+    cold.pendingFlux = DeviceVec3(source.radiationState.pendingFlux.x, source.radiationState.pendingFlux.y, source.radiationState.pendingFlux.z);
     cold.bypassCellID = source.radiationState.bypassCellID;
 #ifdef MONTECARLO_POLARIZATION
     cold.pendingMeanScatterings = source.radiationState.pendingMeanScatterings;
     cold.stokesQ = source.stokesQ;
     cold.stokesU = source.stokesU;
-    cold.polarizationBasis = DeviceVec3(source.polarizationBasis.x,
-                                        source.polarizationBasis.y,
-                                        source.polarizationBasis.z);
+    cold.polarizationBasis = DeviceVec3(source.polarizationBasis.x, source.polarizationBasis.y, source.polarizationBasis.z);
     cold.polarizationInitialized = source.polarizationInitialized;
 #endif
     cold.onTrack = source.on_track;
 }
 
 template<typename PointT>
-void UnpackParticle(const DeviceParticle &particle,
-                    const DeviceParticleCold &cold,
-                    ParticleTransportData<PointT> &destination)
+void UnpackParticle(const DeviceParticle &particle, const DeviceParticleCold &cold, ParticleTransportData<PointT> &destination)
 {
     destination.id = cold.id;
     destination.cellID = cold.cellID;
@@ -122,16 +112,13 @@ void UnpackParticle(const DeviceParticle &particle,
     destination.rngKey = particle.rngKey;
     destination.rngCounter = particle.rngCounter;
     destination.radiationState.flags = particle.radiationFlags;
-    destination.radiationState.pendingFlux =
-        PointT(cold.pendingFlux.x, cold.pendingFlux.y, cold.pendingFlux.z);
+    destination.radiationState.pendingFlux = PointT(cold.pendingFlux.x, cold.pendingFlux.y, cold.pendingFlux.z);
     destination.radiationState.bypassCellID = cold.bypassCellID;
 #ifdef MONTECARLO_POLARIZATION
     destination.radiationState.pendingMeanScatterings = cold.pendingMeanScatterings;
     destination.stokesQ = cold.stokesQ;
     destination.stokesU = cold.stokesU;
-    destination.polarizationBasis = PointT(cold.polarizationBasis.x,
-                                           cold.polarizationBasis.y,
-                                           cold.polarizationBasis.z);
+    destination.polarizationBasis = PointT(cold.polarizationBasis.x, cold.polarizationBasis.y, cold.polarizationBasis.z);
     destination.polarizationInitialized = cold.polarizationInitialized;
 #endif
     destination.steps = particle.steps;

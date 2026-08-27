@@ -114,26 +114,15 @@ public:
         {
             PackParticle(arrivals[i], this->hostPackets_(i), this->hostColdPackets_(i));
         }
-        Kokkos::deep_copy(
-            Kokkos::subview(
-                this->packets_,
-                std::pair<std::size_t, std::size_t>(offset, required)),
-            Kokkos::subview(
-                this->hostPackets_,
-                std::pair<std::size_t, std::size_t>(0, incoming)));
-        Kokkos::deep_copy(
-            Kokkos::subview(
-                this->coldPackets_,
-                std::pair<std::size_t, std::size_t>(offset, required)),
-            Kokkos::subview(
-                this->hostColdPackets_,
-                std::pair<std::size_t, std::size_t>(0, incoming)));
+        Kokkos::deep_copy(Kokkos::subview(this->packets_, std::pair<std::size_t, std::size_t>(offset, required)),
+                            Kokkos::subview(this->hostPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
+        Kokkos::deep_copy(Kokkos::subview(this->coldPackets_, std::pair<std::size_t, std::size_t>(offset, required)),
+                            Kokkos::subview(this->hostColdPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
         this->activeCount_ = required;
     }
 
     template<typename ProgressFunction>
-    CompletedBatch AdvanceWave(const GreyIMCViews<DeviceVec3> &views,
-                               ProgressFunction progress)
+    CompletedBatch AdvanceWave(const GreyIMCViews<DeviceVec3> &views, ProgressFunction progress)
     {
         CompletedBatch completed;
         if(this->activeCount_ == 0)
@@ -168,21 +157,8 @@ public:
                 {
                     ++taken;
                     ++particle.steps;
-                    const GreyRandomWalkResult randomWalk =
-                        TryAdvanceGreyRandomWalk(
-                            particle,
-                            views.grid,
-                            views.randomWalk,
-                            views.absorptionOpacities,
-                            views.fleckFactors,
-                            views.pendingMaterialEnergy,
-                            views.pendingRadiationEnergy,
-                            views.pendingGroupRadiationEnergy,
-                            views.energyBoundaries,
-                            views.thermalEmissionCdf,
-                            views.groupCount,
-                            views.speedOfLight,
-                            views.depositMaterialEnergy);
+                    const transport::RandomWalkResult randomWalk =
+                        transport::TryAdvanceRandomWalk(particle, views);
                     if(randomWalk.invalid)
                     {
                         result.error = TransportError::InvalidOpacity;
@@ -203,18 +179,14 @@ public:
                     {
                         break;
                     }
-                    if(result.step.change == ParticleStatus::CELL_MOVE &&
-                       result.step.nextCellIndex < views.grid.cellCount)
+                    if(result.step.change == ParticleStatus::CELL_MOVE and result.step.nextCellIndex < views.grid.cellCount)
                     {
                         particle.cellIndex = result.step.nextCellIndex;
                         const DeviceVec3 &center = views.grid.cellCenters[particle.cellIndex];
                         constexpr double epsilon = 1.0e-8;
-                        particle.location.x =
-                            (1.0 - epsilon) * particle.location.x + epsilon * center.x;
-                        particle.location.y =
-                            (1.0 - epsilon) * particle.location.y + epsilon * center.y;
-                        particle.location.z =
-                            (1.0 - epsilon) * particle.location.z + epsilon * center.z;
+                        particle.location.x = (1.0 - epsilon) * particle.location.x + epsilon * center.x;
+                        particle.location.y = (1.0 - epsilon) * particle.location.y + epsilon * center.y;
+                        particle.location.z = (1.0 - epsilon) * particle.location.z + epsilon * center.z;
                         result.step.change = ParticleStatus::NO_CELL_MOVE;
                         continue;
                     }
@@ -269,8 +241,7 @@ public:
 
         std::size_t terminalCount = 0;
         Kokkos::deep_copy(terminalCount, this->terminalCount_);
-        completed.deviceSeconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - deviceStart).count();
+        completed.deviceSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - deviceStart).count();
         completed.launchCount = 1;
         completed.physicsSteps = physicsSteps;
         completed.launchedParticles = activeCount;
@@ -283,34 +254,22 @@ public:
         completed.particles.resize(terminalCount);
         if(terminalCount > 0)
         {
-            Kokkos::deep_copy(
-                Kokkos::subview(this->hostCompletedTransports_,
-                                std::pair<std::size_t, std::size_t>(0, terminalCount)),
-                Kokkos::subview(this->completedTransports_,
-                                std::pair<std::size_t, std::size_t>(0, terminalCount)));
-            std::memcpy(
-                completed.particles.data(),
-                this->hostCompletedTransports_.data(),
-                terminalCount * sizeof(CompletedTransport));
+            Kokkos::deep_copy(Kokkos::subview(this->hostCompletedTransports_, std::pair<std::size_t, std::size_t>(0, terminalCount)),
+                                Kokkos::subview(this->completedTransports_, std::pair<std::size_t, std::size_t>(0, terminalCount)));
+            std::memcpy(completed.particles.data(), this->hostCompletedTransports_.data(), terminalCount * sizeof(CompletedTransport));
         }
-        completed.copyBackSeconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - copyBackStart).count();
+        completed.copyBackSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - copyBackStart).count();
         return completed;
     }
 
     template<typename PointT>
-    CompletedBatch Execute(const std::vector<Particle<PointT>> &particles,
-                           std::size_t maximumParticles,
-                           const GreyIMCViews<DeviceVec3> &views)
+    CompletedBatch Execute(const std::vector<Particle<PointT>> &particles, std::size_t maximumParticles, const GreyIMCViews<DeviceVec3> &views)
     {
         return this->Execute(particles, maximumParticles, views, [](){});
     }
 
     template<typename PointT, typename ProgressFunction>
-    CompletedBatch Execute(const std::vector<Particle<PointT>> &particles,
-                           std::size_t maximumParticles,
-                           const GreyIMCViews<DeviceVec3> &views,
-                           ProgressFunction progress)
+    CompletedBatch Execute(const std::vector<Particle<PointT>> &particles, std::size_t maximumParticles, const GreyIMCViews<DeviceVec3> &views, ProgressFunction progress)
     {
         this->Reset();
         CompletedBatch completed;
@@ -321,12 +280,9 @@ public:
         }
 
         const std::chrono::steady_clock::time_point packStart = std::chrono::steady_clock::now();
-        std::vector<Particle<PointT>> arrivals(
-            particles.end() - static_cast<std::ptrdiff_t>(count),
-            particles.end());
+        std::vector<Particle<PointT>> arrivals(particles.end() - static_cast<std::ptrdiff_t>(count), particles.end());
         this->Ingest(arrivals);
-        completed.packSeconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
+        completed.packSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
 
         while(this->activeCount_ > 0)
         {
@@ -337,10 +293,7 @@ public:
             completed.launchCount += wave.launchCount;
             completed.physicsSteps += wave.physicsSteps;
             completed.launchedParticles += wave.launchedParticles;
-            completed.particles.insert(
-                completed.particles.end(),
-                std::make_move_iterator(wave.particles.begin()),
-                std::make_move_iterator(wave.particles.end()));
+            completed.particles.insert(completed.particles.end(), std::make_move_iterator(wave.particles.begin()), std::make_move_iterator(wave.particles.end()));
         }
         return completed;
     }

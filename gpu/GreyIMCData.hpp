@@ -35,6 +35,7 @@ public:
           pendingMaterialEnergy_("storm_material_tally", 0),
           pendingRadiationEnergy_("storm_radiation_tally", 0),
           pendingMomentum_("storm_momentum_tally", 0),
+          pendingGroupRadiationEnergy_("storm_group_radiation_tally", 0),
           energyBoundaries_("storm_energy_boundaries", 0),
           spectralAbsorptionScale_("storm_spectral_absorption_scale", 0),
           thermalEmissionCdf_("storm_thermal_emission_cdf", 0),
@@ -57,10 +58,8 @@ public:
                     const std::vector<std::uint8_t> &deviceBoundaryBehaviors)
     {
         const std::size_t directedFaceCount = normals.size();
-        if(facePlaneOffsets.size() != directedFaceCount ||
-           nextCellIndices.size() != directedFaceCount ||
-           boundaryCrossings.size() != directedFaceCount ||
-           deviceBoundaryBehaviors.size() != directedFaceCount)
+        if(facePlaneOffsets.size() != directedFaceCount or nextCellIndices.size() != directedFaceCount or
+           boundaryCrossings.size() != directedFaceCount or deviceBoundaryBehaviors.size() != directedFaceCount)
         {
             throw std::runtime_error("GreyIMCData::UploadGrid: directed-face table size mismatch");
         }
@@ -104,21 +103,16 @@ public:
     {
         if(cellVelocities.size() != this->cellCount_)
         {
-            throw std::runtime_error(
-                "GreyIMCData::UploadHydro: cell count mismatch");
+            throw std::runtime_error("GreyIMCData::UploadHydro: cell count mismatch");
         }
         Resize(this->cellVelocities_, cellVelocities.size());
         Resize(this->pendingMomentum_, cellVelocities.size());
         for(std::size_t i = 0; i < cellVelocities.size(); ++i)
         {
-            this->cellVelocities_.h_view(i) = DeviceVec3(
-                cellVelocities[i].x,
-                cellVelocities[i].y,
-                cellVelocities[i].z);
+            this->cellVelocities_.h_view(i) = DeviceVec3(cellVelocities[i].x, cellVelocities[i].y, cellVelocities[i].z);
         }
         SyncToDevice(this->cellVelocities_);
-        Kokkos::deep_copy(
-            this->pendingMomentum_.d_view, DeviceVec3{});
+        Kokkos::deep_copy(this->pendingMomentum_.d_view, DeviceVec3{});
         this->pendingMomentum_.modify_device();
     }
 
@@ -135,22 +129,21 @@ public:
     {
         if(absorptionScale.size() != this->cellCount_)
         {
-            throw std::runtime_error(
-                "GreyIMCData::UploadSpectral: cell count mismatch");
+            throw std::runtime_error("GreyIMCData::UploadSpectral: cell count mismatch");
         }
-        const std::size_t groupCount =
-            energyBoundaries.empty() ? 0 : energyBoundaries.size() - 1;
-        if(thermalEmissionCdf.size() !=
-           this->cellCount_ * (groupCount + 1))
+        const std::size_t groupCount = energyBoundaries.empty()? 0: energyBoundaries.size() - 1;
+        if(thermalEmissionCdf.size() != this->cellCount_ * (groupCount + 1))
         {
-            throw std::runtime_error(
-                "GreyIMCData::UploadSpectral: CDF size mismatch");
+            throw std::runtime_error("GreyIMCData::UploadSpectral: CDF size mismatch");
         }
         CopyToDevice(energyBoundaries, this->energyBoundaries_);
         CopyToDevice(absorptionScale, this->spectralAbsorptionScale_);
         CopyToDevice(thermalEmissionCdf, this->thermalEmissionCdf_);
         this->groupCount_ = groupCount;
         this->spectralEnabled_ = true;
+        Resize(this->pendingGroupRadiationEnergy_, this->cellCount_ * this->groupCount_);
+        Kokkos::deep_copy(this->pendingGroupRadiationEnergy_.d_view, 0.0);
+        this->pendingGroupRadiationEnergy_.modify_device();
     }
 
     void DisableSpectral()
@@ -160,6 +153,7 @@ public:
         Resize(this->energyBoundaries_, 0);
         Resize(this->spectralAbsorptionScale_, 0);
         Resize(this->thermalEmissionCdf_, 0);
+        Resize(this->pendingGroupRadiationEnergy_, 0);
     }
 
     void UploadTables(const std::vector<double> &absorptionOpacities,
@@ -234,13 +228,9 @@ public:
         for(std::size_t i = 0; i < pgrwCellData.size(); ++i)
         {
             const PGRWCellData &source = pgrwCellData[i];
-            PGRWCellView &destination =
+            PGRWCellData &destination =
                 this->randomWalkPGRWCells_.h_view(i);
-            destination.groupCutoff = source.groupCutoff;
-            destination.sigmaA = source.sigmaA_bar;
-            destination.sigmaT = source.sigmaT_bar;
-            destination.diffusionCoefficient = source.D;
-            destination.gamma = source.gamma;
+            destination = source;
         }
         SyncToDevice(this->randomWalkPGRWCells_);
 
@@ -302,6 +292,8 @@ public:
             this->spectralAbsorptionScale_.d_view.data();
         result.thermalEmissionCdf =
             this->thermalEmissionCdf_.d_view.data();
+        result.pendingGroupRadiationEnergy =
+            this->pendingGroupRadiationEnergy_.d_view.data();
         result.groupCount = this->groupCount_;
         result.randomWalk.cellEligible =
             this->randomWalkEligible_.d_view.data();
@@ -343,33 +335,44 @@ public:
     template<typename PointT>
     void AddTallies(std::vector<double> &materialEnergy,
                     std::vector<double> &radiationEnergy,
+                    std::vector<double> &groupRadiationEnergy,
                     std::vector<PointT> &momentum,
                     std::size_t &randomWalkSteps)
     {
         this->pendingMaterialEnergy_.sync_host();
         this->pendingRadiationEnergy_.sync_host();
+        if(this->pendingGroupRadiationEnergy_.extent(0) > 0)
+        {
+            this->pendingGroupRadiationEnergy_.sync_host();
+        }
         if(this->pendingMomentum_.extent(0) > 0)
         {
             this->pendingMomentum_.sync_host();
         }
-        for(std::size_t i = 0; i < this->cellCount_; ++i)
+        for(std::size_t i = 0; i < this->cellCount_; i++)
         {
             materialEnergy[i] += this->pendingMaterialEnergy_.h_view(i);
             radiationEnergy[i] += this->pendingRadiationEnergy_.h_view(i);
-            if(i < momentum.size() &&
-               i < this->pendingMomentum_.extent(0))
+            if((i + 1) * this->groupCount_ <=
+               groupRadiationEnergy.size())
             {
-                momentum[i].x +=
-                    this->pendingMomentum_.h_view(i).x;
-                momentum[i].y +=
-                    this->pendingMomentum_.h_view(i).y;
-                momentum[i].z +=
-                    this->pendingMomentum_.h_view(i).z;
+                for(std::size_t group = 0; group < this->groupCount_; group++)
+                {
+                    groupRadiationEnergy[
+                        i * this->groupCount_ + group] +=
+                        this->pendingGroupRadiationEnergy_.h_view(
+                            i * this->groupCount_ + group);
+                }
+            }
+            if(i < momentum.size() and i < this->pendingMomentum_.extent(0))
+            {
+                momentum[i].x += this->pendingMomentum_.h_view(i).x;
+                momentum[i].y += this->pendingMomentum_.h_view(i).y;
+                momentum[i].z += this->pendingMomentum_.h_view(i).z;
             }
         }
         std::size_t deviceRandomWalkSteps = 0;
-        Kokkos::deep_copy(
-            deviceRandomWalkSteps, this->randomWalkStepCounter_);
+        Kokkos::deep_copy(deviceRandomWalkSteps, this->randomWalkStepCounter_);
         randomWalkSteps += deviceRandomWalkSteps;
     }
 
@@ -391,8 +394,7 @@ private:
     }
 
     template<typename T>
-    static void CopyToDevice(const std::vector<T> &source,
-                             Kokkos::DualView<T*> &destination)
+    static void CopyToDevice(const std::vector<T> &source, Kokkos::DualView<T*> &destination)
     {
         Resize(destination, source.size());
         for(std::size_t i = 0; i < source.size(); ++i)
@@ -415,12 +417,13 @@ private:
     Kokkos::DualView<double*> pendingMaterialEnergy_;
     Kokkos::DualView<double*> pendingRadiationEnergy_;
     Kokkos::DualView<DeviceVec3*> pendingMomentum_;
+    Kokkos::DualView<double*> pendingGroupRadiationEnergy_;
     Kokkos::DualView<double*> energyBoundaries_;
     Kokkos::DualView<double*> spectralAbsorptionScale_;
     Kokkos::DualView<double*> thermalEmissionCdf_;
     Kokkos::DualView<std::uint8_t*> randomWalkEligible_;
     Kokkos::DualView<double*> randomWalkTotalOpacity_;
-    Kokkos::DualView<PGRWCellView*> randomWalkPGRWCells_;
+    Kokkos::DualView<PGRWCellData*> randomWalkPGRWCells_;
     Kokkos::DualView<double*> randomWalkTau_;
     Kokkos::DualView<double*> randomWalkSurvival_;
     Kokkos::DualView<double*> randomWalkRadius_;
