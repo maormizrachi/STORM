@@ -54,8 +54,7 @@ struct RadiationIMCParameters
     bool withPolarization = false;
     bool withCompton = false;
     bool comptonUseInduced = true;
-    ComptonInducedMode comptonInducedMode =
-        ComptonInducedMode::AdaptivePlanckFallback;
+    ComptonInducedMode comptonInducedMode = ComptonInducedMode::AdaptivePlanckFallback;
     bool comptonAllowNZeroFallback = true;
     bool comptonAngleDependent = true;
     std::size_t comptonMatrixSamples = 200000;

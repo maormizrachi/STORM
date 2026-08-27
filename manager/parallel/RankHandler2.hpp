@@ -659,7 +659,6 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
     memory_debug::check_system_memory("RankHandler2::LocalReallocate");
 #endif
 
-
     this->LockSelfBuffer();
     bool locked = true;
     try
@@ -760,7 +759,6 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
     {
         return true;
     }
-
 
     if(this->size_internal > 1)
     {
@@ -879,8 +877,7 @@ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_
         this->particles_agent->Put(particles, first, this->other_rank, start, false, source_lkey);
         if(first < Np)
         {
-            this->particles_agent->Put(particles + first, Np - first, this->other_rank, 0,
-                                       false, source_lkey);
+            this->particles_agent->Put(particles + first, Np - first, this->other_rank, 0, false, source_lkey);
         }
 
         // This queue is SPSC: this rank is the sole producer of the peer's tail.
