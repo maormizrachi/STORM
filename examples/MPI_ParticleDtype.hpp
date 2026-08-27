@@ -9,7 +9,7 @@
 #include "particle/Particle.hpp"
 #include "Vector3D.hpp"
 
-template<typename Grid>
+template<>
 struct MPI_has_complex_dtype<STORM::Particle<Vector3D>> : std::true_type
 {
     using ParticleT = STORM::Particle<Vector3D>;
