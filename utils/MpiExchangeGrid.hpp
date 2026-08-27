@@ -47,6 +47,31 @@ void MPI_exchange_data(const GridT &grid, std::vector<T> &cells, bool ghost_or_s
 	}
 }
 
+// Send values on ghost points to their owners and add them onto owned slots.
+template<typename T, typename GridT>
+void MPI_reduce_ghost_data(const GridT &grid, std::vector<T> &data)
+{
+	const std::vector<rank_t> &correspondents = grid.GetDuplicatedProcs();
+	const std::vector<std::vector<size_t>> &ghostIndices = grid.GetGhostIndeces();
+	const std::vector<std::vector<size_t>> &ownerIndices = grid.GetDuplicatedPoints();
+	data.resize(grid.GetTotalPointNumber(), T{});
+	std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(correspondents, data, ghostIndices);
+	for(size_t i = 0; i < correspondents.size(); ++i)
+	{
+		for(size_t j = 0; j < ownerIndices[i].size(); ++j)
+		{
+			data[ownerIndices[i][j]] += incoming[i][j];
+		}
+	}
+	for(const std::vector<size_t> &peerGhostIndices : ghostIndices)
+	{
+		for(size_t ghost : peerGhostIndices)
+		{
+			data[ghost] = T{};
+		}
+	}
+}
+
 } // namespace STORM
 
 #endif // STORM_WITH_MPI
