@@ -17,3 +17,15 @@ examples/till_compton_mc/till_compton_mc
 examples/*/output
 *.out
 *.err
+
+# Crash dumps and NFS silly-rename leftovers
+core
+core.*
+.nfs*
+
+# Example run artifacts (comparison binaries, plots, profiles)
+examples/**/densmore2012_*
+examples/densmore2012/densmore_gpu_vs_ref.png
+examples/**/*.pdf
+examples/*/*_run/*.png
+examples/**/*_profile*.txt
