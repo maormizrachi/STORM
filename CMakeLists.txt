@@ -283,6 +283,18 @@ if(BUILD_TESTING)
   add_executable(storm_counter_rng_test tests/counter_rng_test.cpp)
   target_link_libraries(storm_counter_rng_test PRIVATE storm)
   add_test(NAME storm_counter_rng_test COMMAND storm_counter_rng_test)
+
+  if(STORM_WITH_MPI)
+    add_executable(storm_reallocation_agent_test tests/reallocation_agent_test.cpp)
+    target_link_libraries(storm_reallocation_agent_test PRIVATE storm)
+    add_test(NAME storm_reallocation_agent_test
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+              ${MPIEXEC_PREFLAGS} $<TARGET_FILE:storm_reallocation_agent_test>
+              ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(storm_reallocation_agent_test PROPERTIES
+      PROCESSORS 4
+      TIMEOUT 15)
+  endif()
 endif()
 
 set(STORM_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CMMC/src")

@@ -319,6 +319,10 @@ void ReallocationAgent::ProgressAsyncReallocations(void)
         return;
     }
 
+    // Native RDMA handlers can still fall back to the synchronous protocol,
+    // for example for peers that share a node and need no remote allocation.
+    this->HandleAllWaitingReallocations();
+
     this->asyncProgressCalls++;
     bool hasOutgoingSends = (not this->pendingFactorSends.empty()) or
                             (not this->pendingMetadataSends.empty());
