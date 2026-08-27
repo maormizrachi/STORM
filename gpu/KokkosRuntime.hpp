@@ -15,7 +15,7 @@ class KokkosRuntime
 public:
     KokkosRuntime()
     {
-        if(ownerCount_++ == 0 && !Kokkos::is_initialized())
+        if(ownerCount_++ == 0 and not Kokkos::is_initialized())
         {
             Kokkos::initialize();
             initializedHere_ = true;
@@ -35,7 +35,7 @@ public:
     // otherwise tear HIP down before an OFI context releases its resources.
     static void Finalize()
     {
-        if(ownerCount_ == 0 && initializedHere_ && !Kokkos::is_finalized())
+        if(ownerCount_ == 0 and initializedHere_ and not Kokkos::is_finalized())
         {
             Kokkos::finalize();
             initializedHere_ = false;
