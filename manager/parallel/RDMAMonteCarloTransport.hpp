@@ -298,10 +298,7 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
         const bool heldTooLong =
             this->config.gpuHoldMaxSkips > 0 and
             this->gpuHoldSkips >= this->config.gpuHoldMaxSkips;
-        const bool mustDrainRemotes =
-            activeCount == 0 and
-            this->gpuTransportExecutor->PendingRemoteCount() > 0;
-        if(not fatEnough and not heldTooLong and not mustDrainRemotes)
+        if(not fatEnough and not heldTooLong)
         {
             ++this->gpuHoldSkips;
             ++this->gpuHoldCount;
