@@ -543,11 +543,12 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         }
     }
 #ifdef STORM_WITH_GPU
-    if(this->gpuTransportExecutor and this->gpuTransportExecutor->ActiveCount() > 0)
+    if(this->gpuTransportExecutor and this->gpuTransportExecutor->DeviceBusy())
     {
         STORMError eo("End of RDMAMonteCarloManager::step: device particle pool is not empty");
         eo.addEntry("Rank", this->rank_world);
         eo.addEntry("Device particles", this->gpuTransportExecutor->ActiveCount());
+        eo.addEntry("Pending remote packets", this->gpuTransportExecutor->PendingRemoteCount());
         throw eo;
     }
 #endif

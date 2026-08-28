@@ -137,6 +137,15 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
          typename EOST, std::size_t NumGroups, typename OpacityT,
          typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                   TraitsT, PositionSamplerT>::SharedDDMCKernelEligible() const
+{
+    return this->deviceExecutor_->SharedDDMCKernelEligible();
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
 gpu::GreyIMCViews<PointT>
 RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
              TraitsT, PositionSamplerT>::GetHostTransportViews()

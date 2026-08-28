@@ -75,22 +75,19 @@ public:
             owner_.ddmcExternalSourceToIMCCount_ = 0;
             owner_.ddmcExternalSourceThermalizedEnergy_ = 0.0;
             owner_.ddmcExternalSourceToIMCEnergy_ = 0.0;
-            owner_.ddmcExternalSourceMinimumFaceOpticalDepth_ =
-                std::numeric_limits<double>::infinity();
+            owner_.ddmcExternalSourceMinimumFaceOpticalDepth_ = std::numeric_limits<double>::infinity();
 
             // Eligibility is exchanged separately from the local cell data.  This
             // is important for Voronoi/MPI grids: a ghost index is not a local cell
             // index and must never index ddmcCellData_.
-            const std::size_t pointCount = std::max(
-                owner_.componentGrid().GetTotalPointNumber(), owner_.componentGrid().getMeshPoints().size());
+            const std::size_t pointCount = std::max(owner_.componentGrid().GetTotalPointNumber(), owner_.componentGrid().getMeshPoints().size());
             owner_.ddmcPointEligible_.assign(pointCount, 0);
             owner_.ddmcPointDiffusionCoefficient_.assign(pointCount, 0.0);
             owner_.ddmcPointSigmaDiffusion_.assign(pointCount, 0.0);
             owner_.ddmcPointSigmaParticleGate_.assign(pointCount, 0.0);
             owner_.ddmcPointGroupCutoff_.assign(pointCount, 0);
             owner_.ddmcPointVelocity_.assign(pointCount, PointT{});
-            owner_.ddmcPointCellID_.assign(
-                pointCount, std::numeric_limits<std::size_t>::max());
+            owner_.ddmcPointCellID_.assign(pointCount, std::numeric_limits<std::size_t>::max());
 
             for(std::size_t i = 0; i < Ncells; ++i)
             {
@@ -98,7 +95,7 @@ public:
                 const CellT &cell = owner_.cells_[i];
                 data.eligibilityReason = ddmc::EligibilityReason::InvalidGeometry;
                 double scatOp = owner_.scatteringOpacities_[i];
-                if(!std::isfinite(scatOp) || scatOp < 0.0)
+                if(not std::isfinite(scatOp) or scatOp < 0.0)
                 {
                     StormError eo("RadiationIMC DDMC precompute received an invalid scattering opacity");
                     eo.addEntry("Cell index", i);
@@ -107,17 +104,15 @@ public:
                 }
                 double volume = owner_.componentGrid().GetVolume(i);
                 double surfaceArea = owner_.computeCellSurfaceArea(i);
-                if(volume <= 0.0 || surfaceArea <= 0.0)
+                if(volume <= 0.0 or surfaceArea <= 0.0)
                 {
                     continue;
                 }
                 double meanChordLength = 4.0 * volume / surfaceArea;
 
-                if(owner_.parameters_.ddmcUseMultigroupPGRW &&
-                   owner_.parameters_.withMultigroupOpacity)
+                if(owner_.parameters_.ddmcUseMultigroupPGRW and owner_.parameters_.withMultigroupOpacity)
                 {
-                    GroupArray energyCenters =
-                        owner_.opacity_->getEnergyCenters(owner_.energyBoundaries_);
+                    GroupArray energyCenters = owner_.opacity_->getEnergyCenters(owner_.energyBoundaries_);
                     double kT = units::k_boltz * cell.temperature;
                     if(kT <= 0.0)
                     {
@@ -134,10 +129,8 @@ public:
                     for(std::size_t g = 0; g < NumGroups; ++g)
                     {
                         double sigA_g = owner_.opacity_->CalcAbsorptionOpacity(cell, energyCenters[g]);
-                        double scatOp_g = owner_.opacity_->CalcScatteringOpacity(
-                            cell, energyCenters[g]);
-                        if(!std::isfinite(sigA_g) || sigA_g < 0.0 ||
-                           !std::isfinite(scatOp_g) || scatOp_g < 0.0)
+                        double scatOp_g = owner_.opacity_->CalcScatteringOpacity(cell, energyCenters[g]);
+                        if(not std::isfinite(sigA_g) or sigA_g < 0.0 or not std::isfinite(scatOp_g) or scatOp_g < 0.0)
                         {
                             StormError eo("RadiationIMC DDMC precompute received an invalid multigroup opacity");
                             eo.addEntry("Cell index", i);
@@ -147,10 +140,9 @@ public:
                             throw eo;
                         }
                         double sigT_g = sigA_g + scatOp_g;
-                        double Bg = ddmc::PlanckBandMass(
-                            owner_.energyBoundaries_, kT, g, g + 1);
+                        double Bg = ddmc::PlanckBandMass(owner_.energyBoundaries_, kT, g, g + 1);
                         totalSigABg += sigA_g * Bg;
-                        if(!foundNonDiffusive && sigT_g * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth)
+                        if(not foundNonDiffusive and sigT_g * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth)
                         {
                             cutoff = g + 1;
                             totalBgDiff += Bg;
@@ -166,10 +158,9 @@ public:
                             foundNonDiffusive = true;
                         }
                     }
-                    if(cutoff > 0 && totalBgDiff > 0.0)
+                    if(cutoff > 0 and totalBgDiff > 0.0)
                     {
-                        data.groupCutoff = std::min(
-                            cutoff, owner_.parameters_.ddmcMaxGroupCutoff);
+                        data.groupCutoff = std::min(cutoff, owner_.parameters_.ddmcMaxGroupCutoff);
                         data.sigmaA = sumBgSigADiff / totalBgDiff;
                         data.sigmaT = sumBgSigTDiff / totalBgDiff;
                         data.sigmaEnergyAbs = data.sigmaA;
@@ -177,18 +168,11 @@ public:
                         data.sigmaDiffusion = data.sigmaT;
                         data.sigmaParticleGate = data.sigmaT;
                         data.sigmaGroupExit = data.sigmaT;
-                        data.diffusionCoefficient =
-                            (sumBgOverSigTDiff > 0.0)
-                            ? (units::clight / 3.0) *
-                                sumBgOverSigTDiff / totalBgDiff
-                            : 0.0;
-                        data.gamma = totalSigABg > 0.0
-                            ? sumBgSigADiff / totalSigABg : 1.0;
-                    data.eligible =
-                            data.sigmaParticleGate > 0.0 &&
-                            data.sigmaParticleGate * meanChordLength >=
-                                owner_.parameters_.ddmcMinCellOpticalDepth &&
-                            data.diffusionCoefficient > 0.0;
+                        data.diffusionCoefficient = (sumBgOverSigTDiff > 0.0)? (units::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff : 0.0;
+                        data.gamma = (totalSigABg > 0.0)? sumBgSigADiff / totalSigABg : 1.0;
+                        data.eligible = data.sigmaParticleGate > 0.0 and
+                                        data.sigmaParticleGate * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth and
+                                        data.diffusionCoefficient > 0.0;
                     }
                 }
                 else
@@ -200,18 +184,14 @@ public:
                     data.sigmaDiffusion = data.sigmaT;
                     data.sigmaParticleGate = data.sigmaT;
                     data.sigmaGroupExit = data.sigmaT;
-                    data.diffusionCoefficient = (data.sigmaDiffusion > 0.0)
-                        ? units::clight / (3.0 * data.sigmaDiffusion) : 0.0;
+                    data.diffusionCoefficient = (data.sigmaDiffusion > 0.0)? units::clight / (3.0 * data.sigmaDiffusion) : 0.0;
                     data.gamma = 1.0;
-                    data.eligible = (data.sigmaParticleGate * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth
-                                     && data.diffusionCoefficient > 0.0);
+                    data.eligible = (data.sigmaParticleGate * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth and data.diffusionCoefficient > 0.0);
                 }
 
                 if(!data.eligible)
                 {
-                    data.eligibilityReason = data.diffusionCoefficient > 0.0
-                        ? ddmc::EligibilityReason::OpticallyThin
-                        : ddmc::EligibilityReason::NoDiffusionCoefficient;
+                    data.eligibilityReason = (data.diffusionCoefficient > 0.0)? ddmc::EligibilityReason::OpticallyThin : ddmc::EligibilityReason::NoDiffusionCoefficient;
                 }
 
                 // External-face exclusions are local properties and must be applied
@@ -222,15 +202,11 @@ public:
                 {
                     for(std::size_t faceIdx : owner_.componentGrid().GetCellFaces(i))
                     {
-                        const std::pair<std::size_t, std::size_t> &neighbors =
-                            owner_.componentGrid().GetFaceNeighbors(faceIdx);
-                        std::size_t const next = (neighbors.first == i)
-                            ? neighbors.second : neighbors.first;
+                        const std::pair<std::size_t, std::size_t> &neighbors = owner_.componentGrid().GetFaceNeighbors(faceIdx);
+                        std::size_t const next = (neighbors.first == i)? neighbors.second : neighbors.first;
                         if(owner_.componentGrid().IsPointOutsideBox(next))
                         {
-                            DDMCBoundaryFaceBehavior const behavior =
-                                owner_.componentBoundary()->getDDMCBoundaryFaceBehavior(
-                                    faceIdx, i, next);
+                            DDMCBoundaryFaceBehavior const behavior = owner_.componentBoundary()->getDDMCBoundaryFaceBehavior(faceIdx, i, next);
                             if(behavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
                             {
                                 ++data.rigidBoundaryFaceCount;
@@ -239,15 +215,13 @@ public:
                             {
                                 ++data.unsupportedBoundaryFaceCount;
                                 ++owner_.ddmcUnsupportedBoundaryFaceCount_;
-                                if(data.firstUnsupportedBoundaryFace ==
-                                   std::numeric_limits<std::size_t>::max())
+                                if(data.firstUnsupportedBoundaryFace == std::numeric_limits<std::size_t>::max())
                                 {
                                     data.firstUnsupportedBoundaryFace = faceIdx;
                                 }
                                 data.boundaryExcluded = true;
                                 data.eligible = false;
-                                data.eligibilityReason =
-                                    ddmc::EligibilityReason::BoundaryExcluded;
+                                data.eligibilityReason = ddmc::EligibilityReason::BoundaryExcluded;
                             }
                         }
                     }
@@ -258,8 +232,7 @@ public:
                 owner_.ddmcPointSigmaDiffusion_[i] = data.sigmaDiffusion;
                 owner_.ddmcPointSigmaParticleGate_[i] = data.sigmaParticleGate;
                 owner_.ddmcPointGroupCutoff_[i] = data.groupCutoff;
-                owner_.ddmcPointCellID_[i] = radiation_imc_detail::ddmcStableCellID(
-                    owner_.componentGrid(), i, cell);
+                owner_.ddmcPointCellID_[i] = radiation_imc_detail::ddmcStableCellID(owner_.componentGrid(), i, cell);
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
                     owner_.ddmcPointVelocity_[i] = cell.velocity;
@@ -268,17 +241,14 @@ public:
 
             if(owner_.postProcessExternalSourceMode_)
             {
-                if(owner_.postProcessExternalSourceLocalCellIndices_.size() !=
-                   owner_.postProcessExternalSources_.size())
+                if(owner_.postProcessExternalSourceLocalCellIndices_.size() != owner_.postProcessExternalSources_.size())
                 {
-                    throw StormError(
-                        "DDMC external source-to-cell map has inconsistent size");
+                    throw StormError("DDMC external source-to-cell map has inconsistent size");
                 }
                 for(std::size_t i = 0; i < Ncells; ++i)
                 {
                     DDMCCellData &data = owner_.ddmcCellData_[i];
-                    std::size_t const cellID = radiation_imc_detail::ddmcStableCellID(
-                        owner_.componentGrid(), i, owner_.cells_[i]);
+                    std::size_t const cellID = radiation_imc_detail::ddmcStableCellID(owner_.componentGrid(), i, owner_.cells_[i]);
                     if(owner_.postProcessExternalSourceInteriorCellIDs_.count(cellID))
                     {
                         data.externalSourceInteriorExcluded = true;
@@ -287,14 +257,10 @@ public:
                         ++owner_.ddmcExternalSourceInteriorExcludedCellCount_;
                     }
                 }
-                for(std::size_t sourceIndex = 0;
-                    sourceIndex < owner_.postProcessExternalSources_.size();
-                    ++sourceIndex)
+                for(std::size_t sourceIndex = 0; sourceIndex < owner_.postProcessExternalSources_.size(); sourceIndex++)
                 {
-                    PostProcessExternalSource const &source =
-                        owner_.postProcessExternalSources_[sourceIndex];
-                    std::size_t const i =
-                        owner_.postProcessExternalSourceLocalCellIndices_[sourceIndex];
+                    PostProcessExternalSource const &source = owner_.postProcessExternalSources_[sourceIndex];
+                    std::size_t const i = owner_.postProcessExternalSourceLocalCellIndices_[sourceIndex];
                     if(i >= Ncells)
                     {
                         throw StormError("DDMC external source-to-cell map is stale");
@@ -302,23 +268,13 @@ public:
                     DDMCCellData &data = owner_.ddmcCellData_[i];
                     ++data.externalSourceBoundaryFaceCount;
                     ++owner_.ddmcExternalSourceCandidateFaceCount_;
-                    PointT const normal = source.outwardNormal /
-                        std::max(fastabs(source.outwardNormal),
-                                 std::numeric_limits<double>::min());
-                    double const faceDistance = std::abs(ScalarProd(
-                        owner_.componentGrid().FaceCM(source.faceIndex) -
-                            owner_.componentGrid().GetMeshPoint(i), normal));
+                    PointT const normal = source.outwardNormal / std::max(fastabs(source.outwardNormal), std::numeric_limits<double>::min());
+                    double const faceDistance = std::abs(ScalarProd(owner_.componentGrid().FaceCM(source.faceIndex) - owner_.componentGrid().GetMeshPoint(i), normal));
                     double const faceTau = data.sigmaDiffusion * faceDistance;
-                    double const diagnosticFaceTau =
-                        (faceTau >= 0.0 && std::isfinite(faceTau)) ? faceTau : 0.0;
-                    data.minExternalSourceFaceOpticalDepth = std::min(
-                        data.minExternalSourceFaceOpticalDepth, diagnosticFaceTau);
-                    owner_.ddmcExternalSourceMinimumFaceOpticalDepth_ = std::min(
-                        owner_.ddmcExternalSourceMinimumFaceOpticalDepth_,
-                        diagnosticFaceTau);
-                    if(!(faceTau >=
-                         owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth) ||
-                       !std::isfinite(faceTau))
+                    double const diagnosticFaceTau = (faceTau >= 0.0 && std::isfinite(faceTau)) ? faceTau : 0.0;
+                    data.minExternalSourceFaceOpticalDepth = std::min(data.minExternalSourceFaceOpticalDepth, diagnosticFaceTau);
+                    owner_.ddmcExternalSourceMinimumFaceOpticalDepth_ = std::min(owner_.ddmcExternalSourceMinimumFaceOpticalDepth_, diagnosticFaceTau);
+                    if(not (faceTau >= owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth) or not std::isfinite(faceTau))
                     {
                         data.externalSourceFaceOpticalDepthExcluded = true;
                         data.eligible = false;
@@ -327,10 +283,9 @@ public:
                 }
                 for(DDMCCellData const &data : owner_.ddmcCellData_)
                 {
-                    if(data.externalSourceBoundaryFaceCount > 0 && !data.eligible)
+                    if(data.externalSourceBoundaryFaceCount > 0 and not data.eligible)
                     {
-                        owner_.ddmcExternalSourceExplicitFallbackFaceCount_ +=
-                            data.externalSourceBoundaryFaceCount;
+                        owner_.ddmcExternalSourceExplicitFallbackFaceCount_ += data.externalSourceBoundaryFaceCount;
                     }
                 }
             }
@@ -1913,8 +1868,7 @@ public:
                     movingFactor = ddmc::MovingFactor(mu, betaNormal);
                     if(std::isfinite(movingFactor))
                     {
-                        owner_.ddmcMovingInterfaceMaxFactor_ = std::max(
-                            owner_.ddmcMovingInterfaceMaxFactor_, movingFactor);
+                        owner_.ddmcMovingInterfaceMaxFactor_ = std::max(owner_.ddmcMovingInterfaceMaxFactor_, movingFactor);
                     }
                     if(!(movingFactor > 0.0) ||
                        !std::isfinite(movingFactor) ||
@@ -1928,30 +1882,22 @@ public:
                 }
             }
 
-            double const targetWeight =
-                owner_.parameters_.ddmcInterfaceTargetWeightRatio *
-                std::max(std::abs(particle.weight),
-                         std::numeric_limits<double>::min());
+            double const targetWeight = owner_.parameters_.ddmcInterfaceTargetWeightRatio * std::max(std::abs(particle.weight), std::numeric_limits<double>::min());
             std::size_t requiredSplitCount = 1;
             if(targetWeight > 0.0)
             {
-                requiredSplitCount = static_cast<std::size_t>(std::ceil(
-                    std::abs(faceComoving.weight * movingFactor) / targetWeight));
+                requiredSplitCount = static_cast<std::size_t>(std::ceil(std::abs(faceComoving.weight * movingFactor) / targetWeight));
                 requiredSplitCount = std::max<std::size_t>(1, requiredSplitCount);
             }
-            if(requiredSplitCount > std::max<std::size_t>(
-                   1, owner_.parameters_.ddmcMaxInterfaceSplits))
+            if(requiredSplitCount > std::max<std::size_t>(1, owner_.parameters_.ddmcMaxInterfaceSplits))
             {
                 particle.radiationState.bypassCellID = targetID;
                 return bypassMovingInterface();
             }
 
-            double const targetOpacity =
-                owner_.ddmcPointSigmaDiffusion_[targetCellIndex];
-            double const targetDistance = std::abs(ScalarProd(
-                targetCenter - owner_.componentGrid().FaceCM(faceIndex), normal));
-            double const admission = ddmc::StaticAdmissionProbability(
-                mu, targetOpacity, targetDistance);
+            double const targetOpacity = owner_.ddmcPointSigmaDiffusion_[targetCellIndex];
+            double const targetDistance = std::abs(ScalarProd(targetCenter - owner_.componentGrid().FaceCM(faceIndex), normal));
+            double const admission = ddmc::StaticAdmissionProbability(mu, targetOpacity, targetDistance);
             owner_.recordDDMCDiagnosticEvent(
                 DDMCDiagnosticEventKind::IMCIncident, sourceCellIndex,
                 targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
@@ -1984,8 +1930,7 @@ public:
                     {
                         CellT faceCell = owner_.cells_[sourceCellIndex];
                         faceCell.velocity = faceVelocity;
-                        radiation_imc_detail::lorentzTransformToLab<PointT>(
-                            faceComoving, faceCell);
+                        radiation_imc_detail::lorentzTransformToLab<PointT>(faceComoving, faceCell);
                     }
                 }
                 particle.velocity = faceComoving.velocity;

@@ -361,12 +361,72 @@ public:
                 }
             }
 
-            if(particle.radiationState.isDDMC() ||
+            if(owner_.SharedDDMCKernelEligible() ||
+               particle.radiationState.isDDMC() ||
                (owner_.parameters_.withDDMC &&
                 cellIndex < owner_.ddmcCellData_.size() &&
                 owner_.ddmcCellData_[cellIndex].eligible))
             {
-                if(owner_.tryDDMCStep(particle, functionality))
+                const bool sharedDDMC =
+                    owner_.SharedDDMCKernelEligible();
+                if(sharedDDMC)
+                {
+                    ddmc::ColdState<PointT> cold;
+                    cold.pendingFlux =
+                        particle.radiationState.pendingFlux;
+                    const ddmc::AdvanceResult<PointT> result =
+                        ddmc::AdvanceDDMC(
+                            particle, cold,
+                            owner_.GetHostTransportViews());
+                    particle.radiationState.pendingFlux =
+                        cold.pendingFlux;
+                    if(result.error != ddmc::AdvanceError::None)
+                    {
+                        StormError eo(
+                            "RadiationIMC shared DDMC transport failed");
+                        eo.addEntry("Cell index", particle.cellIndex);
+                        eo.addEntry(
+                            "DDMC error",
+                            static_cast<int>(result.error));
+                        throw eo;
+                    }
+                    if(result.taken)
+                    {
+                        ++owner_.ddmcStepCount_;
+                        if(result.event == ddmc::AdvanceEvent::Census)
+                            ++owner_.ddmcCensusCount_;
+                        else if(result.event ==
+                                ddmc::AdvanceEvent::DDMCLeak)
+                        {
+                            ++owner_.ddmcLeakCount_;
+                            ++owner_.ddmcResidentLeakCount_;
+                            if(result.remotePendingFlux)
+                                ++owner_.ddmcRemoteResidentLeakCount_;
+                        }
+                        else if(result.event ==
+                                ddmc::AdvanceEvent::IMCLeak)
+                        {
+                            ++owner_.ddmcLeakCount_;
+                            ++owner_.ddmcTransportLeakCount_;
+                        }
+                        return result.step;
+                    }
+                    const gpu::TransportResult imcResult =
+                        transport::AdvanceIMC(
+                            particle, owner_.GetHostTransportViews());
+                    if(imcResult.error != gpu::TransportError::None)
+                    {
+                        StormError eo(
+                            "RadiationIMC shared DDMC/IMC transport failed");
+                        eo.addEntry("Cell index", particle.cellIndex);
+                        eo.addEntry(
+                            "IMC transport error",
+                            static_cast<int>(imcResult.error));
+                        throw eo;
+                    }
+                    return imcResult.step;
+                }
+                else if(owner_.tryDDMCStep(particle, functionality))
                 {
                     return functionality;
                 }
@@ -815,7 +875,14 @@ public:
                 owner_.pendingRadiationEnergy_,
                 owner_.pendingGroupRadiationEnergy_,
                 owner_.pendingMomentum_,
-                owner_.rwStepCount_);
+                owner_.ddmcFluxRhsIntegrated_,
+                owner_.rwStepCount_,
+                owner_.ddmcStepCount_,
+                owner_.ddmcLeakCount_,
+                owner_.ddmcResidentLeakCount_,
+                owner_.ddmcTransportLeakCount_,
+                owner_.ddmcRemoteResidentLeakCount_,
+                owner_.ddmcCensusCount_);
             owner_.applyTransportTallies();
             double const tallyDt = owner_.parameters_.postProcess.enabled
                 ? owner_.parameters_.postProcess.transportTime : fullDt;

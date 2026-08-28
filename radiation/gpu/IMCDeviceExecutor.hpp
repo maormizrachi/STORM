@@ -29,8 +29,24 @@ public:
     // no-op, keeping the lifecycle process independent of Kokkos headers.
     void prepareStep()
     {
+        const bool ddmcKernelEligible = this->SharedDDMCKernelEligible();
+        if(ddmcKernelEligible)
+        {
+            ddmcSnapshot_.Build(
+                owner_.ddmcCellData_, owner_.componentGrid(),
+                owner_.parameters_.ddmcMinParticleOpticalDepth);
+        }
+        else
+        {
+            ddmcSnapshot_.enabled = false;
+            ddmcSnapshot_.fluxRhs.clear();
+        }
 #ifdef STORM_WITH_GPU
-        gpuTransportEnabled_ = owner_.GreyKernelEligible() or owner_.SharedFullIMCKernelEligible();
+        const bool ddmcDeviceEligible =
+            ddmcKernelEligible && owner_.parameters_.ddmcGpuEnable;
+        gpuTransportEnabled_ = owner_.GreyKernelEligible() or
+                               owner_.SharedFullIMCKernelEligible() or
+                               ddmcDeviceEligible;
         if(!gpuTransportEnabled_)
         {
             return;
@@ -62,6 +78,10 @@ public:
             owner_.planckOpacities_,
             owner_.scatteringOpacities_,
             owner_.factorFleck_);
+        if(ddmcDeviceEligible)
+            gpuData_->UploadDDMC(ddmcSnapshot_);
+        else
+            gpuData_->DisableDDMC();
         if(owner_.parameters_.withHydro)
         {
             gpuData_->UploadHydro(owner_.transportCellVelocities_);
@@ -104,21 +124,38 @@ public:
                     std::vector<double> &radiation,
                     std::vector<double> &groupRadiation,
                     std::vector<PointT> &momentum,
-                    std::size_t &randomWalkSteps)
+                    std::vector<PointT> &ddmcFluxRhs,
+                    std::size_t &randomWalkSteps,
+                    std::size_t &ddmcSteps,
+                    std::size_t &ddmcLeaks,
+                    std::size_t &ddmcResidentLeaks,
+                    std::size_t &ddmcTransportLeaks,
+                    std::size_t &ddmcRemoteResidentLeaks,
+                    std::size_t &ddmcCensus)
     {
 #ifdef STORM_WITH_GPU
         if(gpuTransportEnabled_)
         {
             gpuData_->AddTallies(
                 material, radiation, groupRadiation, momentum,
-                randomWalkSteps);
+                ddmcFluxRhs,
+                randomWalkSteps, ddmcSteps, ddmcLeaks,
+                ddmcResidentLeaks, ddmcTransportLeaks,
+                ddmcRemoteResidentLeaks, ddmcCensus);
         }
 #else
         (void) material;
         (void) radiation;
         (void) groupRadiation;
         (void) momentum;
+        (void) ddmcFluxRhs;
         (void) randomWalkSteps;
+        (void) ddmcSteps;
+        (void) ddmcLeaks;
+        (void) ddmcResidentLeaks;
+        (void) ddmcTransportLeaks;
+        (void) ddmcRemoteResidentLeaks;
+        (void) ddmcCensus;
 #endif
     }
 
@@ -198,6 +235,9 @@ public:
         result.pendingMaterialEnergy = owner_.pendingMaterialEnergy_.data();
         result.pendingRadiationEnergy = owner_.pendingRadiationEnergy_.data();
         result.pendingMomentum = owner_.pendingMomentum_.data();
+        result.ddmc = ddmcSnapshot_.View();
+        result.ddmc.fluxRhs =
+            owner_.ddmcFluxRhsIntegrated_.data();
         result.energyBoundaries = owner_.energyBoundaries_.data();
         result.spectralAbsorptionScale =
             owner_.spectralAbsorptionScale_.data();
@@ -276,7 +316,25 @@ public:
                !owner_.polarizationEnabled();
     }
 
+    bool SharedDDMCKernelEligible() const
+    {
+#if defined(STORM_DEBUG) || defined(STORM_WITH_TRACING_HISTORY)
+        return false;
+#else
+        return owner_.parameters_.withDDMC &&
+               !owner_.parameters_.withMultigroupOpacity &&
+               !owner_.parameters_.withCompton &&
+               !owner_.parameters_.withHydro &&
+               !owner_.parameters_.withRandomWalk &&
+               !owner_.parameters_.postProcess.enabled &&
+               !owner_.observer_ &&
+               !owner_.polarizationEnabled() &&
+               !owner_.parameters_.ddmcInterfaceDiagnostics;
+#endif
+    }
+
 private:
+    ddmc::HostSnapshot<PointT> ddmcSnapshot_;
 #ifdef STORM_WITH_GPU
     std::unique_ptr<gpu::KokkosRuntime> gpuRuntime_;
     std::unique_ptr<gpu::GreyIMCData> gpuData_;

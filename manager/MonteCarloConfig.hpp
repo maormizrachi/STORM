@@ -58,12 +58,15 @@ public:
     // Unused by the resident pool (the whole active set is launched). Kept so
     // callers can still cap a wave later without an ABI break.
     size_t gpuLaunchSize              = 0;
-    // Do not launch a wave while the device pool is below this size if host
-    // arrivals are still arriving. 0 disables the hold.
-    size_t gpuMinLaunchSize           = 0;
+    // Batch small arrival bursts instead of launching mostly empty GPU waves.
+    // 0 disables the hold.
+    size_t gpuMinLaunchSize           = 1024;
     // Force a wave after this many consecutive holds, even if the pool is
-    // still small. 0 means hold until arrivals stop (empty Collect).
-    size_t gpuHoldMaxSkips            = 0;
+    // still small. 0 means that a sub-threshold pool remains held.
+    size_t gpuHoldMaxSkips            = 64;
+    // Rank-hop terminals stay on device until this many are queued (same
+    // default as gpuMinLaunchSize) or gpuHoldMaxSkips waves elapse. Census,
+    // REMOVE, and HostOnly boundaries still copy back every wave.
 #endif
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;

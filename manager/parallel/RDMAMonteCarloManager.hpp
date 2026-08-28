@@ -365,6 +365,9 @@ private:
     bool TransportResidentOnDevice(std::vector<MCParticle> &arrivals,
                                    MonteCarloStepFinalData &stepData,
                                    bool &isEmpty);
+
+    void ApplyDeviceCompletions(gpu::CompletedBatch &completed,
+                                MonteCarloStepFinalData &stepData);
 #endif // STORM_WITH_GPU
 
     void PutSelfParticles(std::vector<MCParticle> &&particles);

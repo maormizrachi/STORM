@@ -284,7 +284,8 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
             std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
         arrivals.clear();
 
-        if(this->gpuTransportExecutor->ActiveCount() == 0)
+        if(this->gpuTransportExecutor->ActiveCount() == 0 and
+           this->gpuTransportExecutor->PendingRemoteCount() == 0)
         {
             this->gpuHoldSkips = 0;
             return true;
@@ -294,14 +295,20 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
         const std::size_t activeCount = this->gpuTransportExecutor->ActiveCount();
         const std::size_t minLaunch = this->config.gpuMinLaunchSize;
         const bool fatEnough = minLaunch == 0 or activeCount >= minLaunch;
-        const bool cannotGrow = incoming == 0;
         const bool heldTooLong =
             this->config.gpuHoldMaxSkips > 0 and
             this->gpuHoldSkips >= this->config.gpuHoldMaxSkips;
-        if(not fatEnough and not cannotGrow and not heldTooLong)
+        const bool mustDrainRemotes =
+            activeCount == 0 and
+            this->gpuTransportExecutor->PendingRemoteCount() > 0;
+        if(not fatEnough and not heldTooLong and not mustDrainRemotes)
         {
             ++this->gpuHoldSkips;
             ++this->gpuHoldCount;
+            gpu::CompletedBatch held = this->gpuTransportExecutor->FlushPendingRemotes(
+                minLaunch, this->config.gpuHoldMaxSkips, false);
+            this->gpuCopyBackSeconds += held.copyBackSeconds;
+            this->ApplyDeviceCompletions(held, stepData);
             return true;
         }
         this->gpuHoldSkips = 0;
@@ -311,49 +318,65 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
             [this]()
             {
                 this->PumpRMAProgress();
-            });
+            },
+            minLaunch,
+            this->config.gpuHoldMaxSkips);
         this->gpuDeviceSeconds += completed.deviceSeconds;
         this->gpuCopyBackSeconds += completed.copyBackSeconds;
         this->gpuProgressSeconds += completed.progressSeconds;
         this->gpuLaunchCount += completed.launchCount;
         this->gpuParticleCount += completed.launchedParticles;
         this->gpuPhysicsStepCount += completed.physicsSteps;
-
-        const TransportStepContext context;
-        std::vector<MCParticle> bounced;
-        const std::chrono::steady_clock::time_point hostEventStart = std::chrono::steady_clock::now();
-        for(size_t i = 0; i < completed.particles.size(); ++i)
-        {
-            const gpu::CompletedTransport &transported = completed.particles[i];
-            MCParticle particle;
-            gpu::UnpackParticle(transported.particle, transported.cold, particle);
-
-            if(transported.result.error != gpu::TransportError::None)
-            {
-                STORMError eo("RDMAMonteCarloManager: device grey transport failed");
-                eo.addEntry("Rank", this->rank_world);
-                eo.addEntry("Particle", particle);
-                eo.addEntry("Cell index", particle.cellIndex);
-                eo.addEntry("Transport error", static_cast<int>(transported.result.error));
-                throw eo;
-            }
-
-            if(transported.result.step.change == MonteCarloParticleStatus::NO_CELL_MOVE or
-               this->ApplyTransportEvent(particle, transported.result.step, this->rank_world, 0,
-                                         stepData, context) == TransportEventAction::Continue)
-            {
-                bounced.push_back(std::move(particle));
-            }
-        }
-        this->gpuHostEventSeconds +=
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - hostEventStart).count();
-
-        if(not bounced.empty())
-        {
-            this->gpuIngestCount += bounced.size();
-            this->gpuTransportExecutor->Ingest(bounced);
-        }
+        this->ApplyDeviceCompletions(completed, stepData);
         return true;
+    }
+}
+
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(
+    gpu::CompletedBatch &completed,
+    MonteCarloStepFinalData &stepData)
+{
+    if(completed.particles.empty())
+    {
+        return;
+    }
+
+    const TransportStepContext context;
+    std::vector<MCParticle> bounced;
+    const std::chrono::steady_clock::time_point hostEventStart =
+        std::chrono::steady_clock::now();
+    for(size_t i = 0; i < completed.particles.size(); ++i)
+    {
+        const gpu::CompletedTransport &transported = completed.particles[i];
+        MCParticle particle;
+        gpu::UnpackParticle(transported.particle, transported.cold, particle);
+
+        if(transported.result.error != gpu::TransportError::None)
+        {
+            STORMError eo("RDMAMonteCarloManager: device grey transport failed");
+            eo.addEntry("Rank", this->rank_world);
+            eo.addEntry("Particle", particle);
+            eo.addEntry("Cell index", particle.cellIndex);
+            eo.addEntry("Transport error", static_cast<int>(transported.result.error));
+            throw eo;
+        }
+
+        if(transported.result.step.change == MonteCarloParticleStatus::NO_CELL_MOVE or
+           this->ApplyTransportEvent(particle, transported.result.step, this->rank_world, 0,
+                                     stepData, context) == TransportEventAction::Continue)
+        {
+            bounced.push_back(std::move(particle));
+        }
+    }
+    this->gpuHostEventSeconds +=
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - hostEventStart).count();
+
+    if(not bounced.empty())
+    {
+        this->gpuIngestCount += bounced.size();
+        this->gpuTransportExecutor->Ingest(bounced);
     }
 }
 
@@ -802,7 +825,7 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
             completedNeighborSweep = true;
             const bool deviceBusy =
                 this->gpuTransportExecutor and
-                this->gpuTransportExecutor->ActiveCount() > 0;
+                this->gpuTransportExecutor->DeviceBusy();
             isEmpty = not deviceBusy;
         }
     }

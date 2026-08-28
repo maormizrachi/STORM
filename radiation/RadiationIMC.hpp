@@ -506,6 +506,7 @@ public:
 
     bool GreyKernelEligible() const;
     bool SharedRandomWalkKernelEligible() const;
+    bool SharedDDMCKernelEligible() const;
     gpu::GreyIMCViews<PointT> GetHostTransportViews();
 
     // Set while the differential harness replays a step through the legacy

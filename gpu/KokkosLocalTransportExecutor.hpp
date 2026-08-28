@@ -52,6 +52,16 @@ struct CompletedBatch
     std::size_t launchedParticles = 0;
 };
 
+struct WaveCounters
+{
+    std::size_t finished = 0;
+    std::size_t remote = 0;
+    std::size_t survivor = 0;
+    std::size_t physicsSteps = 0;
+};
+static_assert(std::is_trivially_copyable<WaveCounters>::value,
+              "WaveCounters must be safe for device-host copies");
+
 class KokkosLocalTransportExecutor
 {
 #if defined(KOKKOS_ENABLE_HIP)
@@ -69,20 +79,32 @@ public:
           nextPackets_("storm_transport_next_packets", 0),
           coldPackets_("storm_transport_cold_packets", 0),
           nextColdPackets_("storm_transport_next_cold_packets", 0),
-          results_("storm_transport_results", 0),
           completedTransports_("storm_transport_completed", 0),
+          pendingRemotes_("storm_transport_pending_remotes", 0),
           hostCompletedTransports_("storm_transport_host_completed", 0),
-          terminalCount_("storm_transport_terminal_count")
+          waveCounters_("storm_transport_wave_counters")
     {}
 
     void Reset()
     {
         this->activeCount_ = 0;
+        this->pendingRemoteCount_ = 0;
+        this->remoteHoldSkips_ = 0;
     }
 
     std::size_t ActiveCount() const
     {
         return this->activeCount_;
+    }
+
+    std::size_t PendingRemoteCount() const
+    {
+        return this->pendingRemoteCount_;
+    }
+
+    bool DeviceBusy() const
+    {
+        return this->activeCount_ > 0 or this->pendingRemoteCount_ > 0;
     }
 
     template<typename PointT>
@@ -106,9 +128,10 @@ public:
         EnsureCapacity(this->nextPackets_, required);
         EnsureCapacity(this->coldPackets_, required);
         EnsureCapacity(this->nextColdPackets_, required);
-        EnsureCapacity(this->results_, required);
-        EnsureCapacity(this->completedTransports_, required);
-        EnsureCapacity(this->hostCompletedTransports_, required);
+        EnsureCapacity(this->completedTransports_, incoming);
+        EnsureCapacity(this->pendingRemotes_, this->pendingRemoteCount_ + incoming);
+        EnsureCapacity(this->hostCompletedTransports_,
+                       std::max(incoming, this->pendingRemoteCount_));
 
         for(std::size_t i = 0; i < incoming; ++i)
         {
@@ -124,9 +147,28 @@ public:
     template<typename ProgressFunction>
     CompletedBatch AdvanceWave(const GreyIMCViews<DeviceVec3> &views, ProgressFunction progress)
     {
+        return this->AdvanceWave(views, progress, std::size_t(1), std::size_t(0));
+    }
+
+    CompletedBatch FlushPendingRemotes(const std::size_t minRemoteCopy,
+                                       const std::size_t maxRemoteHolds,
+                                       const bool force)
+    {
+        CompletedBatch completed;
+        this->FlushRemotesIfNeeded(completed, minRemoteCopy, maxRemoteHolds, force);
+        return completed;
+    }
+
+    template<typename ProgressFunction>
+    CompletedBatch AdvanceWave(const GreyIMCViews<DeviceVec3> &views,
+                               ProgressFunction progress,
+                               const std::size_t minRemoteCopy,
+                               const std::size_t maxRemoteHolds)
+    {
         CompletedBatch completed;
         if(this->activeCount_ == 0)
         {
+            this->FlushRemotesIfNeeded(completed, minRemoteCopy, maxRemoteHolds, true);
             return completed;
         }
         if(!Kokkos::is_initialized())
@@ -136,129 +178,115 @@ public:
 
         const std::size_t activeCount = this->activeCount_;
         const std::size_t maximumInnerSteps = this->maximumInnerSteps_;
+        const std::size_t remoteOffset = this->pendingRemoteCount_;
+        EnsureCapacity(this->nextPackets_, activeCount);
+        EnsureCapacity(this->nextColdPackets_, activeCount);
+        EnsureCapacity(this->completedTransports_, activeCount);
+        EnsureCapacity(this->pendingRemotes_, remoteOffset + activeCount);
         auto packets = this->packets_;
         auto nextPackets = this->nextPackets_;
         auto coldPackets = this->coldPackets_;
         auto nextColdPackets = this->nextColdPackets_;
-        auto results = this->results_;
         auto completedTransports = this->completedTransports_;
+        auto pendingRemotes = this->pendingRemotes_;
+        auto waveCounters = this->waveCounters_;
 
         const std::chrono::steady_clock::time_point deviceStart = std::chrono::steady_clock::now();
-        std::size_t physicsSteps = 0;
-        Kokkos::parallel_reduce(
+        Kokkos::deep_copy(this->waveCounters_, WaveCounters{});
+        Kokkos::parallel_for(
             "storm_grey_imc_transport",
             Kokkos::RangePolicy<>(0, activeCount),
-            KOKKOS_LAMBDA(const std::size_t i, std::size_t &localSteps)
+            KOKKOS_LAMBDA(const std::size_t i)
             {
                 DeviceParticle particle = packets(i);
+                DeviceParticleCold cold = coldPackets(i);
                 TransportResult result;
                 std::size_t taken = 0;
                 for(std::size_t step = 0; step < maximumInnerSteps; ++step)
                 {
                     ++taken;
                     ++particle.steps;
-                    const transport::RandomWalkResult randomWalk =
-                        transport::TryAdvanceRandomWalk(particle, views);
-                    if(randomWalk.invalid)
+                    if(!views.ddmc.enabled)
                     {
-                        result.error = TransportError::InvalidOpacity;
-                        break;
-                    }
-                    if(randomWalk.taken)
-                    {
-                        result.step = randomWalk.step;
-                        if(result.step.change ==
-                           ParticleStatus::NO_CELL_MOVE)
+                        const transport::RandomWalkResult randomWalk =
+                            transport::TryAdvanceRandomWalk(particle, views);
+                        if(randomWalk.invalid)
                         {
-                            continue;
+                            result.error = TransportError::InvalidOpacity;
+                            break;
                         }
-                        break;
+                        if(randomWalk.taken)
+                        {
+                            result.step = randomWalk.step;
+                            if(TryKeepPacketOnDevice(particle, result, views))
+                            {
+                                continue;
+                            }
+                            break;
+                        }
                     }
-                    result = transport::AdvanceIMC(particle, views);
-                    if(result.error != TransportError::None)
-                    {
-                        break;
-                    }
-                    if(result.step.change == ParticleStatus::CELL_MOVE and result.step.nextCellIndex < views.grid.cellCount)
-                    {
-                        particle.cellIndex = result.step.nextCellIndex;
-                        const DeviceVec3 &center = views.grid.cellCenters[particle.cellIndex];
-                        constexpr double epsilon = 1.0e-8;
-                        particle.location.x = (1.0 - epsilon) * particle.location.x + epsilon * center.x;
-                        particle.location.y = (1.0 - epsilon) * particle.location.y + epsilon * center.y;
-                        particle.location.z = (1.0 - epsilon) * particle.location.z + epsilon * center.z;
-                        result.step.change = ParticleStatus::NO_CELL_MOVE;
-                        continue;
-                    }
-                    if(result.step.change == ParticleStatus::NO_CELL_MOVE)
+                    result = gpu::AdvanceOne(particle, cold, views);
+                    if(TryKeepPacketOnDevice(particle, result, views))
                     {
                         continue;
                     }
                     break;
                 }
-                packets(i) = particle;
-                results(i) = result;
-                localSteps += taken;
-            },
-            physicsSteps);
+
+                Kokkos::atomic_fetch_add(
+                    &waveCounters().physicsSteps, taken);
+                if(result.error == TransportError::None &&
+                   result.step.change == ParticleStatus::NO_CELL_MOVE)
+                {
+                    const std::size_t survivorIndex =
+                        Kokkos::atomic_fetch_add(
+                            &waveCounters().survivor, std::size_t(1));
+                    nextPackets(survivorIndex) = particle;
+                    nextColdPackets(survivorIndex) = cold;
+                    return;
+                }
+
+                CompletedTransport transport;
+                transport.particle = particle;
+                transport.cold = cold;
+                transport.result = result;
+                if(IsRankHopTerminal(particle, result, views))
+                {
+                    const std::size_t remoteIndex =
+                        remoteOffset +
+                        Kokkos::atomic_fetch_add(
+                            &waveCounters().remote, std::size_t(1));
+                    pendingRemotes(remoteIndex) = transport;
+                }
+                else
+                {
+                    const std::size_t finishedIndex =
+                        Kokkos::atomic_fetch_add(
+                            &waveCounters().finished, std::size_t(1));
+                    completedTransports(finishedIndex) = transport;
+                }
+            });
 
         const std::chrono::steady_clock::time_point progressStart = std::chrono::steady_clock::now();
         progress();
         completed.progressSeconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - progressStart).count();
 
-        std::size_t zeroTerminals = 0;
-        Kokkos::deep_copy(this->terminalCount_, zeroTerminals);
-        Kokkos::parallel_scan(
-            "storm_grey_imc_compact",
-            Kokkos::RangePolicy<>(0, activeCount),
-            KOKKOS_LAMBDA(const std::size_t i, std::size_t &terminalPrefix, const bool final)
-            {
-                const TransportResult result = results(i);
-                const bool terminal =
-                    result.error != TransportError::None ||
-                    result.step.change != ParticleStatus::NO_CELL_MOVE;
-                if(terminal)
-                {
-                    const std::size_t terminalIndex = terminalPrefix++;
-                    if(final)
-                    {
-                        CompletedTransport transport;
-                        transport.particle = packets(i);
-                        transport.cold = coldPackets(i);
-                        transport.result = result;
-                        completedTransports(terminalIndex) = transport;
-                    }
-                }
-                else if(final)
-                {
-                    const std::size_t survivorIndex = i - terminalPrefix;
-                    nextPackets(survivorIndex) = packets(i);
-                    nextColdPackets(survivorIndex) = coldPackets(i);
-                }
-            },
-            this->terminalCount_);
-
-        std::size_t terminalCount = 0;
-        Kokkos::deep_copy(terminalCount, this->terminalCount_);
+        WaveCounters counters;
+        Kokkos::deep_copy(counters, this->waveCounters_);
         completed.deviceSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - deviceStart).count();
         completed.launchCount = 1;
-        completed.physicsSteps = physicsSteps;
+        completed.physicsSteps = counters.physicsSteps;
         completed.launchedParticles = activeCount;
 
-        this->activeCount_ = activeCount - terminalCount;
+        this->activeCount_ = counters.survivor;
+        this->pendingRemoteCount_ = remoteOffset + counters.remote;
         std::swap(this->packets_, this->nextPackets_);
         std::swap(this->coldPackets_, this->nextColdPackets_);
 
-        const std::chrono::steady_clock::time_point copyBackStart = std::chrono::steady_clock::now();
-        completed.particles.resize(terminalCount);
-        if(terminalCount > 0)
-        {
-            Kokkos::deep_copy(Kokkos::subview(this->hostCompletedTransports_, std::pair<std::size_t, std::size_t>(0, terminalCount)),
-                                Kokkos::subview(this->completedTransports_, std::pair<std::size_t, std::size_t>(0, terminalCount)));
-            std::memcpy(completed.particles.data(), this->hostCompletedTransports_.data(), terminalCount * sizeof(CompletedTransport));
-        }
-        completed.copyBackSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - copyBackStart).count();
+        this->CopyFinishedToHost(completed, counters.finished);
+        this->FlushRemotesIfNeeded(
+            completed, minRemoteCopy, maxRemoteHolds, this->activeCount_ == 0);
         return completed;
     }
 
@@ -284,9 +312,9 @@ public:
         this->Ingest(arrivals);
         completed.packSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
 
-        while(this->activeCount_ > 0)
+        while(this->activeCount_ > 0 or this->pendingRemoteCount_ > 0)
         {
-            CompletedBatch wave = this->AdvanceWave(views, progress);
+            CompletedBatch wave = this->AdvanceWave(views, progress, std::size_t(1), std::size_t(0));
             completed.deviceSeconds += wave.deviceSeconds;
             completed.copyBackSeconds += wave.copyBackSeconds;
             completed.progressSeconds += wave.progressSeconds;
@@ -308,18 +336,81 @@ private:
         }
     }
 
+    void CopyDeviceTransports(CompletedBatch &completed,
+                              Kokkos::View<CompletedTransport*> source,
+                              const std::size_t count)
+    {
+        if(count == 0)
+        {
+            return;
+        }
+        const std::size_t offset = completed.particles.size();
+        completed.particles.resize(offset + count);
+        EnsureCapacity(this->hostCompletedTransports_, count);
+        Kokkos::deep_copy(
+            Kokkos::subview(this->hostCompletedTransports_,
+                            std::pair<std::size_t, std::size_t>(0, count)),
+            Kokkos::subview(source, std::pair<std::size_t, std::size_t>(0, count)));
+        std::memcpy(completed.particles.data() + offset,
+                    this->hostCompletedTransports_.data(),
+                    count * sizeof(CompletedTransport));
+    }
+
+    void CopyFinishedToHost(CompletedBatch &completed, const std::size_t finishedCount)
+    {
+        const std::chrono::steady_clock::time_point copyBackStart =
+            std::chrono::steady_clock::now();
+        this->CopyDeviceTransports(
+            completed, this->completedTransports_, finishedCount);
+        completed.copyBackSeconds +=
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - copyBackStart).count();
+    }
+
+    void FlushRemotesIfNeeded(CompletedBatch &completed,
+                              const std::size_t minRemoteCopy,
+                              const std::size_t maxRemoteHolds,
+                              const bool force)
+    {
+        if(this->pendingRemoteCount_ == 0)
+        {
+            this->remoteHoldSkips_ = 0;
+            return;
+        }
+        const bool fatEnough =
+            minRemoteCopy == 0 or this->pendingRemoteCount_ >= minRemoteCopy;
+        const bool heldTooLong =
+            maxRemoteHolds > 0 and this->remoteHoldSkips_ >= maxRemoteHolds;
+        if(not force and not fatEnough and not heldTooLong)
+        {
+            ++this->remoteHoldSkips_;
+            return;
+        }
+        this->remoteHoldSkips_ = 0;
+        const std::chrono::steady_clock::time_point copyBackStart =
+            std::chrono::steady_clock::now();
+        this->CopyDeviceTransports(
+            completed, this->pendingRemotes_, this->pendingRemoteCount_);
+        completed.copyBackSeconds +=
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - copyBackStart).count();
+        this->pendingRemoteCount_ = 0;
+    }
+
     std::size_t maximumInnerSteps_;
     std::size_t activeCount_ = 0;
+    std::size_t pendingRemoteCount_ = 0;
+    std::size_t remoteHoldSkips_ = 0;
     Kokkos::View<DeviceParticle*, PinnedHostSpace> hostPackets_;
     Kokkos::View<DeviceParticleCold*, PinnedHostSpace> hostColdPackets_;
     Kokkos::View<DeviceParticle*> packets_;
     Kokkos::View<DeviceParticle*> nextPackets_;
     Kokkos::View<DeviceParticleCold*> coldPackets_;
     Kokkos::View<DeviceParticleCold*> nextColdPackets_;
-    Kokkos::View<TransportResult*> results_;
     Kokkos::View<CompletedTransport*> completedTransports_;
+    Kokkos::View<CompletedTransport*> pendingRemotes_;
     Kokkos::View<CompletedTransport*, PinnedHostSpace> hostCompletedTransports_;
-    Kokkos::View<std::size_t> terminalCount_;
+    Kokkos::View<WaveCounters> waveCounters_;
 };
 
 } // namespace gpu

@@ -34,6 +34,7 @@ struct RadiationIMCParameters
     double rwMinCellOpticalDepth = 25.0;
     double rwMinParticleOpticalDepth = 5.0;
     bool withDDMC = false;
+    bool ddmcGpuEnable = false;
     double ddmcMinCellOpticalDepth = 15.0;
     double ddmcMinParticleOpticalDepth = 5.0;
     double ddmcExternalSourceMinFaceOpticalDepth = 5.0;
@@ -100,6 +101,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
     }
     if(parameters.withDDMC)
     {
+        os << "\tDDMC GPU transport: " << parameters.ddmcGpuEnable << '\n';
         os << "\tDDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << '\n';
         os << "\tDDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << '\n';
         os << "\tDDMC external-source min face optical depth: "
