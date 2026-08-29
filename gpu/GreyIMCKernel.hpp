@@ -78,8 +78,10 @@ void ApplyDeviceReflect(ParticleT &particle,
     }
 }
 
-// Rank-local CELL_MOVE and reflecting walls stay on the GCD. True terminals
-// are census (DONE), REMOVE, HostOnly domain boundaries, and MPI rank hops.
+// Rank-local CELL_MOVE and reflecting walls stay on the GCD and keep
+// transporting. DONE is a timestep terminal: it leaves the active wave but
+// stays on device until host Comb. REMOVE, HostOnly boundaries, and MPI rank
+// hops still leave the GCD during the loop.
 template<typename ParticleT, typename PointT>
 STORM_GPU_INLINE_FUNCTION
 bool TryKeepPacketOnDevice(ParticleT &particle,
@@ -139,6 +141,15 @@ bool TryKeepPacketOnDevice(ParticleT &particle,
     return false;
 }
 
+template<typename ParticleT>
+STORM_GPU_INLINE_FUNCTION
+bool IsCensusTerminal(const ParticleT &,
+                      const TransportResult &result)
+{
+    return result.error == TransportError::None &&
+           result.step.change == ParticleStatus::DONE;
+}
+
 template<typename ParticleT, typename PointT>
 STORM_GPU_INLINE_FUNCTION
 bool IsRankHopTerminal(const ParticleT &particle,
@@ -181,6 +192,22 @@ STORM_GPU_INLINE_FUNCTION
 TransportResult AdvanceOne(ParticleT &particle, ColdT &cold,
                            const GreyIMCViews<PointT> &views)
 {
+    std::uint8_t &radiationFlags = ddmc::RadiationFlags(particle);
+    const bool packetInDDMC =
+        (radiationFlags & RadiationTransportState<PointT>::DDMCMode) != 0;
+    if(!packetInDDMC && views.randomWalk.enabled)
+    {
+        const transport::RandomWalkResult randomWalk =
+            transport::TryAdvanceRandomWalk(particle, views);
+        if(randomWalk.invalid)
+        {
+            TransportResult result;
+            result.error = TransportError::InvalidOpacity;
+            return result;
+        }
+        if(randomWalk.taken)
+            return TransportResult{randomWalk.step, TransportError::None};
+    }
     const ddmc::AdvanceResult<PointT> ddmcResult =
         ddmc::AdvanceDDMC(particle, cold, views);
     if(ddmcResult.error != ddmc::AdvanceError::None)

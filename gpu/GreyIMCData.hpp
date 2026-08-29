@@ -12,6 +12,7 @@
 
 #include "DeviceParticle.hpp"
 #include "GreyIMCKernel.hpp"
+#include "../types.hpp"
 #include "../radiation/RandomWalk.hpp"
 #include "../radiation/ddmc/DDMCTypes.hpp"
 
@@ -44,12 +45,18 @@ public:
           ddmcSigmaEnergyAbs_("storm_ddmc_sigma_energy_abs", 0),
           ddmcSigmaParticleGate_("storm_ddmc_sigma_particle_gate", 0),
           ddmcTotalLeakRate_("storm_ddmc_total_leak_rate", 0),
+          ddmcGamma_("storm_ddmc_gamma", 0),
+          ddmcVelocityDivergence_("storm_ddmc_velocity_div", 0),
+          ddmcCellTemperature_("storm_ddmc_cell_temperature", 0),
+          ddmcGroupCutoff_("storm_ddmc_group_cutoff", 0),
+          ddmcCellIDs_("storm_ddmc_cell_ids", 0),
           ddmcLeakOffsets_("storm_ddmc_leak_offsets", 0),
           ddmcLeakRates_("storm_ddmc_leak_rates", 0),
           ddmcLeakDDMCRates_("storm_ddmc_leak_ddmc_rates", 0),
           ddmcNextCellIndices_("storm_ddmc_next_cells", 0),
           ddmcFaceKinds_("storm_ddmc_face_kinds", 0),
           ddmcTargetEligible_("storm_ddmc_target_eligible", 0),
+          ddmcTargetGroupCutoff_("storm_ddmc_target_group_cutoff", 0),
           ddmcOutwardNormals_("storm_ddmc_outward_normals", 0),
           ddmcFaceCenters_("storm_ddmc_face_centers", 0),
           ddmcFluxRhs_("storm_ddmc_flux_rhs", 0),
@@ -191,12 +198,18 @@ public:
         Resize(this->ddmcSigmaEnergyAbs_, snapshot.sigmaEnergyAbs.size());
         Resize(this->ddmcSigmaParticleGate_, snapshot.sigmaParticleGate.size());
         Resize(this->ddmcTotalLeakRate_, snapshot.totalLeakRate.size());
+        Resize(this->ddmcGamma_, snapshot.gamma.size());
+        Resize(this->ddmcVelocityDivergence_, snapshot.velocityDivergence.size());
+        Resize(this->ddmcCellTemperature_, snapshot.cellTemperature.size());
+        Resize(this->ddmcGroupCutoff_, snapshot.groupCutoff.size());
+        Resize(this->ddmcCellIDs_, snapshot.cellIDs.size());
         Resize(this->ddmcLeakOffsets_, snapshot.leakOffsets.size());
         Resize(this->ddmcLeakRates_, leakCount);
         Resize(this->ddmcLeakDDMCRates_, leakCount);
         Resize(this->ddmcNextCellIndices_, leakCount);
         Resize(this->ddmcFaceKinds_, leakCount);
         Resize(this->ddmcTargetEligible_, leakCount);
+        Resize(this->ddmcTargetGroupCutoff_, leakCount);
         Resize(this->ddmcOutwardNormals_, leakCount);
         Resize(this->ddmcFaceCenters_, leakCount);
         Resize(this->ddmcFluxRhs_, snapshot.fluxRhs.size());
@@ -212,6 +225,14 @@ public:
                 snapshot.sigmaParticleGate[cellIndex];
             this->ddmcTotalLeakRate_.h_view(cellIndex) =
                 snapshot.totalLeakRate[cellIndex];
+            this->ddmcGamma_.h_view(cellIndex) = snapshot.gamma[cellIndex];
+            this->ddmcVelocityDivergence_.h_view(cellIndex) =
+                snapshot.velocityDivergence[cellIndex];
+            this->ddmcCellTemperature_.h_view(cellIndex) =
+                snapshot.cellTemperature[cellIndex];
+            this->ddmcGroupCutoff_.h_view(cellIndex) =
+                snapshot.groupCutoff[cellIndex];
+            this->ddmcCellIDs_.h_view(cellIndex) = snapshot.cellIDs[cellIndex];
         }
         for(std::size_t offset = 0;
             offset < snapshot.leakOffsets.size(); ++offset)
@@ -229,6 +250,8 @@ public:
                 snapshot.faceKinds[leak];
             this->ddmcTargetEligible_.h_view(leak) =
                 snapshot.targetDDMCEligible[leak];
+            this->ddmcTargetGroupCutoff_.h_view(leak) =
+                snapshot.targetGroupCutoff[leak];
             this->ddmcOutwardNormals_.h_view(leak) =
                 DeviceVec3(snapshot.outwardNormals[leak].x,
                            snapshot.outwardNormals[leak].y,
@@ -243,12 +266,18 @@ public:
         SyncToDevice(this->ddmcSigmaEnergyAbs_);
         SyncToDevice(this->ddmcSigmaParticleGate_);
         SyncToDevice(this->ddmcTotalLeakRate_);
+        SyncToDevice(this->ddmcGamma_);
+        SyncToDevice(this->ddmcVelocityDivergence_);
+        SyncToDevice(this->ddmcCellTemperature_);
+        SyncToDevice(this->ddmcGroupCutoff_);
+        SyncToDevice(this->ddmcCellIDs_);
         SyncToDevice(this->ddmcLeakOffsets_);
         SyncToDevice(this->ddmcLeakRates_);
         SyncToDevice(this->ddmcLeakDDMCRates_);
         SyncToDevice(this->ddmcNextCellIndices_);
         SyncToDevice(this->ddmcFaceKinds_);
         SyncToDevice(this->ddmcTargetEligible_);
+        SyncToDevice(this->ddmcTargetGroupCutoff_);
         SyncToDevice(this->ddmcOutwardNormals_);
         SyncToDevice(this->ddmcFaceCenters_);
         Kokkos::deep_copy(this->ddmcFluxRhs_.d_view, DeviceVec3{});
@@ -262,12 +291,14 @@ public:
         Kokkos::deep_copy(this->ddmcCensusCount_, std::size_t(0));
         this->ddmcMinimumParticleOpticalDepth_ =
             snapshot.minimumParticleOpticalDepth;
+        this->ddmcPgrwEnabled_ = snapshot.pgrwEnabled;
         this->ddmcEnabled_ = true;
     }
 
     void DisableDDMC()
     {
         this->ddmcEnabled_ = false;
+        this->ddmcPgrwEnabled_ = false;
         Resize(this->ddmcFluxRhs_, 0);
     }
 
@@ -409,6 +440,13 @@ public:
             this->ddmcSigmaParticleGate_.d_view.data();
         result.ddmc.totalLeakRate =
             this->ddmcTotalLeakRate_.d_view.data();
+        result.ddmc.gamma = this->ddmcGamma_.d_view.data();
+        result.ddmc.velocityDivergence =
+            this->ddmcVelocityDivergence_.d_view.data();
+        result.ddmc.cellTemperature =
+            this->ddmcCellTemperature_.d_view.data();
+        result.ddmc.groupCutoff = this->ddmcGroupCutoff_.d_view.data();
+        result.ddmc.cellIDs = this->ddmcCellIDs_.d_view.data();
         result.ddmc.leakOffsets =
             this->ddmcLeakOffsets_.d_view.data();
         result.ddmc.leakRates =
@@ -421,6 +459,8 @@ public:
             this->ddmcFaceKinds_.d_view.data();
         result.ddmc.targetDDMCEligible =
             this->ddmcTargetEligible_.d_view.data();
+        result.ddmc.targetGroupCutoff =
+            this->ddmcTargetGroupCutoff_.d_view.data();
         result.ddmc.outwardNormals =
             this->ddmcOutwardNormals_.d_view.data();
         result.ddmc.faceCenters =
@@ -439,6 +479,7 @@ public:
         result.ddmc.minimumParticleOpticalDepth =
             this->ddmcMinimumParticleOpticalDepth_;
         result.ddmc.enabled = this->ddmcEnabled_;
+        result.ddmc.pgrwEnabled = this->ddmcPgrwEnabled_;
         result.energyBoundaries =
             this->energyBoundaries_.d_view.data();
         result.spectralAbsorptionScale =
@@ -609,12 +650,18 @@ private:
     Kokkos::DualView<double*> ddmcSigmaEnergyAbs_;
     Kokkos::DualView<double*> ddmcSigmaParticleGate_;
     Kokkos::DualView<double*> ddmcTotalLeakRate_;
+    Kokkos::DualView<double*> ddmcGamma_;
+    Kokkos::DualView<double*> ddmcVelocityDivergence_;
+    Kokkos::DualView<double*> ddmcCellTemperature_;
+    Kokkos::DualView<std::size_t*> ddmcGroupCutoff_;
+    Kokkos::DualView<cell_id_t*> ddmcCellIDs_;
     Kokkos::DualView<std::size_t*> ddmcLeakOffsets_;
     Kokkos::DualView<double*> ddmcLeakRates_;
     Kokkos::DualView<double*> ddmcLeakDDMCRates_;
     Kokkos::DualView<cell_index_t*> ddmcNextCellIndices_;
     Kokkos::DualView<std::uint8_t*> ddmcFaceKinds_;
     Kokkos::DualView<std::uint8_t*> ddmcTargetEligible_;
+    Kokkos::DualView<std::size_t*> ddmcTargetGroupCutoff_;
     Kokkos::DualView<DeviceVec3*> ddmcOutwardNormals_;
     Kokkos::DualView<DeviceVec3*> ddmcFaceCenters_;
     Kokkos::DualView<DeviceVec3*> ddmcFluxRhs_;
@@ -638,6 +685,7 @@ private:
     bool randomWalkEnabled_ = false;
     bool spectralEnabled_ = false;
     bool ddmcEnabled_ = false;
+    bool ddmcPgrwEnabled_ = false;
     double ddmcMinimumParticleOpticalDepth_ = 0.0;
     std::size_t groupCount_ = 0;
     std::size_t cellCount_ = 0;

@@ -368,6 +368,8 @@ private:
 
     void ApplyDeviceCompletions(gpu::CompletedBatch &completed,
                                 MonteCarloStepFinalData &stepData);
+
+    void DrainDeviceCensus(MonteCarloStepFinalData &stepData);
 #endif // STORM_WITH_GPU
 
     void PutSelfParticles(std::vector<MCParticle> &&particles);

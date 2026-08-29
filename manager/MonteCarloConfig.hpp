@@ -65,8 +65,9 @@ public:
     // still small. 0 means that a sub-threshold pool remains held.
     size_t gpuHoldMaxSkips            = 64;
     // Rank-hop terminals stay on device until this many are queued (same
-    // default as gpuMinLaunchSize) or gpuHoldMaxSkips waves elapse. Census,
-    // REMOVE, and HostOnly boundaries still copy back every wave.
+    // default as gpuMinLaunchSize) or gpuHoldMaxSkips waves elapse. Census
+    // (DONE) stays on device until Comb; REMOVE and HostOnly still copy back
+    // every wave.
 #endif
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;

@@ -773,6 +773,8 @@ public:
             }
 
             if(owner_.SharedFullIMCKernelEligible() ||
+               (owner_.SharedDDMCKernelEligible() &&
+                owner_.parameters_.withMultigroupOpacity) ||
                (owner_.SharedRandomWalkKernelEligible() &&
                 owner_.parameters_.withMultigroupOpacity))
             {

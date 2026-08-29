@@ -50,6 +50,8 @@ struct CompletedBatch
     std::size_t launchCount = 0;
     std::size_t physicsSteps = 0;
     std::size_t launchedParticles = 0;
+    std::size_t censusCount = 0;
+    std::size_t censusSteps = 0;
 };
 
 struct WaveCounters
@@ -57,7 +59,9 @@ struct WaveCounters
     std::size_t finished = 0;
     std::size_t remote = 0;
     std::size_t survivor = 0;
+    std::size_t census = 0;
     std::size_t physicsSteps = 0;
+    std::size_t censusSteps = 0;
 };
 static_assert(std::is_trivially_copyable<WaveCounters>::value,
               "WaveCounters must be safe for device-host copies");
@@ -81,6 +85,7 @@ public:
           nextColdPackets_("storm_transport_next_cold_packets", 0),
           completedTransports_("storm_transport_completed", 0),
           pendingRemotes_("storm_transport_pending_remotes", 0),
+          pendingCensus_("storm_transport_pending_census", 0),
           hostCompletedTransports_("storm_transport_host_completed", 0),
           waveCounters_("storm_transport_wave_counters")
     {}
@@ -89,6 +94,7 @@ public:
     {
         this->activeCount_ = 0;
         this->pendingRemoteCount_ = 0;
+        this->pendingCensusCount_ = 0;
         this->remoteHoldSkips_ = 0;
     }
 
@@ -100,6 +106,11 @@ public:
     std::size_t PendingRemoteCount() const
     {
         return this->pendingRemoteCount_;
+    }
+
+    std::size_t PendingCensusCount() const
+    {
+        return this->pendingCensusCount_;
     }
 
     bool DeviceBusy() const
@@ -130,8 +141,10 @@ public:
         EnsureCapacity(this->nextColdPackets_, required);
         EnsureCapacity(this->completedTransports_, incoming);
         EnsureCapacity(this->pendingRemotes_, this->pendingRemoteCount_ + incoming);
+        EnsureCapacity(this->pendingCensus_, this->pendingCensusCount_ + incoming);
         EnsureCapacity(this->hostCompletedTransports_,
-                       std::max(incoming, this->pendingRemoteCount_));
+                       std::max(incoming, std::max(this->pendingRemoteCount_,
+                                                   this->pendingCensusCount_)));
 
         for(std::size_t i = 0; i < incoming; ++i)
         {
@@ -159,6 +172,13 @@ public:
         return completed;
     }
 
+    CompletedBatch FlushPendingCensus()
+    {
+        CompletedBatch completed;
+        this->CopyCensusToHost(completed);
+        return completed;
+    }
+
     template<typename ProgressFunction>
     CompletedBatch AdvanceWave(const GreyIMCViews<DeviceVec3> &views,
                                ProgressFunction progress,
@@ -179,16 +199,19 @@ public:
         const std::size_t activeCount = this->activeCount_;
         const std::size_t maximumInnerSteps = this->maximumInnerSteps_;
         const std::size_t remoteOffset = this->pendingRemoteCount_;
+        const std::size_t censusOffset = this->pendingCensusCount_;
         EnsureCapacity(this->nextPackets_, activeCount);
         EnsureCapacity(this->nextColdPackets_, activeCount);
         EnsureCapacity(this->completedTransports_, activeCount);
         EnsureCapacity(this->pendingRemotes_, remoteOffset + activeCount);
+        EnsureCapacity(this->pendingCensus_, censusOffset + activeCount);
         auto packets = this->packets_;
         auto nextPackets = this->nextPackets_;
         auto coldPackets = this->coldPackets_;
         auto nextColdPackets = this->nextColdPackets_;
         auto completedTransports = this->completedTransports_;
         auto pendingRemotes = this->pendingRemotes_;
+        auto pendingCensus = this->pendingCensus_;
         auto waveCounters = this->waveCounters_;
 
         const std::chrono::steady_clock::time_point deviceStart = std::chrono::steady_clock::now();
@@ -206,25 +229,6 @@ public:
                 {
                     ++taken;
                     ++particle.steps;
-                    if(!views.ddmc.enabled)
-                    {
-                        const transport::RandomWalkResult randomWalk =
-                            transport::TryAdvanceRandomWalk(particle, views);
-                        if(randomWalk.invalid)
-                        {
-                            result.error = TransportError::InvalidOpacity;
-                            break;
-                        }
-                        if(randomWalk.taken)
-                        {
-                            result.step = randomWalk.step;
-                            if(TryKeepPacketOnDevice(particle, result, views))
-                            {
-                                continue;
-                            }
-                            break;
-                        }
-                    }
                     result = gpu::AdvanceOne(particle, cold, views);
                     if(TryKeepPacketOnDevice(particle, result, views))
                     {
@@ -250,7 +254,18 @@ public:
                 transport.particle = particle;
                 transport.cold = cold;
                 transport.result = result;
-                if(IsRankHopTerminal(particle, result, views))
+                if(IsCensusTerminal(particle, result))
+                {
+                    const std::size_t censusIndex =
+                        censusOffset +
+                        Kokkos::atomic_fetch_add(
+                            &waveCounters().census, std::size_t(1));
+                    Kokkos::atomic_fetch_add(
+                        &waveCounters().censusSteps,
+                        static_cast<std::size_t>(particle.steps));
+                    pendingCensus(censusIndex) = transport;
+                }
+                else if(IsRankHopTerminal(particle, result, views))
                 {
                     const std::size_t remoteIndex =
                         remoteOffset +
@@ -278,9 +293,12 @@ public:
         completed.launchCount = 1;
         completed.physicsSteps = counters.physicsSteps;
         completed.launchedParticles = activeCount;
+        completed.censusCount = counters.census;
+        completed.censusSteps = counters.censusSteps;
 
         this->activeCount_ = counters.survivor;
         this->pendingRemoteCount_ = remoteOffset + counters.remote;
+        this->pendingCensusCount_ = censusOffset + counters.census;
         std::swap(this->packets_, this->nextPackets_);
         std::swap(this->coldPackets_, this->nextColdPackets_);
 
@@ -323,6 +341,13 @@ public:
             completed.launchedParticles += wave.launchedParticles;
             completed.particles.insert(completed.particles.end(), std::make_move_iterator(wave.particles.begin()), std::make_move_iterator(wave.particles.end()));
         }
+        CompletedBatch census = this->FlushPendingCensus();
+        completed.copyBackSeconds += census.copyBackSeconds;
+        completed.particles.insert(completed.particles.end(),
+                                   std::make_move_iterator(census.particles.begin()),
+                                   std::make_move_iterator(census.particles.end()));
+        completed.censusCount = 0;
+        completed.censusSteps = 0;
         return completed;
     }
 
@@ -397,9 +422,26 @@ private:
         this->pendingRemoteCount_ = 0;
     }
 
+    void CopyCensusToHost(CompletedBatch &completed)
+    {
+        if(this->pendingCensusCount_ == 0)
+        {
+            return;
+        }
+        const std::chrono::steady_clock::time_point copyBackStart =
+            std::chrono::steady_clock::now();
+        this->CopyDeviceTransports(
+            completed, this->pendingCensus_, this->pendingCensusCount_);
+        completed.copyBackSeconds +=
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - copyBackStart).count();
+        this->pendingCensusCount_ = 0;
+    }
+
     std::size_t maximumInnerSteps_;
     std::size_t activeCount_ = 0;
     std::size_t pendingRemoteCount_ = 0;
+    std::size_t pendingCensusCount_ = 0;
     std::size_t remoteHoldSkips_ = 0;
     Kokkos::View<DeviceParticle*, PinnedHostSpace> hostPackets_;
     Kokkos::View<DeviceParticleCold*, PinnedHostSpace> hostColdPackets_;
@@ -409,6 +451,7 @@ private:
     Kokkos::View<DeviceParticleCold*> nextColdPackets_;
     Kokkos::View<CompletedTransport*> completedTransports_;
     Kokkos::View<CompletedTransport*> pendingRemotes_;
+    Kokkos::View<CompletedTransport*> pendingCensus_;
     Kokkos::View<CompletedTransport*, PinnedHostSpace> hostCompletedTransports_;
     Kokkos::View<WaveCounters> waveCounters_;
 };

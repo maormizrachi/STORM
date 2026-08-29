@@ -242,8 +242,8 @@ void RDMAMonteCarloManager<T, Grid, Physics>::CollectHostParticlesForDevice(std:
 }
 
 // Ingest host arrivals into the resident device pool, advance one wave, and
-// apply host policy only to packets that left the GCD (rank hops, census,
-// HostOnly/REMOVE). Survivors stay on device.
+// apply host policy only to packets that left the GCD (rank hops, HostOnly,
+// REMOVE). DONE stays on device until Comb; survivors keep transporting.
 template<typename T, typename Grid, typename Physics>
 bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vector<MCParticle> &arrivals, MonteCarloStepFinalData &stepData, bool &isEmpty)
 {
@@ -324,6 +324,9 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
         this->gpuLaunchCount += completed.launchCount;
         this->gpuParticleCount += completed.launchedParticles;
         this->gpuPhysicsStepCount += completed.physicsSteps;
+        this->localDecrementAmount +=
+            static_cast<typename AmountManager::counter_t>(completed.censusCount);
+        this->allStepsCounter += completed.censusSteps;
         this->ApplyDeviceCompletions(completed, stepData);
         return true;
     }
@@ -374,6 +377,42 @@ void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(
     {
         this->gpuIngestCount += bounced.size();
         this->gpuTransportExecutor->Ingest(bounced);
+    }
+}
+
+template<typename T, typename Grid, typename Physics>
+void RDMAMonteCarloManager<T, Grid, Physics>::DrainDeviceCensus(MonteCarloStepFinalData &stepData)
+{
+    if(not this->gpuTransportExecutor)
+    {
+        return;
+    }
+    gpu::CompletedBatch census = this->gpuTransportExecutor->FlushPendingCensus();
+    if(census.particles.empty())
+    {
+        return;
+    }
+    for(const gpu::CompletedTransport &transported : census.particles)
+    {
+        MCParticle particle;
+        gpu::UnpackParticle(transported.particle, transported.cold, particle);
+        if(transported.result.error != gpu::TransportError::None)
+        {
+            STORMError eo("RDMAMonteCarloManager: device census packet failed");
+            eo.addEntry("Rank", this->rank_world);
+            eo.addEntry("Particle", particle);
+            eo.addEntry("Transport error", static_cast<int>(transported.result.error));
+            throw eo;
+        }
+        if(transported.result.step.change != MonteCarloParticleStatus::DONE)
+        {
+            STORMError eo("RDMAMonteCarloManager: device census pool held a non-DONE packet");
+            eo.addEntry("Rank", this->rank_world);
+            eo.addEntry("Particle", particle);
+            eo.addEntry("Status", transported.result.step.change);
+            throw eo;
+        }
+        stepData.remaining.push_back(std::move(particle));
     }
 }
 

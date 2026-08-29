@@ -229,18 +229,12 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     auto buildProgressCounters = [this]()
     {
         std::array<unsigned long long, MC_PROGRESS_COUNTERS> counters{};
-        counters[MC_PROGRESS_RW_STEPS] =
-            static_cast<unsigned long long>(this->physics->getRandomWalkStepCount());
-        counters[MC_PROGRESS_DDMC_STEPS] =
-            static_cast<unsigned long long>(this->physics->getDDMCStepCount());
-        counters[MC_PROGRESS_DDMC_LEAKS] =
-            static_cast<unsigned long long>(this->physics->getDDMCLeakCount());
-        counters[MC_PROGRESS_DDMC_CENSUS] =
-            static_cast<unsigned long long>(this->physics->getDDMCCensusCount());
-        counters[MC_PROGRESS_DDMC_UPSCATTER] =
-            static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount());
-        counters[MC_PROGRESS_DDMC_FALLBACK] =
-            static_cast<unsigned long long>(this->physics->getDDMCFallbackCount());
+        counters[MC_PROGRESS_RW_STEPS] = static_cast<unsigned long long>(this->physics->getRandomWalkStepCount());
+        counters[MC_PROGRESS_DDMC_STEPS] = static_cast<unsigned long long>(this->physics->getDDMCStepCount());
+        counters[MC_PROGRESS_DDMC_LEAKS] = static_cast<unsigned long long>(this->physics->getDDMCLeakCount());
+        counters[MC_PROGRESS_DDMC_CENSUS] = static_cast<unsigned long long>(this->physics->getDDMCCensusCount());
+        counters[MC_PROGRESS_DDMC_UPSCATTER] = static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount());
+        counters[MC_PROGRESS_DDMC_FALLBACK] = static_cast<unsigned long long>(this->physics->getDDMCFallbackCount());
         return counters;
     };
 
@@ -492,6 +486,9 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     }
 
     auto censusStart = std::chrono::high_resolution_clock::now();
+#ifdef STORM_WITH_GPU
+    this->DrainDeviceCensus(data);
+#endif
     data.remaining = this->populationControl->activate(data.remaining);
     this->physics->postStep(data.remaining, fullDt);
     double censusSeconds = std::chrono::duration<double>(
@@ -543,12 +540,15 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         }
     }
 #ifdef STORM_WITH_GPU
-    if(this->gpuTransportExecutor and this->gpuTransportExecutor->DeviceBusy())
+    if(this->gpuTransportExecutor and
+       (this->gpuTransportExecutor->DeviceBusy() or
+        this->gpuTransportExecutor->PendingCensusCount() > 0))
     {
         STORMError eo("End of RDMAMonteCarloManager::step: device particle pool is not empty");
         eo.addEntry("Rank", this->rank_world);
         eo.addEntry("Device particles", this->gpuTransportExecutor->ActiveCount());
         eo.addEntry("Pending remote packets", this->gpuTransportExecutor->PendingRemoteCount());
+        eo.addEntry("Pending census packets", this->gpuTransportExecutor->PendingCensusCount());
         throw eo;
     }
 #endif

@@ -10,6 +10,7 @@
 #include "../../gpu/FlatGridView.hpp"
 #include "../../particle/StepResult.hpp"
 #include "../../utils/CounterRNG.hpp"
+#include "../ddmc/DDMCSampling.hpp"
 
 namespace STORM
 {
@@ -179,35 +180,12 @@ struct SpectralTableOpacityPolicy
 
         const double reemitRandom = CounterRNG::unitOpen(
             particle.rngKey, particle.rngCounter++);
-        const double *cdf =
-            views.thermalEmissionCdf +
-            cellIndex * (views.groupCount + 1);
-        const double total = cdf[views.groupCount];
-        if(!(total > 0.0) || !IsFinite(total))
-        {
-            particle.frequency =
-                0.5 *
-                (views.energyBoundaries[0] +
-                 views.energyBoundaries[views.groupCount]);
-            return;
-        }
-        const double target = reemitRandom * total;
-        std::size_t group = 0;
-        while(group + 1 < views.groupCount &&
-              cdf[group + 1] < target)
-        {
-            ++group;
-        }
-        const double lower = cdf[group];
-        const double upper = cdf[group + 1];
-        const double width = upper - lower;
-        const double fraction =
-            width > 0.0 ? (target - lower) / width : 0.5;
-        particle.frequency =
-            views.energyBoundaries[group] +
-            fraction *
-                (views.energyBoundaries[group + 1] -
-                 views.energyBoundaries[group]);
+        particle.frequency = ddmc::SampleFrequencyFromCellCdf(
+            views.energyBoundaries,
+            views.thermalEmissionCdf,
+            views.groupCount,
+            cellIndex,
+            reemitRandom);
     }
 
     template<typename ParticleT, typename ViewsT>

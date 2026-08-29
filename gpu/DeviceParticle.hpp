@@ -2,6 +2,7 @@
 #define STORM_GPU_DEVICE_PARTICLE_HPP
 
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 #include "KokkosTypes.hpp"
@@ -51,7 +52,7 @@ struct DeviceParticleCold
     cell_id_t cellID = 0;
     cell_id_t sourceCellID = 0;
     DeviceVec3 pendingFlux{};
-    cell_id_t bypassCellID = 0;
+    cell_id_t bypassCellID = std::numeric_limits<cell_id_t>::max();
 #ifdef MONTECARLO_POLARIZATION
     double pendingMeanScatterings = 0.0;
     double stokesQ = 0.0;

@@ -32,9 +32,18 @@ public:
         const bool ddmcKernelEligible = this->SharedDDMCKernelEligible();
         if(ddmcKernelEligible)
         {
+            std::vector<double> temperatures(owner_.cells_.size(), 0.0);
+            for(std::size_t i = 0; i < owner_.cells_.size(); ++i)
+            {
+                temperatures[i] = owner_.cells_[i].temperature;
+            }
             ddmcSnapshot_.Build(
                 owner_.ddmcCellData_, owner_.componentGrid(),
-                owner_.parameters_.ddmcMinParticleOpticalDepth);
+                owner_.parameters_.ddmcMinParticleOpticalDepth,
+                temperatures,
+                owner_.ddmcPointCellID_,
+                owner_.parameters_.ddmcUseMultigroupPGRW &&
+                    owner_.parameters_.withMultigroupOpacity);
         }
         else
         {
@@ -91,7 +100,8 @@ public:
             gpuData_->DisableHydro();
         }
 
-        if(owner_.SharedFullIMCKernelEligible())
+        if(owner_.parameters_.withMultigroupOpacity &&
+           (owner_.SharedFullIMCKernelEligible() || ddmcDeviceEligible))
         {
             std::vector<double> energyBoundaries(
                 owner_.energyBoundaries_.begin(),
@@ -104,9 +114,10 @@ public:
         else
             gpuData_->DisableSpectral();
 
-        if(owner_.parameters_.withRandomWalk &&
+        if(owner_.parameters_.withRandomWalk && owner_.randomWalk_ &&
            (owner_.GreyKernelEligible() ||
-            owner_.SharedFullIMCKernelEligible()))
+            owner_.SharedFullIMCKernelEligible() ||
+            ddmcDeviceEligible))
         {
             gpuData_->UploadRandomWalk(
                 owner_.rwCellEligible_,
@@ -290,7 +301,12 @@ public:
                                       !owner_.parameters_.diffusionPressureGradient &&
                                       !owner_.parameters_.noHydroFeedback;
         }
-        result.spectralEnabled = owner_.SharedFullIMCKernelEligible() ? 1 : 0;
+        result.spectralEnabled =
+            (owner_.SharedFullIMCKernelEligible() ||
+             (this->SharedDDMCKernelEligible() &&
+              owner_.parameters_.withMultigroupOpacity))
+                ? 1
+                : 0;
         return result;
     }
 
@@ -322,10 +338,7 @@ public:
         return false;
 #else
         return owner_.parameters_.withDDMC &&
-               !owner_.parameters_.withMultigroupOpacity &&
                !owner_.parameters_.withCompton &&
-               !owner_.parameters_.withHydro &&
-               !owner_.parameters_.withRandomWalk &&
                !owner_.parameters_.postProcess.enabled &&
                !owner_.observer_ &&
                !owner_.polarizationEnabled() &&

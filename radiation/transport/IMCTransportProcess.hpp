@@ -409,6 +409,11 @@ public:
                             ++owner_.ddmcLeakCount_;
                             ++owner_.ddmcTransportLeakCount_;
                         }
+                        else if(result.event ==
+                                ddmc::AdvanceEvent::Upscatter)
+                        {
+                            ++owner_.ddmcUpscatterCount_;
+                        }
                         return result.step;
                     }
                     const gpu::TransportResult imcResult =
