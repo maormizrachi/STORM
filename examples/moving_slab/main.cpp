@@ -8,7 +8,8 @@
  * frequency-dependent transport with Doppler shifts, DDMC acceleration.
  *
  * Usage:
- *   mpirun -np N ./moving_slab [newPhotonsPerCell]
+ *   mpirun -np N ./moving_slab [newPhotonsPerCell] [endTimeFraction]
+ *       [ddmcInterfaceTargetWeightRatio]
  */
 
 #include <array>
@@ -491,6 +492,27 @@ int main(int argc, char *argv[])
                                     STORM::examples::MovingSlabOpacity<Vector3D, Grid, MovingSlabCell>>;
 
     size_t newPhotonsPerCell = (argc >= 2) ? std::stoul(argv[1]) : 30000 / (NYZ * NYZ);
+    double const endTimeFraction = (argc >= 3) ? std::stod(argv[2]) : 1.0;
+    double const interfaceTargetWeightRatio =
+        (argc >= 4) ? std::stod(argv[3]) : 2.0;
+    if(!(endTimeFraction > 0.0 && endTimeFraction <= 1.0))
+    {
+        if(rank == 0)
+        {
+            std::cerr << "endTimeFraction must be in (0, 1]" << std::endl;
+        }
+        MPI_Abort(MPI_COMM_WORLD, 2);
+    }
+    if(!(interfaceTargetWeightRatio > 0.0))
+    {
+        if(rank == 0)
+        {
+            std::cerr
+                << "ddmcInterfaceTargetWeightRatio must be positive"
+                << std::endl;
+        }
+        MPI_Abort(MPI_COMM_WORLD, 3);
+    }
 
     double const rhoSlab     = 0.1;
     double const L_slab      = 0.4;
@@ -499,7 +521,7 @@ int main(int argc, char *argv[])
     double const vSlab       = 0.5994e9;
     double const zO          = 12.0;
     double const xSym        = 12.0;
-    double const tO           = 10e-9;
+    double const tO           = 10e-9 * endTimeFraction;
     double const rhoVacuum   = 1e-10;
     double const cellHalfYZ  = 1.0;
 
@@ -598,6 +620,8 @@ int main(int argc, char *argv[])
     imcParams.withHydro = true;
     imcParams.withMultigroupOpacity = true;
     imcParams.withDDMC = true;
+    imcParams.ddmcInterfaceTargetWeightRatio =
+        interfaceTargetWeightRatio;
     imcParams.noHydroFeedback = true;
     imcParams.withEgTimeAvg = true;
     imcParams.energyBoundariesProvided = true;
@@ -612,7 +636,8 @@ int main(int argc, char *argv[])
     SimulationResult result;
     {
         STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
-            grid, physics, popControl, boundary);
+            grid, physics, popControl, boundary,
+            STORM::ManagerType::RDMA, STORM::RDMAEngine::OFI);
         std::vector<STORM::Particle<Vector3D>> particles;
 
         if(rank == 0)
@@ -626,6 +651,8 @@ int main(int argc, char *argv[])
                       << ", T=" << T_slab_keV << " keV"
                       << ", z_O=" << zO << " cm"
                       << ", t_O=" << tO * 1e9 << " ns"
+                      << ", interfaceTargetWeightRatio="
+                      << interfaceTargetWeightRatio
                       << ", MPI ranks=" << nprocs
                       << std::endl;
         }
@@ -715,7 +742,7 @@ int main(int argc, char *argv[])
         std::cout << "Wrote " << specPath << std::endl;
     }
 
-    if(rank == 0)
+    if(rank == 0 && endTimeFraction == 1.0)
     {
         std::string scriptDir = __FILE__;
         scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
@@ -724,6 +751,10 @@ int main(int argc, char *argv[])
         std::system(cmd.c_str());
     }
 
+    RMAFactory::Finalize(RDMA_Type::OFI_RDMA);
+#ifdef STORM_WITH_GPU
+    STORM::gpu::KokkosRuntime::Finalize();
+#endif
     MPI_Finalize();
     return 0;
 }

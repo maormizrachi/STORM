@@ -382,6 +382,13 @@ public:
                         cold.pendingFlux;
                     if(result.error != ddmc::AdvanceError::None)
                     {
+                    if(result.error == ddmc::AdvanceError::HostFallback)
+                    {
+                        if(owner_.tryDDMCStep(particle, functionality))
+                        {
+                            return functionality;
+                        }
+                    }
                         StormError eo(
                             "RadiationIMC shared DDMC transport failed");
                         eo.addEntry("Cell index", particle.cellIndex);
@@ -416,9 +423,50 @@ public:
                         }
                         return result.step;
                     }
-                    const gpu::TransportResult imcResult =
+                    gpu::TransportResult imcResult =
                         transport::AdvanceIMC(
                             particle, owner_.GetHostTransportViews());
+                    const ddmc::InterfaceResult interface =
+                        gpu::ApplyDDMCInterface(
+                            particle, cold, imcResult,
+                            owner_.GetHostTransportViews());
+                    particle.radiationState.pendingFlux =
+                        cold.pendingFlux;
+                    if(interface.taken &&
+                       interface.event == ddmc::InterfaceEvent::Admitted &&
+                       interface.extraSplitCount > 0)
+                    {
+                        const cell_index_t targetCellIndex =
+                            imcResult.step.nextCellIndex;
+                        const std::size_t targetCell =
+                            static_cast<std::size_t>(targetCellIndex);
+                        cell_id_t targetID =
+                            std::numeric_limits<cell_id_t>::max();
+                        if(targetCell < owner_.ddmcPointCellID_.size())
+                        {
+                            targetID = static_cast<cell_id_t>(
+                                owner_.ddmcPointCellID_[targetCell]);
+                        }
+                        const PointT targetCenter =
+                            owner_.componentGrid().GetMeshPoint(targetCell);
+                        for(std::size_t copy = 0;
+                            copy < interface.extraSplitCount; ++copy)
+                        {
+                            MCParticle extra = particle;
+                            extra.id = std::numeric_limits<std::size_t>::max();
+                            extra.cellID = targetID;
+                            extra.cellIndex = targetCellIndex;
+                            extra.location = targetCenter;
+                            particlesToAdd.push_back(std::move(extra));
+                        }
+                    }
+                    if(imcResult.error == gpu::TransportError::HostFallback)
+                    {
+                        if(owner_.tryDDMCStep(particle, functionality))
+                        {
+                            return functionality;
+                        }
+                    }
                     if(imcResult.error != gpu::TransportError::None)
                     {
                         StormError eo(
@@ -888,6 +936,7 @@ public:
                 owner_.ddmcTransportLeakCount_,
                 owner_.ddmcRemoteResidentLeakCount_,
                 owner_.ddmcCensusCount_);
+            owner_.deviceExecutor_->addDDMCDiagnostics();
             owner_.applyTransportTallies();
             double const tallyDt = owner_.parameters_.postProcess.enabled
                 ? owner_.parameters_.postProcess.transportTime : fullDt;

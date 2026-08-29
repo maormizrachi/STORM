@@ -34,7 +34,11 @@ struct RadiationIMCParameters
     double rwMinCellOpticalDepth = 25.0;
     double rwMinParticleOpticalDepth = 5.0;
     bool withDDMC = false;
+#if defined(STORM_WITH_GPU)
+    bool ddmcGpuEnable = true;
+#else
     bool ddmcGpuEnable = false;
+#endif
     double ddmcMinCellOpticalDepth = 15.0;
     double ddmcMinParticleOpticalDepth = 5.0;
     double ddmcExternalSourceMinFaceOpticalDepth = 5.0;

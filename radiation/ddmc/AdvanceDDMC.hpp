@@ -17,6 +17,7 @@
 #include "../../utils/CounterRNG.hpp"
 #include "DDMCSampling.hpp"
 #include "DDMCTypes.hpp"
+#include "DDMCWollaegerInterface.hpp"
 
 namespace STORM::ddmc
 {
@@ -26,7 +27,15 @@ enum class AdvanceError : std::uint8_t
     None,
     InvalidCell,
     InvalidData,
-    InvalidNormal
+    InvalidNormal,
+    HostFallback
+};
+
+enum class HostFallbackReason : std::uint8_t
+{
+    None,
+    ThermalizingLeak,
+    InterfaceSplit
 };
 
 enum class AdvanceEvent : std::uint8_t
@@ -62,6 +71,15 @@ struct DeviceView
     const std::size_t *targetGroupCutoff = nullptr;
     const PointT *outwardNormals = nullptr;
     const PointT *faceCenters = nullptr;
+    const std::uint8_t *interfaceTargetEligible = nullptr;
+    const double *interfaceTargetSigmaDiffusion = nullptr;
+    const double *interfaceTargetDistance = nullptr;
+    const std::size_t *interfaceTargetGroupCutoff = nullptr;
+    const cell_id_t *interfaceTargetCellID = nullptr;
+    const PointT *interfaceNormals = nullptr;
+    const PointT *interfaceFaceCenters = nullptr;
+    const PointT *interfaceFaceVelocities = nullptr;
+    const PointT *interfaceTargetVelocities = nullptr;
     PointT *fluxRhs = nullptr;
     std::size_t *stepCount = nullptr;
     std::size_t *leakCount = nullptr;
@@ -69,10 +87,24 @@ struct DeviceView
     std::size_t *transportLeakCount = nullptr;
     std::size_t *remoteResidentLeakCount = nullptr;
     std::size_t *censusCount = nullptr;
+    std::size_t *interfaceIncidentCount = nullptr;
+    std::size_t *interfaceAdmittedCount = nullptr;
+    std::size_t *interfaceReflectedCount = nullptr;
+    std::size_t *interfaceGuAppliedCount = nullptr;
+    std::size_t *interfaceGuFallbackCount = nullptr;
+    std::size_t *interfaceBypassCount = nullptr;
+    std::size_t *interfaceSplitPacketCount = nullptr;
+    std::size_t *hostFallbackCount = nullptr;
     std::size_t cellCount = 0;
     double minimumParticleOpticalDepth = 0.0;
+    double maximumInterfaceVelocityOverC = 0.0;
+    double interfaceTargetWeightRatio = 0.0;
+    double maximumMovingInterfaceWeightCorrection = 0.0;
+    std::size_t maximumInterfaceSplits = 1;
+    WollaegerKernelView wollaeger;
     std::uint8_t enabled = 0;
     std::uint8_t pgrwEnabled = 0;
+    std::uint8_t movingInterfaceCorrection = 0;
 };
 
 template<typename PointT>
@@ -96,10 +128,24 @@ struct HostSnapshot
     std::vector<std::size_t> targetGroupCutoff;
     std::vector<PointT> outwardNormals;
     std::vector<PointT> faceCenters;
+    std::vector<std::uint8_t> interfaceTargetEligible;
+    std::vector<double> interfaceTargetSigmaDiffusion;
+    std::vector<double> interfaceTargetDistance;
+    std::vector<std::size_t> interfaceTargetGroupCutoff;
+    std::vector<cell_id_t> interfaceTargetCellID;
+    std::vector<PointT> interfaceNormals;
+    std::vector<PointT> interfaceFaceCenters;
+    std::vector<PointT> interfaceFaceVelocities;
+    std::vector<PointT> interfaceTargetVelocities;
     std::vector<PointT> fluxRhs;
     double minimumParticleOpticalDepth = 0.0;
+    double maximumInterfaceVelocityOverC = 0.0;
+    double interfaceTargetWeightRatio = 0.0;
+    double maximumMovingInterfaceWeightCorrection = 0.0;
+    std::size_t maximumInterfaceSplits = 1;
     bool enabled = false;
     bool pgrwEnabled = false;
+    bool movingInterfaceCorrection = false;
 
     template<typename GridT>
     void Build(const std::vector<CellData<PointT>> &cells,
@@ -176,6 +222,125 @@ struct HostSnapshot
         this->enabled = true;
     }
 
+    template<typename GridT>
+    void BuildInterface(
+        const GridT &grid,
+        const std::vector<std::size_t> &cellFaceOffsets,
+        const std::vector<PointT> &inwardNormals,
+        const std::vector<PointT> &faceCenters,
+        const std::vector<cell_index_t> &nextCellIndices,
+        const std::vector<PointT> &sourceVelocities,
+        const std::vector<int> &pointEligible,
+        const std::vector<double> &pointSigmaDiffusion,
+        const std::vector<std::size_t> &pointGroupCutoff,
+        const std::vector<PointT> &pointVelocities,
+        const std::vector<std::size_t> &pointCellIDs,
+        const bool useMovingCorrection,
+        const double maximumVelocityOverC,
+        const double targetWeightRatio,
+        const std::size_t maximumSplits,
+        const double maximumWeightCorrection)
+    {
+        const std::size_t directedFaceCount = nextCellIndices.size();
+        this->interfaceTargetEligible.assign(directedFaceCount, 0);
+        this->interfaceTargetSigmaDiffusion.assign(directedFaceCount, 0.0);
+        this->interfaceTargetDistance.assign(directedFaceCount, 0.0);
+        this->interfaceTargetGroupCutoff.assign(directedFaceCount, 0);
+        this->interfaceTargetCellID.assign(
+            directedFaceCount, std::numeric_limits<cell_id_t>::max());
+        this->interfaceNormals.assign(directedFaceCount, PointT{});
+        this->interfaceFaceCenters.assign(directedFaceCount, PointT{});
+        this->interfaceFaceVelocities.assign(directedFaceCount, PointT{});
+        this->interfaceTargetVelocities.assign(directedFaceCount, PointT{});
+
+        for(std::size_t sourceCell = 0;
+            sourceCell + 1 < cellFaceOffsets.size(); ++sourceCell)
+        {
+            const PointT sourceCenter = grid.GetMeshPoint(sourceCell);
+            const PointT sourceVelocity =
+                sourceCell < sourceVelocities.size()
+                    ? sourceVelocities[sourceCell]
+                    : PointT{};
+            for(std::size_t directedFace = cellFaceOffsets[sourceCell];
+                directedFace < cellFaceOffsets[sourceCell + 1];
+                ++directedFace)
+            {
+                const std::size_t targetCell =
+                    static_cast<std::size_t>(nextCellIndices[directedFace]);
+                PointT normal{};
+                normal.x = -inwardNormals[directedFace].x;
+                normal.y = -inwardNormals[directedFace].y;
+                normal.z = -inwardNormals[directedFace].z;
+                this->interfaceNormals[directedFace] = normal;
+                this->interfaceFaceCenters[directedFace] =
+                    faceCenters[directedFace];
+                if(targetCell >= pointEligible.size() ||
+                   targetCell >= pointSigmaDiffusion.size() ||
+                   targetCell >= pointGroupCutoff.size() ||
+                   targetCell >= pointVelocities.size() ||
+                   targetCell >= pointCellIDs.size())
+                {
+                    continue;
+                }
+
+                const PointT targetCenter = grid.GetMeshPoint(targetCell);
+                const PointT targetVelocity = pointVelocities[targetCell];
+                const PointT &faceCenter = faceCenters[directedFace];
+                const double sourceDistance = transport::Abs(
+                    (faceCenter.x - sourceCenter.x) * normal.x +
+                    (faceCenter.y - sourceCenter.y) * normal.y +
+                    (faceCenter.z - sourceCenter.z) * normal.z);
+                const double targetDistance = transport::Abs(
+                    (targetCenter.x - faceCenter.x) * normal.x +
+                    (targetCenter.y - faceCenter.y) * normal.y +
+                    (targetCenter.z - faceCenter.z) * normal.z);
+                const double distanceSum = sourceDistance + targetDistance;
+                PointT faceVelocity{};
+                if(distanceSum > 0.0)
+                {
+                    faceVelocity.x =
+                        (targetDistance * sourceVelocity.x +
+                         sourceDistance * targetVelocity.x) / distanceSum;
+                    faceVelocity.y =
+                        (targetDistance * sourceVelocity.y +
+                         sourceDistance * targetVelocity.y) / distanceSum;
+                    faceVelocity.z =
+                        (targetDistance * sourceVelocity.z +
+                         sourceDistance * targetVelocity.z) / distanceSum;
+                }
+                else
+                {
+                    faceVelocity.x =
+                        0.5 * (sourceVelocity.x + targetVelocity.x);
+                    faceVelocity.y =
+                        0.5 * (sourceVelocity.y + targetVelocity.y);
+                    faceVelocity.z =
+                        0.5 * (sourceVelocity.z + targetVelocity.z);
+                }
+
+                this->interfaceTargetEligible[directedFace] =
+                    pointEligible[targetCell] != 0 ? 1u : 0u;
+                this->interfaceTargetSigmaDiffusion[directedFace] =
+                    pointSigmaDiffusion[targetCell];
+                this->interfaceTargetDistance[directedFace] = targetDistance;
+                this->interfaceTargetGroupCutoff[directedFace] =
+                    pointGroupCutoff[targetCell];
+                this->interfaceTargetCellID[directedFace] =
+                    static_cast<cell_id_t>(pointCellIDs[targetCell]);
+                this->interfaceFaceVelocities[directedFace] = faceVelocity;
+                this->interfaceTargetVelocities[directedFace] =
+                    targetVelocity;
+            }
+        }
+
+        this->movingInterfaceCorrection = useMovingCorrection;
+        this->maximumInterfaceVelocityOverC = maximumVelocityOverC;
+        this->interfaceTargetWeightRatio = targetWeightRatio;
+        this->maximumInterfaceSplits = maximumSplits;
+        this->maximumMovingInterfaceWeightCorrection =
+            maximumWeightCorrection;
+    }
+
     DeviceView<PointT> View()
     {
         DeviceView<PointT> result;
@@ -197,11 +362,41 @@ struct HostSnapshot
         result.targetGroupCutoff = this->targetGroupCutoff.data();
         result.outwardNormals = this->outwardNormals.data();
         result.faceCenters = this->faceCenters.data();
+        result.interfaceTargetEligible =
+            this->interfaceTargetEligible.data();
+        result.interfaceTargetSigmaDiffusion =
+            this->interfaceTargetSigmaDiffusion.data();
+        result.interfaceTargetDistance =
+            this->interfaceTargetDistance.data();
+        result.interfaceTargetGroupCutoff =
+            this->interfaceTargetGroupCutoff.data();
+        result.interfaceTargetCellID =
+            this->interfaceTargetCellID.data();
+        result.interfaceNormals = this->interfaceNormals.data();
+        result.interfaceFaceCenters =
+            this->interfaceFaceCenters.data();
+        result.interfaceFaceVelocities =
+            this->interfaceFaceVelocities.data();
+        result.interfaceTargetVelocities =
+            this->interfaceTargetVelocities.data();
         result.fluxRhs = this->fluxRhs.data();
         result.cellCount = this->cellEligible.size();
         result.minimumParticleOpticalDepth = this->minimumParticleOpticalDepth;
+        result.maximumInterfaceVelocityOverC =
+            this->maximumInterfaceVelocityOverC;
+        result.interfaceTargetWeightRatio =
+            this->interfaceTargetWeightRatio;
+        result.maximumInterfaceSplits = this->maximumInterfaceSplits;
+        result.maximumMovingInterfaceWeightCorrection =
+            this->maximumMovingInterfaceWeightCorrection;
+        if(this->movingInterfaceCorrection)
+        {
+            result.wollaeger = GetKernelTable().View();
+        }
         result.enabled = this->enabled ? 1u : 0u;
         result.pgrwEnabled = this->pgrwEnabled ? 1u : 0u;
+        result.movingInterfaceCorrection =
+            this->movingInterfaceCorrection ? 1u : 0u;
         return result;
     }
 };
@@ -219,6 +414,9 @@ struct AdvanceResult
     PointT pendingFlux{};
     AdvanceError error = AdvanceError::None;
     AdvanceEvent event = AdvanceEvent::None;
+    HostFallbackReason hostFallbackReason = HostFallbackReason::None;
+    std::size_t pendingLeakFace = std::numeric_limits<std::size_t>::max();
+    std::size_t extraSplitCount = 0;
     std::uint8_t taken = 0;
     std::uint8_t entered = 0;
     std::uint8_t remotePendingFlux = 0;
@@ -302,6 +500,26 @@ void SampleIsotropicDirection(ParticleT &particle, const double speed)
     particle.velocity.x = speed * sinTheta * transport::Cos(phi);
     particle.velocity.y = speed * sinTheta * transport::Sin(phi);
     particle.velocity.z = speed * mu;
+}
+
+// Matches the default RadiationOpacityModel::getRandomVelocity path.  Custom
+// opacity models that override direction sampling must provide a host-built
+// snapshot before enabling GPU DDMC.
+template<typename ParticleT>
+STORM_TRANSPORT_INLINE
+void SampleRandomVelocity(ParticleT &particle, const double speed)
+{
+    SampleIsotropicDirection<ParticleT, int>(particle, speed);
+}
+
+STORM_TRANSPORT_INLINE
+void AccumulateCounter(std::size_t *counter, const std::size_t amount = 1)
+{
+    if(counter == nullptr)
+    {
+        return;
+    }
+    STORM_TRANSPORT_ACCUMULATE(*counter, amount);
 }
 
 STORM_TRANSPORT_INLINE
@@ -450,6 +668,339 @@ cell_id_t BypassCellID(const ParticleT &particle, const ColdT &cold)
     }
 }
 
+template<typename ParticleT, typename ColdT>
+STORM_TRANSPORT_INLINE
+void SetBypassCellID(ParticleT &particle,
+                     ColdT &cold,
+                     const cell_id_t cellID)
+{
+    if constexpr(HasFlatRadiationFlags<ParticleT>::value)
+    {
+        cold.bypassCellID = cellID;
+    }
+    else
+    {
+        particle.radiationState.bypassCellID = cellID;
+    }
+}
+
+enum class InterfaceEvent : std::uint8_t
+{
+    None,
+    Bypass,
+    Reflected,
+    Admitted
+};
+
+struct InterfaceResult
+{
+    StepResult step;
+    InterfaceEvent event = InterfaceEvent::None;
+    std::size_t requestedSplitCount = 1;
+    std::size_t extraSplitCount = 0;
+    std::uint8_t taken = 0;
+};
+
+template<typename ParticleT, typename ColdT, typename ViewsT>
+STORM_TRANSPORT_INLINE
+InterfaceResult TryIMCToDDMCInterface(
+    ParticleT &particle,
+    ColdT &cold,
+    const ViewsT &views,
+    const std::size_t sourceCellIndex,
+    const cell_index_t targetCellIndex,
+    const std::size_t directedFace)
+{
+    using PointT = typename ViewsT::point_type;
+    InterfaceResult result;
+    const DeviceView<PointT> &ddmc = views.ddmc;
+    const std::size_t targetCell =
+        static_cast<std::size_t>(targetCellIndex);
+    if(!ddmc.enabled || directedFace ==
+           std::numeric_limits<std::size_t>::max() ||
+       ddmc.interfaceTargetEligible == nullptr ||
+       !ddmc.interfaceTargetEligible[directedFace] ||
+       ddmc.interfaceTargetSigmaDiffusion == nullptr ||
+       ddmc.interfaceTargetDistance == nullptr ||
+       ddmc.interfaceTargetCellID == nullptr ||
+       ddmc.interfaceNormals == nullptr ||
+       ddmc.interfaceFaceCenters == nullptr ||
+       ddmc.interfaceFaceVelocities == nullptr ||
+       ddmc.interfaceTargetVelocities == nullptr)
+    {
+        return result;
+    }
+
+    const cell_id_t targetID =
+        ddmc.interfaceTargetCellID[directedFace];
+    if(BypassCellID(particle, cold) == targetID)
+    {
+        return result;
+    }
+
+    PointT normal = Normalize(ddmc.interfaceNormals[directedFace]);
+    if(!(Dot(normal, normal) > 0.0))
+    {
+        return result;
+    }
+    ParticleT faceComoving = particle;
+    ParticleT targetComoving = particle;
+    const bool useVelocityFrames =
+        views.comovingTransport && views.cellVelocities != nullptr;
+    if(useVelocityFrames)
+    {
+        LorentzBoost<ParticleT, PointT>(
+            faceComoving, ddmc.interfaceFaceVelocities[directedFace],
+            views.speedOfLight);
+        targetComoving = faceComoving;
+        PointT inverseFaceVelocity =
+            Scale(ddmc.interfaceFaceVelocities[directedFace], -1.0);
+        LorentzBoost<ParticleT, PointT>(
+            targetComoving, inverseFaceVelocity, views.speedOfLight);
+        LorentzBoost<ParticleT, PointT>(
+            targetComoving,
+            ddmc.interfaceTargetVelocities[directedFace],
+            views.speedOfLight);
+    }
+
+    if(ddmc.pgrwEnabled && views.energyBoundaries != nullptr &&
+       ddmc.interfaceTargetGroupCutoff != nullptr)
+    {
+        const std::size_t cutoff =
+            ddmc.interfaceTargetGroupCutoff[directedFace];
+        const double frequency = ClampFrequency(
+            views.energyBoundaries, views.groupCount,
+            targetComoving.frequency);
+        if(cutoff == 0 || cutoff > views.groupCount ||
+           frequency >= views.energyBoundaries[cutoff])
+        {
+            return result;
+        }
+    }
+
+    const double speed =
+        transport::Sqrt(Dot(faceComoving.velocity, faceComoving.velocity));
+    if(!(speed > 0.0) || !transport::IsFinite(speed))
+    {
+        return result;
+    }
+    const double mu = Dot(Scale(faceComoving.velocity, 1.0 / speed), normal);
+    if(!(mu > 0.0) || !transport::IsFinite(mu))
+    {
+        return result;
+    }
+    AccumulateCounter(ddmc.interfaceIncidentCount);
+
+    double movingFactor = 1.0;
+    if(useVelocityFrames && ddmc.movingInterfaceCorrection)
+    {
+        const double betaNormal =
+            -Dot(ddmc.interfaceFaceVelocities[directedFace], normal) /
+            views.speedOfLight;
+        if(!transport::IsFinite(betaNormal) ||
+           transport::Abs(betaNormal) >
+               ddmc.maximumInterfaceVelocityOverC)
+        {
+            SetBypassCellID(particle, cold, targetID);
+            result.taken = 1;
+            result.event = InterfaceEvent::Bypass;
+            AccumulateCounter(ddmc.interfaceGuFallbackCount);
+            AccumulateCounter(ddmc.interfaceBypassCount);
+            result.step.change = ParticleStatus::CELL_MOVE;
+            result.step.nextCellIndex = targetCellIndex;
+            return result;
+        }
+        movingFactor = MovingFactor(ddmc.wollaeger, mu, betaNormal);
+        if(!(movingFactor > 0.0) ||
+           !transport::IsFinite(movingFactor) ||
+           movingFactor >
+               ddmc.maximumMovingInterfaceWeightCorrection)
+        {
+            SetBypassCellID(particle, cold, targetID);
+            result.taken = 1;
+            result.event = InterfaceEvent::Bypass;
+            AccumulateCounter(ddmc.interfaceGuFallbackCount);
+            AccumulateCounter(ddmc.interfaceBypassCount);
+            result.step.change = ParticleStatus::CELL_MOVE;
+            result.step.nextCellIndex = targetCellIndex;
+            return result;
+        }
+    }
+
+    const double denominator = ddmc.interfaceTargetWeightRatio *
+        (transport::Abs(particle.weight) >
+                 std::numeric_limits<double>::min()
+             ? transport::Abs(particle.weight)
+             : std::numeric_limits<double>::min());
+    if(denominator > 0.0)
+    {
+        const double requested =
+            transport::Abs(faceComoving.weight * movingFactor) /
+            denominator;
+        result.requestedSplitCount =
+            static_cast<std::size_t>(requested);
+        if(static_cast<double>(result.requestedSplitCount) < requested)
+        {
+            ++result.requestedSplitCount;
+        }
+        if(result.requestedSplitCount < 1)
+        {
+            result.requestedSplitCount = 1;
+        }
+    }
+    if(result.requestedSplitCount >
+       (ddmc.maximumInterfaceSplits > 0
+            ? ddmc.maximumInterfaceSplits
+            : std::size_t(1)))
+    {
+        SetBypassCellID(particle, cold, targetID);
+        result.taken = 1;
+        result.event = InterfaceEvent::Bypass;
+        AccumulateCounter(ddmc.interfaceBypassCount);
+        result.step.change = ParticleStatus::CELL_MOVE;
+        result.step.nextCellIndex = targetCellIndex;
+        return result;
+    }
+
+    const double admission = StaticAdmissionProbability(
+        mu, ddmc.interfaceTargetSigmaDiffusion[directedFace],
+        ddmc.interfaceTargetDistance[directedFace]);
+    if(CounterRNG::unitOpen(
+           particle.rngKey, particle.rngCounter++) > admission)
+    {
+        const double reflectedMu = transport::Sqrt(
+            CounterRNG::unitOpen(
+                particle.rngKey, particle.rngCounter++));
+        const double phi = 6.28318530717958647692 *
+            CounterRNG::unitOpen(
+                particle.rngKey, particle.rngCounter++);
+        const double sinTheta = transport::Sqrt(
+            (1.0 - reflectedMu * reflectedMu) > 0.0
+                ? 1.0 - reflectedMu * reflectedMu
+                : 0.0);
+        PointT helper{};
+        if(transport::Abs(normal.x) < 0.9)
+        {
+            helper.x = 1.0;
+        }
+        else
+        {
+            helper.y = 1.0;
+        }
+        const PointT e1 = Normalize(
+            Add(helper, Scale(normal, -Dot(helper, normal))));
+        const PointT e2 = Normalize(Cross(normal, e1));
+        const PointT reflectedDirection = Add(
+            Scale(normal, -reflectedMu),
+            Add(Scale(e1, sinTheta * transport::Cos(phi)),
+                Scale(e2, sinTheta * transport::Sin(phi))));
+        faceComoving.velocity =
+            Scale(reflectedDirection, views.speedOfLight);
+        if(useVelocityFrames)
+        {
+            PointT inverseFaceVelocity =
+                Scale(ddmc.interfaceFaceVelocities[directedFace], -1.0);
+            LorentzBoost<ParticleT, PointT>(
+                faceComoving, inverseFaceVelocity, views.speedOfLight);
+        }
+        particle.velocity = faceComoving.velocity;
+        particle.frequency = faceComoving.frequency;
+        particle.weight = faceComoving.weight;
+        const PointT &faceCenter =
+            ddmc.interfaceFaceCenters[directedFace];
+        const PointT &sourceCenter =
+            views.grid.cellCenters[sourceCellIndex];
+        particle.location.x =
+            (1.0 - 1.0e-10) * faceCenter.x +
+            1.0e-10 * sourceCenter.x;
+        particle.location.y =
+            (1.0 - 1.0e-10) * faceCenter.y +
+            1.0e-10 * sourceCenter.y;
+        particle.location.z =
+            (1.0 - 1.0e-10) * faceCenter.z +
+            1.0e-10 * sourceCenter.z;
+        result.taken = 1;
+        result.event = InterfaceEvent::Reflected;
+        AccumulateCounter(ddmc.interfaceReflectedCount);
+        result.step.change = ParticleStatus::NO_CELL_MOVE;
+        return result;
+    }
+
+    faceComoving.weight *= movingFactor;
+    if(movingFactor != 1.0)
+    {
+        AccumulateCounter(ddmc.interfaceGuAppliedCount);
+    }
+    targetComoving = faceComoving;
+    if(useVelocityFrames)
+    {
+        PointT inverseFaceVelocity =
+            Scale(ddmc.interfaceFaceVelocities[directedFace], -1.0);
+        LorentzBoost<ParticleT, PointT>(
+            targetComoving, inverseFaceVelocity, views.speedOfLight);
+        LorentzBoost<ParticleT, PointT>(
+            targetComoving,
+            ddmc.interfaceTargetVelocities[directedFace],
+            views.speedOfLight);
+    }
+    std::size_t splitCount = result.requestedSplitCount;
+    if(targetCell >= ddmc.cellCount)
+    {
+        splitCount = 1;
+    }
+    const double admittedTargetWeight = targetComoving.weight;
+    if(splitCount > 1)
+    {
+        targetComoving.weight /= static_cast<double>(splitCount);
+        result.extraSplitCount = splitCount - 1;
+        AccumulateCounter(
+            ddmc.interfaceSplitPacketCount, result.extraSplitCount);
+    }
+    // Splitting controls variance but does not change the expected transported
+    // weight.  Extra unbiased copies are emitted by the resident executor.
+    particle.weight = targetComoving.weight;
+    particle.frequency = targetComoving.frequency;
+    particle.initialWeight = transport::Abs(particle.weight);
+    std::uint8_t &radiationFlags = RadiationFlags(particle);
+    constexpr std::uint8_t ddmcFlags =
+        RadiationTransportState<PointT>::DDMCMode |
+        RadiationTransportState<PointT>::DDMCCellResident |
+        RadiationTransportState<PointT>::DDMCComovingFrame;
+    radiationFlags = static_cast<std::uint8_t>(
+        (radiationFlags | ddmcFlags) &
+        ~RadiationTransportState<PointT>::PendingFlux);
+    cold.pendingFlux = PointT{};
+
+    const double admittedSpeed = transport::Sqrt(
+        Dot(targetComoving.velocity, targetComoving.velocity));
+    if(admittedSpeed > 0.0 && transport::IsFinite(admittedSpeed))
+    {
+        const PointT contribution = Scale(
+            targetComoving.velocity,
+            admittedTargetWeight / admittedSpeed);
+        if(targetCell < ddmc.cellCount)
+        {
+            AddFlux(views, targetCell, contribution);
+        }
+        else
+        {
+            cold.pendingFlux = contribution;
+            radiationFlags = static_cast<std::uint8_t>(
+                radiationFlags |
+                RadiationTransportState<PointT>::PendingFlux);
+        }
+    }
+    particle.location =
+        ddmc.interfaceFaceCenters[directedFace];
+    SampleRandomVelocity(particle, views.speedOfLight);
+    result.taken = 1;
+    result.event = InterfaceEvent::Admitted;
+    AccumulateCounter(ddmc.interfaceAdmittedCount);
+    result.step.change = ParticleStatus::CELL_MOVE;
+    result.step.nextCellIndex = targetCellIndex;
+    return result;
+}
+
 template<typename ParticleT>
 STORM_TRANSPORT_INLINE
 void SamplePlanckBandFrequency(ParticleT &particle,
@@ -464,12 +1015,11 @@ void SamplePlanckBandFrequency(ParticleT &particle,
         return;
     }
     const double bandMass = PlanckBandMass(boundaries, kT, beginGroup, endGroup);
-    if(!(bandMass > 0.0))
+    if(not (bandMass > 0.0))
     {
         return;
     }
-    double remaining =
-        CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) * bandMass;
+    double remaining = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) * bandMass;
     for(std::size_t group = beginGroup; group < endGroup; ++group)
     {
         const double groupMass = PlanckBandMass(boundaries, kT, group, group + 1);
@@ -493,8 +1043,7 @@ void SamplePlanckBandFrequency(ParticleT &particle,
                 localRandom = CounterRNG::unitOpen(
                     particle.rngKey, particle.rngCounter++);
             }
-            particle.frequency = SampleFrequencyInGroup(
-                boundaries, groupCount, group, localRandom);
+            particle.frequency = SampleFrequencyInGroup(boundaries, groupCount, group, localRandom);
             return;
         }
         remaining -= groupMass;
@@ -514,7 +1063,7 @@ void ExitDDMCToTransport(ParticleT &particle,
 {
     using PointT = typename ViewsT::point_type;
     const bool packetInDDMC = (radiationFlags & ddmcFlags) != 0;
-    if(!packetInDDMC && !convertedIncomingToComoving)
+    if(not packetInDDMC and not convertedIncomingToComoving)
     {
         return;
     }
@@ -523,19 +1072,15 @@ void ExitDDMCToTransport(ParticleT &particle,
         particle.location = views.grid.cellCenters[cellIndex];
         if(sampleDirection)
         {
-            SampleIsotropicDirection<ParticleT, PointT>(
-                particle, views.speedOfLight);
+            SampleRandomVelocity(particle, views.speedOfLight);
         }
     }
-    if((radiationFlags & RadiationTransportState<PointT>::DDMCComovingFrame) != 0 ||
-       convertedIncomingToComoving)
+    if((radiationFlags & RadiationTransportState<PointT>::DDMCComovingFrame) != 0 or convertedIncomingToComoving)
     {
         LorentzToLab(particle, views, cellIndex);
-        particle.frequency = ClampFrequency(
-            views.energyBoundaries, views.groupCount, particle.frequency);
+        particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
     }
-    radiationFlags = static_cast<std::uint8_t>(
-        radiationFlags & ~(ddmcFlags | pending));
+    radiationFlags = static_cast<std::uint8_t>(radiationFlags & ~(ddmcFlags | pending));
     particle.initialWeight = transport::Abs(particle.weight);
 }
 
@@ -576,9 +1121,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
 
     if(ddmc.cellEligible == nullptr || !ddmc.cellEligible[cellIndex])
     {
-        ExitDDMCToTransport(
-            particle, radiationFlags, views, cellIndex, true,
-            convertedIncomingToComoving, ddmcFlags, pending);
+        ExitDDMCToTransport(particle, radiationFlags, views, cellIndex, true, convertedIncomingToComoving, ddmcFlags, pending);
         return result;
     }
     if(ddmc.totalLeakRate == nullptr || ddmc.sigmaEnergyAbs == nullptr ||
@@ -591,12 +1134,10 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         return result;
     }
 
-    if(!packetInDDMC)
+    if(not packetInDDMC)
     {
         const cell_id_t bypass = BypassCellID(particle, cold);
-        if(bypass != std::numeric_limits<cell_id_t>::max() &&
-           ddmc.cellIDs != nullptr &&
-           ddmc.cellIDs[cellIndex] == bypass)
+        if(bypass != std::numeric_limits<cell_id_t>::max() and ddmc.cellIDs != nullptr and ddmc.cellIDs[cellIndex] == bypass)
         {
             return result;
         }
@@ -825,8 +1366,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         particle.frequency = NextUp(views.energyBoundaries[groupCutoff]);
         particle.frequency = ClampFrequency(
             views.energyBoundaries, views.groupCount, particle.frequency);
-        SampleIsotropicDirection<ParticleT, PointT>(
-            particle, views.speedOfLight);
+        SampleRandomVelocity(particle, views.speedOfLight);
         LorentzToLab(particle, views, cellIndex);
         particle.frequency = ClampFrequency(
             views.energyBoundaries, views.groupCount, particle.frequency);
@@ -847,8 +1387,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         }
         radiationFlags = static_cast<std::uint8_t>(radiationFlags | ddmcFlags);
         particle.location = views.grid.cellCenters[cellIndex];
-        SampleIsotropicDirection<ParticleT, PointT>(
-            particle, views.speedOfLight);
+        SampleRandomVelocity(particle, views.speedOfLight);
         result.entered = 1;
         result.event = AdvanceEvent::Entry;
     }
@@ -884,7 +1423,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             particle.frequency = ClampFrequency(
                 views.energyBoundaries, views.groupCount, particle.frequency);
         }
-        SampleIsotropicDirection<ParticleT, PointT>(particle, views.speedOfLight);
+        SampleRandomVelocity(particle, views.speedOfLight);
         LorentzToLab(particle, views, cellIndex);
         particle.frequency = ClampFrequency(
             views.energyBoundaries, views.groupCount, particle.frequency);
@@ -903,7 +1442,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
     {
         if(not pgrw)
         {
-            SampleIsotropicDirection<ParticleT, PointT>(particle, views.speedOfLight);
+            SampleRandomVelocity(particle, views.speedOfLight);
             radiationFlags = static_cast<std::uint8_t>(radiationFlags & ~(ddmcFlags | pending));
             result.step.change = ParticleStatus::DONE;
             result.event = AdvanceEvent::Census;
@@ -916,7 +1455,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         const double kT = (ddmc.cellTemperature != nullptr)? boltzmannConstant * ddmc.cellTemperature[cellIndex] : 0.0;
         SamplePlanckBandFrequency(particle, views.energyBoundaries, views.groupCount, kT, groupCutoff, views.groupCount);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
-        SampleIsotropicDirection<ParticleT, PointT>(particle, views.speedOfLight);
+        SampleRandomVelocity(particle, views.speedOfLight);
         LorentzToLab(particle, views, cellIndex);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
         radiationFlags = static_cast<std::uint8_t>(radiationFlags & ~(ddmcFlags | pending));
@@ -940,7 +1479,10 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
 
     if(ddmc.faceKinds != nullptr and ddmc.faceKinds[chosen] == static_cast<std::uint8_t>(FaceKind::ThermalizingBoundary))
     {
-        result.error = AdvanceError::InvalidData;
+        result.error = AdvanceError::HostFallback;
+        result.hostFallbackReason = HostFallbackReason::ThermalizingLeak;
+        result.pendingLeakFace = chosen;
+        AccumulateCounter(ddmc.hostFallbackCount);
         return result;
     }
 

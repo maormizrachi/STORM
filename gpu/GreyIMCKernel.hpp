@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "FlatGridView.hpp"
 #include "../radiation/ddmc/AdvanceDDMC.hpp"
@@ -189,6 +190,44 @@ bool IsRankHopTerminal(const ParticleT &particle,
 
 template<typename ParticleT, typename ColdT, typename PointT>
 STORM_GPU_INLINE_FUNCTION
+ddmc::InterfaceResult ApplyDDMCInterface(ParticleT &particle,
+                                           ColdT &cold,
+                                           TransportResult &result,
+                                           const GreyIMCViews<PointT> &views)
+{
+    ddmc::InterfaceResult interface;
+    if(result.error != TransportError::None ||
+       result.step.change != ParticleStatus::CELL_MOVE ||
+       result.step.boundaryCrossing)
+    {
+        return interface;
+    }
+    const std::size_t sourceCell =
+        static_cast<std::size_t>(particle.cellIndex);
+    interface =
+        ddmc::TryIMCToDDMCInterface(
+            particle, cold, views, sourceCell,
+            result.step.nextCellIndex, result.directedFace);
+    if(interface.taken)
+    {
+        result.step = interface.step;
+        result.ddmcExtraSplits = interface.extraSplitCount;
+        return interface;
+    }
+    if(sourceCell < views.ddmc.cellCount &&
+       views.ddmc.cellIDs != nullptr &&
+       ddmc::BypassCellID(particle, cold) ==
+           views.ddmc.cellIDs[sourceCell])
+    {
+        ddmc::SetBypassCellID(
+            particle, cold,
+            std::numeric_limits<cell_id_t>::max());
+    }
+    return interface;
+}
+
+template<typename ParticleT, typename ColdT, typename PointT>
+STORM_GPU_INLINE_FUNCTION
 TransportResult AdvanceOne(ParticleT &particle, ColdT &cold,
                            const GreyIMCViews<PointT> &views)
 {
@@ -210,6 +249,14 @@ TransportResult AdvanceOne(ParticleT &particle, ColdT &cold,
     }
     const ddmc::AdvanceResult<PointT> ddmcResult =
         ddmc::AdvanceDDMC(particle, cold, views);
+    if(ddmcResult.error == ddmc::AdvanceError::HostFallback)
+    {
+        TransportResult result;
+        result.error = TransportError::HostFallback;
+        result.hostFallbackReason = ddmcResult.hostFallbackReason;
+        result.pendingLeakFace = ddmcResult.pendingLeakFace;
+        return result;
+    }
     if(ddmcResult.error != ddmc::AdvanceError::None)
     {
         TransportResult result;
@@ -217,8 +264,14 @@ TransportResult AdvanceOne(ParticleT &particle, ColdT &cold,
         return result;
     }
     if(ddmcResult.taken)
-        return TransportResult{ddmcResult.step, TransportError::None};
-    return transport::AdvanceIMC(particle, views);
+    {
+        TransportResult result{ddmcResult.step, TransportError::None};
+        result.ddmcExtraSplits = ddmcResult.extraSplitCount;
+        return result;
+    }
+    TransportResult result = transport::AdvanceIMC(particle, views);
+    ApplyDDMCInterface(particle, cold, result, views);
+    return result;
 }
 
 } // namespace gpu

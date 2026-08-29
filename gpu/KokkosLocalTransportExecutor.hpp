@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -39,10 +38,29 @@ struct CompletedTransport
 static_assert(std::is_trivially_copyable<CompletedTransport>::value,
               "CompletedTransport must be safe for device-host copies");
 
+struct CompletedTransportSpan
+{
+    const CompletedTransport *data = nullptr;
+    std::size_t size = 0;
+
+    const CompletedTransport *begin() const { return data; }
+    const CompletedTransport *end() const
+    {
+        return data == nullptr ? nullptr : data + size;
+    }
+    bool empty() const { return size == 0; }
+};
+
 struct CompletedBatch
 {
+    // Production callers consume these borrowed spans before invoking the
+    // executor again. Execute() uses particles only because it accumulates
+    // results across multiple waves.
+    CompletedTransportSpan terminals;
+    CompletedTransportSpan fallbacks;
+    CompletedTransportSpan remotes;
+    CompletedTransportSpan census;
     std::vector<CompletedTransport> particles;
-    std::vector<std::size_t> cellSteps;
     double packSeconds = 0.0;
     double deviceSeconds = 0.0;
     double copyBackSeconds = 0.0;
@@ -52,19 +70,38 @@ struct CompletedBatch
     std::size_t launchedParticles = 0;
     std::size_t censusCount = 0;
     std::size_t censusSteps = 0;
+    std::size_t createdParticles = 0;
 };
 
 struct WaveCounters
 {
-    std::size_t finished = 0;
+    std::size_t terminal = 0;
+    std::size_t fallback = 0;
     std::size_t remote = 0;
     std::size_t survivor = 0;
     std::size_t census = 0;
     std::size_t physicsSteps = 0;
     std::size_t censusSteps = 0;
+    std::size_t appended = 0;
 };
 static_assert(std::is_trivially_copyable<WaveCounters>::value,
               "WaveCounters must be safe for device-host copies");
+
+struct TransportExecutorMetrics
+{
+    std::size_t h2dBytes = 0;
+    std::size_t d2hBytes = 0;
+    std::size_t eliminatedHostCopyBytes = 0;
+    std::size_t reallocationCount = 0;
+    std::size_t synchronizationCount = 0;
+    std::size_t terminalCount = 0;
+    std::size_t fallbackCount = 0;
+    std::size_t remoteCount = 0;
+    std::size_t censusCopyCount = 0;
+    std::size_t splitCreatedCount = 0;
+    std::size_t maxIngestCount = 0;
+    std::size_t maxActiveCount = 0;
+};
 
 class KokkosLocalTransportExecutor
 {
@@ -83,10 +120,13 @@ public:
           nextPackets_("storm_transport_next_packets", 0),
           coldPackets_("storm_transport_cold_packets", 0),
           nextColdPackets_("storm_transport_next_cold_packets", 0),
+          survivorSplitCounts_("storm_transport_survivor_split_counts", 0),
           completedTransports_("storm_transport_completed", 0),
+          fallbackTransports_("storm_transport_fallbacks", 0),
           pendingRemotes_("storm_transport_pending_remotes", 0),
           pendingCensus_("storm_transport_pending_census", 0),
-          hostCompletedTransports_("storm_transport_host_completed", 0),
+          hostEventTransports_("storm_transport_host_events", 0),
+          hostRemoteTransports_("storm_transport_host_remotes", 0),
           waveCounters_("storm_transport_wave_counters")
     {}
 
@@ -96,6 +136,7 @@ public:
         this->pendingRemoteCount_ = 0;
         this->pendingCensusCount_ = 0;
         this->remoteHoldSkips_ = 0;
+        this->metrics_ = {};
     }
 
     std::size_t ActiveCount() const
@@ -118,6 +159,11 @@ public:
         return this->activeCount_ > 0 or this->pendingRemoteCount_ > 0;
     }
 
+    const TransportExecutorMetrics &Metrics() const
+    {
+        return this->metrics_;
+    }
+
     template<typename PointT>
     void Ingest(const std::vector<Particle<PointT>> &arrivals)
     {
@@ -133,18 +179,7 @@ public:
         const std::size_t incoming = arrivals.size();
         const std::size_t offset = this->activeCount_;
         const std::size_t required = offset + incoming;
-        EnsureCapacity(this->hostPackets_, incoming);
-        EnsureCapacity(this->hostColdPackets_, incoming);
-        EnsureCapacity(this->packets_, required);
-        EnsureCapacity(this->nextPackets_, required);
-        EnsureCapacity(this->coldPackets_, required);
-        EnsureCapacity(this->nextColdPackets_, required);
-        EnsureCapacity(this->completedTransports_, incoming);
-        EnsureCapacity(this->pendingRemotes_, this->pendingRemoteCount_ + incoming);
-        EnsureCapacity(this->pendingCensus_, this->pendingCensusCount_ + incoming);
-        EnsureCapacity(this->hostCompletedTransports_,
-                       std::max(incoming, std::max(this->pendingRemoteCount_,
-                                                   this->pendingCensusCount_)));
+        this->ReserveForIngest(incoming);
 
         for(std::size_t i = 0; i < incoming; ++i)
         {
@@ -155,6 +190,13 @@ public:
         Kokkos::deep_copy(Kokkos::subview(this->coldPackets_, std::pair<std::size_t, std::size_t>(offset, required)),
                             Kokkos::subview(this->hostColdPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
         this->activeCount_ = required;
+        this->metrics_.h2dBytes += incoming *
+            (sizeof(DeviceParticle) + sizeof(DeviceParticleCold));
+        this->metrics_.synchronizationCount += 2;
+        this->metrics_.maxIngestCount =
+            std::max(this->metrics_.maxIngestCount, incoming);
+        this->metrics_.maxActiveCount =
+            std::max(this->metrics_.maxActiveCount, required);
     }
 
     template<typename ProgressFunction>
@@ -200,16 +242,14 @@ public:
         const std::size_t maximumInnerSteps = this->maximumInnerSteps_;
         const std::size_t remoteOffset = this->pendingRemoteCount_;
         const std::size_t censusOffset = this->pendingCensusCount_;
-        EnsureCapacity(this->nextPackets_, activeCount);
-        EnsureCapacity(this->nextColdPackets_, activeCount);
-        EnsureCapacity(this->completedTransports_, activeCount);
-        EnsureCapacity(this->pendingRemotes_, remoteOffset + activeCount);
-        EnsureCapacity(this->pendingCensus_, censusOffset + activeCount);
+        this->ReserveForWave(activeCount, remoteOffset, censusOffset);
         auto packets = this->packets_;
         auto nextPackets = this->nextPackets_;
         auto coldPackets = this->coldPackets_;
         auto nextColdPackets = this->nextColdPackets_;
+        auto survivorSplitCounts = this->survivorSplitCounts_;
         auto completedTransports = this->completedTransports_;
+        auto fallbackTransports = this->fallbackTransports_;
         auto pendingRemotes = this->pendingRemotes_;
         auto pendingCensus = this->pendingCensus_;
         auto waveCounters = this->waveCounters_;
@@ -224,14 +264,23 @@ public:
                 DeviceParticle particle = packets(i);
                 DeviceParticleCold cold = coldPackets(i);
                 TransportResult result;
+                std::size_t pendingExtraSplits = 0;
                 std::size_t taken = 0;
                 for(std::size_t step = 0; step < maximumInnerSteps; ++step)
                 {
                     ++taken;
                     ++particle.steps;
                     result = gpu::AdvanceOne(particle, cold, views);
+                    if(result.ddmcExtraSplits > 0)
+                    {
+                        pendingExtraSplits = result.ddmcExtraSplits;
+                    }
                     if(TryKeepPacketOnDevice(particle, result, views))
                     {
+                        if(pendingExtraSplits > 0)
+                        {
+                            break;
+                        }
                         continue;
                     }
                     break;
@@ -239,6 +288,18 @@ public:
 
                 Kokkos::atomic_fetch_add(
                     &waveCounters().physicsSteps, taken);
+                if(result.error == TransportError::HostFallback)
+                {
+                    CompletedTransport transport;
+                    transport.particle = particle;
+                    transport.cold = cold;
+                    transport.result = result;
+                    const std::size_t fallbackIndex =
+                        Kokkos::atomic_fetch_add(
+                            &waveCounters().fallback, std::size_t(1));
+                    fallbackTransports(fallbackIndex) = transport;
+                    return;
+                }
                 if(result.error == TransportError::None &&
                    result.step.change == ParticleStatus::NO_CELL_MOVE)
                 {
@@ -247,6 +308,9 @@ public:
                             &waveCounters().survivor, std::size_t(1));
                     nextPackets(survivorIndex) = particle;
                     nextColdPackets(survivorIndex) = cold;
+                    survivorSplitCounts(survivorIndex) = pendingExtraSplits;
+                    Kokkos::atomic_fetch_add(
+                        &waveCounters().appended, pendingExtraSplits);
                     return;
                 }
 
@@ -275,10 +339,10 @@ public:
                 }
                 else
                 {
-                    const std::size_t finishedIndex =
+                    const std::size_t terminalIndex =
                         Kokkos::atomic_fetch_add(
-                            &waveCounters().finished, std::size_t(1));
-                    completedTransports(finishedIndex) = transport;
+                            &waveCounters().terminal, std::size_t(1));
+                    completedTransports(terminalIndex) = transport;
                 }
             });
 
@@ -289,20 +353,73 @@ public:
 
         WaveCounters counters;
         Kokkos::deep_copy(counters, this->waveCounters_);
+        this->metrics_.synchronizationCount += 2;
+        if(counters.appended >
+           std::numeric_limits<std::size_t>::max() - counters.survivor)
+        {
+            throw std::overflow_error(
+                "KokkosLocalTransportExecutor split output overflow");
+        }
+        const std::size_t totalSurvivors =
+            counters.survivor + counters.appended;
+        if(counters.appended > 0)
+        {
+            this->EnsureCapacity(this->nextPackets_, totalSurvivors);
+            this->EnsureCapacity(this->nextColdPackets_, totalSurvivors);
+            auto expandedPackets = this->nextPackets_;
+            auto expandedColdPackets = this->nextColdPackets_;
+            auto splitCounts = this->survivorSplitCounts_;
+            const std::size_t primarySurvivors = counters.survivor;
+            Kokkos::parallel_scan(
+                "storm_expand_ddmc_interface_splits",
+                Kokkos::RangePolicy<>(0, primarySurvivors),
+                KOKKOS_LAMBDA(
+                    const std::size_t survivor,
+                    std::size_t &splitOffset,
+                    const bool final)
+                {
+                    const std::size_t copies = splitCounts(survivor);
+                    if(final && copies > 0)
+                    {
+                        const DeviceParticle primary =
+                            expandedPackets(survivor);
+                        DeviceParticleCold splitCold =
+                            expandedColdPackets(survivor);
+                        splitCold.id =
+                            std::numeric_limits<particle_id_t>::max();
+                        const std::size_t output =
+                            primarySurvivors + splitOffset;
+                        for(std::size_t copy = 0; copy < copies; ++copy)
+                        {
+                            expandedPackets(output + copy) = primary;
+                            expandedColdPackets(output + copy) = splitCold;
+                        }
+                    }
+                    splitOffset += copies;
+                });
+            Kokkos::fence(
+                "KokkosLocalTransportExecutor split expansion");
+            ++this->metrics_.synchronizationCount;
+        }
         completed.deviceSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - deviceStart).count();
-        completed.launchCount = 1;
+        completed.launchCount = 1 + (counters.appended > 0 ? 1 : 0);
         completed.physicsSteps = counters.physicsSteps;
         completed.launchedParticles = activeCount;
         completed.censusCount = counters.census;
         completed.censusSteps = counters.censusSteps;
+        completed.createdParticles = counters.appended;
+        this->metrics_.splitCreatedCount += counters.appended;
 
-        this->activeCount_ = counters.survivor;
+        this->activeCount_ = totalSurvivors;
+        this->metrics_.maxActiveCount =
+            std::max(this->metrics_.maxActiveCount, totalSurvivors);
         this->pendingRemoteCount_ = remoteOffset + counters.remote;
         this->pendingCensusCount_ = censusOffset + counters.census;
         std::swap(this->packets_, this->nextPackets_);
         std::swap(this->coldPackets_, this->nextColdPackets_);
 
-        this->CopyFinishedToHost(completed, counters.finished);
+        this->CopyFinishedToHost(
+            completed, counters.terminal, counters.fallback);
         this->FlushRemotesIfNeeded(
             completed, minRemoteCopy, maxRemoteHolds, this->activeCount_ == 0);
         return completed;
@@ -339,13 +456,14 @@ public:
             completed.launchCount += wave.launchCount;
             completed.physicsSteps += wave.physicsSteps;
             completed.launchedParticles += wave.launchedParticles;
-            completed.particles.insert(completed.particles.end(), std::make_move_iterator(wave.particles.begin()), std::make_move_iterator(wave.particles.end()));
+            completed.createdParticles += wave.createdParticles;
+            AppendSpan(completed.particles, wave.terminals);
+            AppendSpan(completed.particles, wave.fallbacks);
+            AppendSpan(completed.particles, wave.remotes);
         }
         CompletedBatch census = this->FlushPendingCensus();
         completed.copyBackSeconds += census.copyBackSeconds;
-        completed.particles.insert(completed.particles.end(),
-                                   std::make_move_iterator(census.particles.begin()),
-                                   std::make_move_iterator(census.particles.end()));
+        AppendSpan(completed.particles, census.census);
         completed.censusCount = 0;
         completed.censusSteps = 0;
         return completed;
@@ -353,40 +471,110 @@ public:
 
 private:
     template<typename ViewT>
-    static void EnsureCapacity(ViewT &view, std::size_t required)
+    void EnsureCapacity(ViewT &view, std::size_t required)
     {
         if(view.extent(0) < required)
         {
-            Kokkos::resize(view, required);
+            const std::size_t current = view.extent(0);
+            const std::size_t increment =
+                std::max<std::size_t>(1024, current / 2);
+            const std::size_t geometric =
+                current > std::numeric_limits<std::size_t>::max() - increment
+                    ? required
+                    : current + increment;
+            Kokkos::resize(view, std::max(required, geometric));
+            ++this->metrics_.reallocationCount;
         }
     }
 
-    void CopyDeviceTransports(CompletedBatch &completed,
+    void ReserveForIngest(const std::size_t incoming)
+    {
+        const std::size_t required = this->activeCount_ + incoming;
+        this->EnsureCapacity(this->hostPackets_, incoming);
+        this->EnsureCapacity(this->hostColdPackets_, incoming);
+        this->EnsureCapacity(this->packets_, required);
+        this->EnsureCapacity(this->nextPackets_, required);
+        this->EnsureCapacity(this->coldPackets_, required);
+        this->EnsureCapacity(this->nextColdPackets_, required);
+        this->EnsureCapacity(this->survivorSplitCounts_, required);
+        this->EnsureCapacity(this->completedTransports_, required);
+        this->EnsureCapacity(this->fallbackTransports_, required);
+        this->EnsureCapacity(
+            this->pendingRemotes_, this->pendingRemoteCount_ + incoming);
+        this->EnsureCapacity(
+            this->pendingCensus_, this->pendingCensusCount_ + incoming);
+        this->EnsureCapacity(
+            this->hostEventTransports_,
+            std::max(required, this->pendingCensusCount_ + incoming));
+        this->EnsureCapacity(
+            this->hostRemoteTransports_, this->pendingRemoteCount_ + incoming);
+    }
+
+    void ReserveForWave(const std::size_t activeCount,
+                        const std::size_t remoteOffset,
+                        const std::size_t censusOffset)
+    {
+        this->EnsureCapacity(this->nextPackets_, activeCount);
+        this->EnsureCapacity(this->nextColdPackets_, activeCount);
+        this->EnsureCapacity(this->survivorSplitCounts_, activeCount);
+        this->EnsureCapacity(this->completedTransports_, activeCount);
+        this->EnsureCapacity(this->fallbackTransports_, activeCount);
+        this->EnsureCapacity(this->pendingRemotes_, remoteOffset + activeCount);
+        this->EnsureCapacity(this->pendingCensus_, censusOffset + activeCount);
+        this->EnsureCapacity(
+            this->hostEventTransports_,
+            std::max(activeCount, censusOffset + activeCount));
+        this->EnsureCapacity(
+            this->hostRemoteTransports_, remoteOffset + activeCount);
+    }
+
+    static void AppendSpan(std::vector<CompletedTransport> &destination,
+                           const CompletedTransportSpan span)
+    {
+        if(span.empty())
+        {
+            return;
+        }
+        destination.insert(destination.end(), span.begin(), span.end());
+    }
+
+    CompletedTransportSpan CopyDeviceTransports(
                               Kokkos::View<CompletedTransport*> source,
+                              Kokkos::View<CompletedTransport*, PinnedHostSpace> destination,
+                              const std::size_t destinationOffset,
                               const std::size_t count)
     {
         if(count == 0)
         {
-            return;
+            return {};
         }
-        const std::size_t offset = completed.particles.size();
-        completed.particles.resize(offset + count);
-        EnsureCapacity(this->hostCompletedTransports_, count);
         Kokkos::deep_copy(
-            Kokkos::subview(this->hostCompletedTransports_,
-                            std::pair<std::size_t, std::size_t>(0, count)),
+            Kokkos::subview(destination,
+                            std::pair<std::size_t, std::size_t>(
+                                destinationOffset,
+                                destinationOffset + count)),
             Kokkos::subview(source, std::pair<std::size_t, std::size_t>(0, count)));
-        std::memcpy(completed.particles.data() + offset,
-                    this->hostCompletedTransports_.data(),
-                    count * sizeof(CompletedTransport));
+        const std::size_t bytes = count * sizeof(CompletedTransport);
+        this->metrics_.d2hBytes += bytes;
+        this->metrics_.eliminatedHostCopyBytes += bytes;
+        ++this->metrics_.synchronizationCount;
+        return {destination.data() + destinationOffset, count};
     }
 
-    void CopyFinishedToHost(CompletedBatch &completed, const std::size_t finishedCount)
+    void CopyFinishedToHost(CompletedBatch &completed,
+                            const std::size_t terminalCount,
+                            const std::size_t fallbackCount)
     {
         const std::chrono::steady_clock::time_point copyBackStart =
             std::chrono::steady_clock::now();
-        this->CopyDeviceTransports(
-            completed, this->completedTransports_, finishedCount);
+        completed.terminals = this->CopyDeviceTransports(
+            this->completedTransports_, this->hostEventTransports_,
+            0, terminalCount);
+        completed.fallbacks = this->CopyDeviceTransports(
+            this->fallbackTransports_, this->hostEventTransports_,
+            terminalCount, fallbackCount);
+        this->metrics_.terminalCount += terminalCount;
+        this->metrics_.fallbackCount += fallbackCount;
         completed.copyBackSeconds +=
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - copyBackStart).count();
@@ -414,8 +602,10 @@ private:
         this->remoteHoldSkips_ = 0;
         const std::chrono::steady_clock::time_point copyBackStart =
             std::chrono::steady_clock::now();
-        this->CopyDeviceTransports(
-            completed, this->pendingRemotes_, this->pendingRemoteCount_);
+        completed.remotes = this->CopyDeviceTransports(
+            this->pendingRemotes_, this->hostRemoteTransports_,
+            0, this->pendingRemoteCount_);
+        this->metrics_.remoteCount += this->pendingRemoteCount_;
         completed.copyBackSeconds +=
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - copyBackStart).count();
@@ -430,8 +620,10 @@ private:
         }
         const std::chrono::steady_clock::time_point copyBackStart =
             std::chrono::steady_clock::now();
-        this->CopyDeviceTransports(
-            completed, this->pendingCensus_, this->pendingCensusCount_);
+        completed.census = this->CopyDeviceTransports(
+            this->pendingCensus_, this->hostEventTransports_,
+            0, this->pendingCensusCount_);
+        this->metrics_.censusCopyCount += this->pendingCensusCount_;
         completed.copyBackSeconds +=
             std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - copyBackStart).count();
@@ -449,11 +641,15 @@ private:
     Kokkos::View<DeviceParticle*> nextPackets_;
     Kokkos::View<DeviceParticleCold*> coldPackets_;
     Kokkos::View<DeviceParticleCold*> nextColdPackets_;
+    Kokkos::View<std::size_t*> survivorSplitCounts_;
     Kokkos::View<CompletedTransport*> completedTransports_;
+    Kokkos::View<CompletedTransport*> fallbackTransports_;
     Kokkos::View<CompletedTransport*> pendingRemotes_;
     Kokkos::View<CompletedTransport*> pendingCensus_;
-    Kokkos::View<CompletedTransport*, PinnedHostSpace> hostCompletedTransports_;
+    Kokkos::View<CompletedTransport*, PinnedHostSpace> hostEventTransports_;
+    Kokkos::View<CompletedTransport*, PinnedHostSpace> hostRemoteTransports_;
     Kokkos::View<WaveCounters> waveCounters_;
+    TransportExecutorMetrics metrics_;
 };
 
 } // namespace gpu

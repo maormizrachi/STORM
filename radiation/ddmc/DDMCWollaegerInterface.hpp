@@ -7,6 +7,8 @@
 #include <limits>
 #include <vector>
 
+#include "../transport/TransportPortability.hpp"
+
 namespace STORM::ddmc {
 
 // Wollaeger et al., ApJS 209, 36 (2013), Eq. (60).  The table is built
@@ -15,6 +17,13 @@ namespace STORM::ddmc {
 constexpr double ExtrapolationLength = 0.7104;
 constexpr double MinimumTabulatedMu = 1.0e-12;
 constexpr double MaximumTabulatedMu = 1.0 - 1.0e-12;
+
+struct WollaegerKernelView
+{
+    const double *mu = nullptr;
+    const double *scaledKernel = nullptr;
+    std::size_t size = 0;
+};
 
 namespace detail {
 
@@ -205,6 +214,15 @@ public:
         return scaled / mu;
     }
 
+    WollaegerKernelView View() const
+    {
+        WollaegerKernelView result;
+        result.mu = this->mu_.data();
+        result.scaledKernel = this->scaledKernel_.data();
+        result.size = this->mu_.size();
+        return result;
+    }
+
 private:
     std::vector<double> mu_;
     std::vector<double> scaledKernel_;
@@ -212,32 +230,102 @@ private:
 
 } // namespace detail
 
+STORM_TRANSPORT_INLINE
+double Kernel(const WollaegerKernelView &table, const double mu)
+{
+    if(!transport::IsFinite(mu) || !(mu > 0.0) || mu > 1.0 ||
+       table.mu == nullptr || table.scaledKernel == nullptr ||
+       table.size < 2)
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    if(mu < MinimumTabulatedMu)
+    {
+        return table.scaledKernel[0] / mu;
+    }
+    if(mu > MaximumTabulatedMu)
+    {
+        return table.scaledKernel[table.size - 1] / mu;
+    }
+
+    std::size_t lower = 0;
+    std::size_t upper = table.size - 1;
+    while(lower + 1 < upper)
+    {
+        const std::size_t middle = lower + (upper - lower) / 2;
+        if(table.mu[middle] < mu)
+        {
+            lower = middle;
+        }
+        else
+        {
+            upper = middle;
+        }
+    }
+    double fraction = 0.0;
+    if(table.mu[upper] <= 1.0e-2)
+    {
+        fraction = (transport::Log(mu) - transport::Log(table.mu[lower])) /
+                   (transport::Log(table.mu[upper]) -
+                    transport::Log(table.mu[lower]));
+    }
+    else
+    {
+        fraction = (mu - table.mu[lower]) /
+                   (table.mu[upper] - table.mu[lower]);
+    }
+    const double scaled = table.scaledKernel[lower] + fraction *
+        (table.scaledKernel[upper] - table.scaledKernel[lower]);
+    return scaled / mu;
+}
+
+inline const detail::KernelTable &GetKernelTable()
+{
+    static const detail::KernelTable table;
+    return table;
+}
+
 inline double Kernel(double mu)
 {
-    static detail::KernelTable const table;
-    double const value = table(mu);
+    const double value = Kernel(GetKernelTable().View(), mu);
     return std::isfinite(value)
         ? value : std::numeric_limits<double>::quiet_NaN();
 }
 
-inline double MovingFactor(double mu, double normalVelocityOverC)
+STORM_TRANSPORT_INLINE
+double MovingFactor(const WollaegerKernelView &table,
+                    const double mu,
+                    const double normalVelocityOverC)
 {
-    double const kernel = Kernel(mu);
-    if(!std::isfinite(kernel) || !std::isfinite(normalVelocityOverC))
+    const double kernel = Kernel(table, mu);
+    if(!transport::IsFinite(kernel) ||
+       !transport::IsFinite(normalVelocityOverC))
+    {
         return std::numeric_limits<double>::quiet_NaN();
+    }
     return 1.0 + 2.0 * normalVelocityOverC * kernel;
 }
 
-inline double StaticAdmissionProbability(double mu,
-                                         double transportOpacity,
-                                         double centerToFaceDistance)
+inline double MovingFactor(double mu, double normalVelocityOverC)
+{
+    return MovingFactor(
+        GetKernelTable().View(), mu, normalVelocityOverC);
+}
+
+STORM_TRANSPORT_INLINE
+double StaticAdmissionProbability(const double mu,
+                                  const double transportOpacity,
+                                  const double centerToFaceDistance)
 {
     if(!(mu > 0.0) || !(transportOpacity > 0.0) ||
        !(centerToFaceDistance > 0.0))
+    {
         return 0.0;
-    double const denominator = 3.0 *
+    }
+    const double denominator = 3.0 *
         (transportOpacity * centerToFaceDistance + ExtrapolationLength);
-    return std::clamp(2.0 * (1.0 + 1.5 * mu) / denominator, 0.0, 1.0);
+    const double value = 2.0 * (1.0 + 1.5 * mu) / denominator;
+    return value < 0.0 ? 0.0 : (value > 1.0 ? 1.0 : value);
 }
 
 inline double SampleAsymptoticMu(double random)

@@ -33,6 +33,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     this->gpuIngestCount = 0;
     this->gpuPhysicsStepCount = 0;
     this->gpuHoldCount = 0;
+    this->gpuElidedRemovalCount = 0;
     this->gpuHoldSkips = 0;
     if(this->gpuTransportExecutor)
     {
@@ -389,6 +390,17 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
 
     auto loopEnd = std::chrono::high_resolution_clock::now();
     double loopTime = std::chrono::duration_cast<std::chrono::duration<double>>(loopEnd - loopStart).count();
+    double deviceCensusDrainSeconds = 0.0;
+#ifdef STORM_WITH_GPU
+    {
+        const auto deviceCensusStart =
+            std::chrono::high_resolution_clock::now();
+        this->DrainDeviceCensus(data);
+        deviceCensusDrainSeconds = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() -
+            deviceCensusStart).count();
+    }
+#endif
     double localStepCount = 0;
     for(size_t counter : this->cellsStepsCounters)
     {
@@ -417,18 +429,36 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     };
     double maximumGpuTimes[5] = {};
     MPI_Reduce(localGpuTimes, maximumGpuTimes, 5, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
-    unsigned long long globalGpuLaunches = this->gpuLaunchCount;
-    unsigned long long globalGpuParticles = this->gpuParticleCount;
-    unsigned long long globalGpuIngest = this->gpuIngestCount;
-    unsigned long long globalGpuHolds = this->gpuHoldCount;
-    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalGpuLaunches,
-               &globalGpuLaunches, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalGpuParticles,
-               &globalGpuParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalGpuIngest,
-               &globalGpuIngest, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalGpuHolds,
-               &globalGpuHolds, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    gpu::TransportExecutorMetrics executorMetrics;
+    if(this->gpuTransportExecutor)
+    {
+        executorMetrics = this->gpuTransportExecutor->Metrics();
+    }
+    unsigned long long localGpuCounts[15] = {
+        this->gpuLaunchCount,
+        this->gpuParticleCount,
+        this->gpuIngestCount,
+        this->gpuHoldCount,
+        static_cast<unsigned long long>(executorMetrics.h2dBytes),
+        static_cast<unsigned long long>(executorMetrics.d2hBytes),
+        static_cast<unsigned long long>(
+            executorMetrics.eliminatedHostCopyBytes),
+        static_cast<unsigned long long>(executorMetrics.reallocationCount),
+        static_cast<unsigned long long>(executorMetrics.synchronizationCount),
+        static_cast<unsigned long long>(executorMetrics.terminalCount),
+        static_cast<unsigned long long>(executorMetrics.fallbackCount),
+        static_cast<unsigned long long>(executorMetrics.remoteCount),
+        static_cast<unsigned long long>(executorMetrics.censusCopyCount),
+        static_cast<unsigned long long>(executorMetrics.splitCreatedCount),
+        this->gpuElidedRemovalCount
+    };
+    unsigned long long globalGpuCounts[15] = {};
+    MPI_Reduce(localGpuCounts, globalGpuCounts, 15,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    const unsigned long long globalGpuLaunches = globalGpuCounts[0];
+    const unsigned long long globalGpuParticles = globalGpuCounts[1];
+    const unsigned long long globalGpuIngest = globalGpuCounts[2];
+    const unsigned long long globalGpuHolds = globalGpuCounts[3];
     if(this->rank_world == 0 && globalGpuParticles > 0)
     {
         const double particlesPerLaunch =
@@ -450,6 +480,33 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
                   << ", packed=" << globalGpuIngest
                   << " (" << packPerLaunch << "/launch)"
                   << ", holds=" << globalGpuHolds << std::endl;
+    }
+    unsigned long long localStagingMaxima[2] = {
+        static_cast<unsigned long long>(executorMetrics.maxIngestCount),
+        static_cast<unsigned long long>(executorMetrics.maxActiveCount)
+    };
+    unsigned long long globalStagingMaxima[2] = {};
+    MPI_Reduce(localStagingMaxima, globalStagingMaxima, 2,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+    if(this->rank_world == 0 && globalGpuParticles > 0)
+    {
+        std::cout << "GPU staging totals: h2d_bytes="
+                  << globalGpuCounts[4]
+                  << " d2h_bytes=" << globalGpuCounts[5]
+                  << " host_copy_bytes_eliminated="
+                  << globalGpuCounts[6]
+                  << " reallocations=" << globalGpuCounts[7]
+                  << " synchronizations=" << globalGpuCounts[8]
+                  << " terminals=" << globalGpuCounts[9]
+                  << " fallbacks=" << globalGpuCounts[10]
+                  << " remotes=" << globalGpuCounts[11]
+                  << " census=" << globalGpuCounts[12]
+                  << " splits_created=" << globalGpuCounts[13]
+                  << " removal_unpacks_elided="
+                  << globalGpuCounts[14]
+                  << " max_ingest=" << globalStagingMaxima[0]
+                  << " max_active=" << globalStagingMaxima[1]
+                  << std::endl;
     }
 #endif
 
@@ -486,13 +543,11 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     }
 
     auto censusStart = std::chrono::high_resolution_clock::now();
-#ifdef STORM_WITH_GPU
-    this->DrainDeviceCensus(data);
-#endif
     data.remaining = this->populationControl->activate(data.remaining);
     this->physics->postStep(data.remaining, fullDt);
-    double censusSeconds = std::chrono::duration<double>(
-        std::chrono::high_resolution_clock::now() - censusStart).count();
+    double censusSeconds = deviceCensusDrainSeconds +
+        std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - censusStart).count();
 
     double localStepTimes[4] = {setupSeconds, generationSeconds, loopTime, censusSeconds};
     double maximumStepTimes[4] = {};

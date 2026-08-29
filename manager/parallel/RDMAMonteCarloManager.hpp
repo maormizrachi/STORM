@@ -311,6 +311,7 @@ private:
     unsigned long long gpuIngestCount = 0;
     unsigned long long gpuPhysicsStepCount = 0;
     unsigned long long gpuHoldCount = 0;
+    unsigned long long gpuElidedRemovalCount = 0;
     size_t gpuHoldSkips = 0;
 #endif // STORM_WITH_GPU
 

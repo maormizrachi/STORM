@@ -59,6 +59,26 @@ public:
           ddmcTargetGroupCutoff_("storm_ddmc_target_group_cutoff", 0),
           ddmcOutwardNormals_("storm_ddmc_outward_normals", 0),
           ddmcFaceCenters_("storm_ddmc_face_centers", 0),
+          ddmcInterfaceTargetEligible_(
+              "storm_ddmc_interface_target_eligible", 0),
+          ddmcInterfaceTargetSigmaDiffusion_(
+              "storm_ddmc_interface_target_sigma", 0),
+          ddmcInterfaceTargetDistance_(
+              "storm_ddmc_interface_target_distance", 0),
+          ddmcInterfaceTargetGroupCutoff_(
+              "storm_ddmc_interface_target_cutoff", 0),
+          ddmcInterfaceTargetCellID_(
+              "storm_ddmc_interface_target_id", 0),
+          ddmcInterfaceNormals_("storm_ddmc_interface_normals", 0),
+          ddmcInterfaceFaceCenters_(
+              "storm_ddmc_interface_face_centers", 0),
+          ddmcInterfaceFaceVelocities_(
+              "storm_ddmc_interface_face_velocities", 0),
+          ddmcInterfaceTargetVelocities_(
+              "storm_ddmc_interface_target_velocities", 0),
+          ddmcWollaegerMu_("storm_ddmc_wollaeger_mu", 0),
+          ddmcWollaegerScaledKernel_(
+              "storm_ddmc_wollaeger_scaled_kernel", 0),
           ddmcFluxRhs_("storm_ddmc_flux_rhs", 0),
           ddmcStepCount_("storm_ddmc_step_count"),
           ddmcLeakCount_("storm_ddmc_leak_count"),
@@ -66,6 +86,14 @@ public:
           ddmcTransportLeakCount_("storm_ddmc_transport_leak_count"),
           ddmcRemoteResidentLeakCount_("storm_ddmc_remote_leak_count"),
           ddmcCensusCount_("storm_ddmc_census_count"),
+          ddmcInterfaceIncidentCount_("storm_ddmc_interface_incident_count"),
+          ddmcInterfaceAdmittedCount_("storm_ddmc_interface_admitted_count"),
+          ddmcInterfaceReflectedCount_("storm_ddmc_interface_reflected_count"),
+          ddmcInterfaceGuAppliedCount_("storm_ddmc_interface_gu_applied_count"),
+          ddmcInterfaceGuFallbackCount_("storm_ddmc_interface_gu_fallback_count"),
+          ddmcInterfaceBypassCount_("storm_ddmc_interface_bypass_count"),
+          ddmcInterfaceSplitPacketCount_("storm_ddmc_interface_split_packet_count"),
+          ddmcHostFallbackCount_("storm_ddmc_host_fallback_count"),
           randomWalkEligible_("storm_rw_eligible", 0),
           randomWalkTotalOpacity_("storm_rw_total_opacity", 0),
           randomWalkPGRWCells_("storm_rw_pgrw_cells", 0),
@@ -212,6 +240,24 @@ public:
         Resize(this->ddmcTargetGroupCutoff_, leakCount);
         Resize(this->ddmcOutwardNormals_, leakCount);
         Resize(this->ddmcFaceCenters_, leakCount);
+        const std::size_t interfaceFaceCount =
+            snapshot.interfaceTargetEligible.size();
+        Resize(this->ddmcInterfaceTargetEligible_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceTargetSigmaDiffusion_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceTargetDistance_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceTargetGroupCutoff_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceTargetCellID_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceNormals_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceFaceCenters_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceFaceVelocities_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceTargetVelocities_, interfaceFaceCount);
+        ddmc::WollaegerKernelView hostWollaeger;
+        if(snapshot.movingInterfaceCorrection)
+        {
+            hostWollaeger = ddmc::GetKernelTable().View();
+        }
+        Resize(this->ddmcWollaegerMu_, hostWollaeger.size);
+        Resize(this->ddmcWollaegerScaledKernel_, hostWollaeger.size);
         Resize(this->ddmcFluxRhs_, snapshot.fluxRhs.size());
 
         for(std::size_t cellIndex = 0;
@@ -261,6 +307,41 @@ public:
                            snapshot.faceCenters[leak].y,
                            snapshot.faceCenters[leak].z);
         }
+        for(std::size_t face = 0; face < interfaceFaceCount; ++face)
+        {
+            this->ddmcInterfaceTargetEligible_.h_view(face) =
+                snapshot.interfaceTargetEligible[face];
+            this->ddmcInterfaceTargetSigmaDiffusion_.h_view(face) =
+                snapshot.interfaceTargetSigmaDiffusion[face];
+            this->ddmcInterfaceTargetDistance_.h_view(face) =
+                snapshot.interfaceTargetDistance[face];
+            this->ddmcInterfaceTargetGroupCutoff_.h_view(face) =
+                snapshot.interfaceTargetGroupCutoff[face];
+            this->ddmcInterfaceTargetCellID_.h_view(face) =
+                snapshot.interfaceTargetCellID[face];
+            this->ddmcInterfaceNormals_.h_view(face) = DeviceVec3(
+                snapshot.interfaceNormals[face].x,
+                snapshot.interfaceNormals[face].y,
+                snapshot.interfaceNormals[face].z);
+            this->ddmcInterfaceFaceCenters_.h_view(face) = DeviceVec3(
+                snapshot.interfaceFaceCenters[face].x,
+                snapshot.interfaceFaceCenters[face].y,
+                snapshot.interfaceFaceCenters[face].z);
+            this->ddmcInterfaceFaceVelocities_.h_view(face) = DeviceVec3(
+                snapshot.interfaceFaceVelocities[face].x,
+                snapshot.interfaceFaceVelocities[face].y,
+                snapshot.interfaceFaceVelocities[face].z);
+            this->ddmcInterfaceTargetVelocities_.h_view(face) = DeviceVec3(
+                snapshot.interfaceTargetVelocities[face].x,
+                snapshot.interfaceTargetVelocities[face].y,
+                snapshot.interfaceTargetVelocities[face].z);
+        }
+        for(std::size_t i = 0; i < hostWollaeger.size; ++i)
+        {
+            this->ddmcWollaegerMu_.h_view(i) = hostWollaeger.mu[i];
+            this->ddmcWollaegerScaledKernel_.h_view(i) =
+                hostWollaeger.scaledKernel[i];
+        }
 
         SyncToDevice(this->ddmcCellEligible_);
         SyncToDevice(this->ddmcSigmaEnergyAbs_);
@@ -280,6 +361,17 @@ public:
         SyncToDevice(this->ddmcTargetGroupCutoff_);
         SyncToDevice(this->ddmcOutwardNormals_);
         SyncToDevice(this->ddmcFaceCenters_);
+        SyncToDevice(this->ddmcInterfaceTargetEligible_);
+        SyncToDevice(this->ddmcInterfaceTargetSigmaDiffusion_);
+        SyncToDevice(this->ddmcInterfaceTargetDistance_);
+        SyncToDevice(this->ddmcInterfaceTargetGroupCutoff_);
+        SyncToDevice(this->ddmcInterfaceTargetCellID_);
+        SyncToDevice(this->ddmcInterfaceNormals_);
+        SyncToDevice(this->ddmcInterfaceFaceCenters_);
+        SyncToDevice(this->ddmcInterfaceFaceVelocities_);
+        SyncToDevice(this->ddmcInterfaceTargetVelocities_);
+        SyncToDevice(this->ddmcWollaegerMu_);
+        SyncToDevice(this->ddmcWollaegerScaledKernel_);
         Kokkos::deep_copy(this->ddmcFluxRhs_.d_view, DeviceVec3{});
         this->ddmcFluxRhs_.modify_device();
         Kokkos::deep_copy(this->ddmcStepCount_, std::size_t(0));
@@ -289,9 +381,27 @@ public:
         Kokkos::deep_copy(
             this->ddmcRemoteResidentLeakCount_, std::size_t(0));
         Kokkos::deep_copy(this->ddmcCensusCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcInterfaceIncidentCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcInterfaceAdmittedCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcInterfaceReflectedCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcInterfaceGuAppliedCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcInterfaceGuFallbackCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcInterfaceBypassCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcInterfaceSplitPacketCount_, std::size_t(0));
+        Kokkos::deep_copy(this->ddmcHostFallbackCount_, std::size_t(0));
         this->ddmcMinimumParticleOpticalDepth_ =
             snapshot.minimumParticleOpticalDepth;
         this->ddmcPgrwEnabled_ = snapshot.pgrwEnabled;
+        this->ddmcMovingInterfaceCorrection_ =
+            snapshot.movingInterfaceCorrection;
+        this->ddmcMaximumInterfaceVelocityOverC_ =
+            snapshot.maximumInterfaceVelocityOverC;
+        this->ddmcInterfaceTargetWeightRatio_ =
+            snapshot.interfaceTargetWeightRatio;
+        this->ddmcMaximumInterfaceSplits_ =
+            snapshot.maximumInterfaceSplits;
+        this->ddmcMaximumMovingInterfaceWeightCorrection_ =
+            snapshot.maximumMovingInterfaceWeightCorrection;
         this->ddmcEnabled_ = true;
     }
 
@@ -299,6 +409,7 @@ public:
     {
         this->ddmcEnabled_ = false;
         this->ddmcPgrwEnabled_ = false;
+        this->ddmcMovingInterfaceCorrection_ = false;
         Resize(this->ddmcFluxRhs_, 0);
     }
 
@@ -465,6 +576,24 @@ public:
             this->ddmcOutwardNormals_.d_view.data();
         result.ddmc.faceCenters =
             this->ddmcFaceCenters_.d_view.data();
+        result.ddmc.interfaceTargetEligible =
+            this->ddmcInterfaceTargetEligible_.d_view.data();
+        result.ddmc.interfaceTargetSigmaDiffusion =
+            this->ddmcInterfaceTargetSigmaDiffusion_.d_view.data();
+        result.ddmc.interfaceTargetDistance =
+            this->ddmcInterfaceTargetDistance_.d_view.data();
+        result.ddmc.interfaceTargetGroupCutoff =
+            this->ddmcInterfaceTargetGroupCutoff_.d_view.data();
+        result.ddmc.interfaceTargetCellID =
+            this->ddmcInterfaceTargetCellID_.d_view.data();
+        result.ddmc.interfaceNormals =
+            this->ddmcInterfaceNormals_.d_view.data();
+        result.ddmc.interfaceFaceCenters =
+            this->ddmcInterfaceFaceCenters_.d_view.data();
+        result.ddmc.interfaceFaceVelocities =
+            this->ddmcInterfaceFaceVelocities_.d_view.data();
+        result.ddmc.interfaceTargetVelocities =
+            this->ddmcInterfaceTargetVelocities_.d_view.data();
         result.ddmc.fluxRhs = this->ddmcFluxRhs_.d_view.data();
         result.ddmc.stepCount = this->ddmcStepCount_.data();
         result.ddmc.leakCount = this->ddmcLeakCount_.data();
@@ -475,11 +604,43 @@ public:
         result.ddmc.remoteResidentLeakCount =
             this->ddmcRemoteResidentLeakCount_.data();
         result.ddmc.censusCount = this->ddmcCensusCount_.data();
+        result.ddmc.interfaceIncidentCount =
+            this->ddmcInterfaceIncidentCount_.data();
+        result.ddmc.interfaceAdmittedCount =
+            this->ddmcInterfaceAdmittedCount_.data();
+        result.ddmc.interfaceReflectedCount =
+            this->ddmcInterfaceReflectedCount_.data();
+        result.ddmc.interfaceGuAppliedCount =
+            this->ddmcInterfaceGuAppliedCount_.data();
+        result.ddmc.interfaceGuFallbackCount =
+            this->ddmcInterfaceGuFallbackCount_.data();
+        result.ddmc.interfaceBypassCount =
+            this->ddmcInterfaceBypassCount_.data();
+        result.ddmc.interfaceSplitPacketCount =
+            this->ddmcInterfaceSplitPacketCount_.data();
+        result.ddmc.hostFallbackCount =
+            this->ddmcHostFallbackCount_.data();
         result.ddmc.cellCount = this->cellCount_;
         result.ddmc.minimumParticleOpticalDepth =
             this->ddmcMinimumParticleOpticalDepth_;
+        result.ddmc.maximumInterfaceVelocityOverC =
+            this->ddmcMaximumInterfaceVelocityOverC_;
+        result.ddmc.interfaceTargetWeightRatio =
+            this->ddmcInterfaceTargetWeightRatio_;
+        result.ddmc.maximumInterfaceSplits =
+            this->ddmcMaximumInterfaceSplits_;
+        result.ddmc.maximumMovingInterfaceWeightCorrection =
+            this->ddmcMaximumMovingInterfaceWeightCorrection_;
+        result.ddmc.wollaeger.mu =
+            this->ddmcWollaegerMu_.d_view.data();
+        result.ddmc.wollaeger.scaledKernel =
+            this->ddmcWollaegerScaledKernel_.d_view.data();
+        result.ddmc.wollaeger.size =
+            this->ddmcWollaegerMu_.extent(0);
         result.ddmc.enabled = this->ddmcEnabled_;
         result.ddmc.pgrwEnabled = this->ddmcPgrwEnabled_;
+        result.ddmc.movingInterfaceCorrection =
+            this->ddmcMovingInterfaceCorrection_;
         result.energyBoundaries =
             this->energyBoundaries_.d_view.data();
         result.spectralAbsorptionScale =
@@ -601,6 +762,34 @@ public:
         ddmcCensus += count;
     }
 
+    void AddDDMCDiagnostics(std::size_t &interfaceIncident,
+                            std::size_t &interfaceAdmitted,
+                            std::size_t &interfaceReflected,
+                            std::size_t &interfaceGuApplied,
+                            std::size_t &interfaceGuFallback,
+                            std::size_t &interfaceBypass,
+                            std::size_t &interfaceSplitPackets,
+                            std::size_t &fallbackCount)
+    {
+        std::size_t count = 0;
+        Kokkos::deep_copy(count, this->ddmcInterfaceIncidentCount_);
+        interfaceIncident += count;
+        Kokkos::deep_copy(count, this->ddmcInterfaceAdmittedCount_);
+        interfaceAdmitted += count;
+        Kokkos::deep_copy(count, this->ddmcInterfaceReflectedCount_);
+        interfaceReflected += count;
+        Kokkos::deep_copy(count, this->ddmcInterfaceGuAppliedCount_);
+        interfaceGuApplied += count;
+        Kokkos::deep_copy(count, this->ddmcInterfaceGuFallbackCount_);
+        interfaceGuFallback += count;
+        Kokkos::deep_copy(count, this->ddmcInterfaceBypassCount_);
+        interfaceBypass += count;
+        Kokkos::deep_copy(count, this->ddmcInterfaceSplitPacketCount_);
+        interfaceSplitPackets += count;
+        Kokkos::deep_copy(count, this->ddmcHostFallbackCount_);
+        fallbackCount += count;
+    }
+
 private:
     template<typename T>
     static void Resize(Kokkos::DualView<T*> &view, std::size_t size)
@@ -664,6 +853,17 @@ private:
     Kokkos::DualView<std::size_t*> ddmcTargetGroupCutoff_;
     Kokkos::DualView<DeviceVec3*> ddmcOutwardNormals_;
     Kokkos::DualView<DeviceVec3*> ddmcFaceCenters_;
+    Kokkos::DualView<std::uint8_t*> ddmcInterfaceTargetEligible_;
+    Kokkos::DualView<double*> ddmcInterfaceTargetSigmaDiffusion_;
+    Kokkos::DualView<double*> ddmcInterfaceTargetDistance_;
+    Kokkos::DualView<std::size_t*> ddmcInterfaceTargetGroupCutoff_;
+    Kokkos::DualView<cell_id_t*> ddmcInterfaceTargetCellID_;
+    Kokkos::DualView<DeviceVec3*> ddmcInterfaceNormals_;
+    Kokkos::DualView<DeviceVec3*> ddmcInterfaceFaceCenters_;
+    Kokkos::DualView<DeviceVec3*> ddmcInterfaceFaceVelocities_;
+    Kokkos::DualView<DeviceVec3*> ddmcInterfaceTargetVelocities_;
+    Kokkos::DualView<double*> ddmcWollaegerMu_;
+    Kokkos::DualView<double*> ddmcWollaegerScaledKernel_;
     Kokkos::DualView<DeviceVec3*> ddmcFluxRhs_;
     Kokkos::View<std::size_t> ddmcStepCount_;
     Kokkos::View<std::size_t> ddmcLeakCount_;
@@ -671,6 +871,14 @@ private:
     Kokkos::View<std::size_t> ddmcTransportLeakCount_;
     Kokkos::View<std::size_t> ddmcRemoteResidentLeakCount_;
     Kokkos::View<std::size_t> ddmcCensusCount_;
+    Kokkos::View<std::size_t> ddmcInterfaceIncidentCount_;
+    Kokkos::View<std::size_t> ddmcInterfaceAdmittedCount_;
+    Kokkos::View<std::size_t> ddmcInterfaceReflectedCount_;
+    Kokkos::View<std::size_t> ddmcInterfaceGuAppliedCount_;
+    Kokkos::View<std::size_t> ddmcInterfaceGuFallbackCount_;
+    Kokkos::View<std::size_t> ddmcInterfaceBypassCount_;
+    Kokkos::View<std::size_t> ddmcInterfaceSplitPacketCount_;
+    Kokkos::View<std::size_t> ddmcHostFallbackCount_;
     Kokkos::DualView<std::uint8_t*> randomWalkEligible_;
     Kokkos::DualView<double*> randomWalkTotalOpacity_;
     Kokkos::DualView<PGRWCellData*> randomWalkPGRWCells_;
@@ -686,7 +894,12 @@ private:
     bool spectralEnabled_ = false;
     bool ddmcEnabled_ = false;
     bool ddmcPgrwEnabled_ = false;
+    bool ddmcMovingInterfaceCorrection_ = false;
     double ddmcMinimumParticleOpticalDepth_ = 0.0;
+    double ddmcMaximumInterfaceVelocityOverC_ = 0.0;
+    double ddmcInterfaceTargetWeightRatio_ = 0.0;
+    double ddmcMaximumMovingInterfaceWeightCorrection_ = 0.0;
+    std::size_t ddmcMaximumInterfaceSplits_ = 1;
     std::size_t groupCount_ = 0;
     std::size_t cellCount_ = 0;
 };

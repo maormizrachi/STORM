@@ -4,8 +4,10 @@
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "TransportPortability.hpp"
+#include "../ddmc/AdvanceDDMC.hpp"
 #include "../../boundary/BoundaryCondition.hpp"
 #include "../../gpu/FlatGridView.hpp"
 #include "../../particle/StepResult.hpp"
@@ -23,13 +25,19 @@ enum class TransportError : std::uint8_t
     InvalidCell,
     NoIntersection,
     InvalidOpacity,
-    InvalidDoppler
+    InvalidDoppler,
+    HostFallback
 };
 
 struct TransportResult
 {
     StepResult step;
     TransportError error = TransportError::None;
+    std::size_t directedFace = std::numeric_limits<std::size_t>::max();
+    ddmc::HostFallbackReason hostFallbackReason =
+        ddmc::HostFallbackReason::None;
+    std::size_t pendingLeakFace = std::numeric_limits<std::size_t>::max();
+    std::size_t ddmcExtraSplits = 0;
 };
 
 struct IMCOpacityState
@@ -482,6 +490,7 @@ TransportResult AdvanceIMC(ParticleT &particle,
 
     if(event == IntersectionEvent)
     {
+        result.directedFace = intersection.directedFace;
         const bool deviceReflect =
             intersection.boundaryCrossing &&
             views.grid.deviceBoundaryBehaviors != nullptr &&

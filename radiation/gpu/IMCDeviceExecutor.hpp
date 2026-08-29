@@ -44,6 +44,26 @@ public:
                 owner_.ddmcPointCellID_,
                 owner_.parameters_.ddmcUseMultigroupPGRW &&
                     owner_.parameters_.withMultigroupOpacity);
+            const auto &gridData = owner_.componentGridData();
+            ddmcSnapshot_.BuildInterface(
+                owner_.componentGrid(),
+                gridData.cellFaceOffsets,
+                gridData.normals,
+                gridData.pointsOnFaces,
+                gridData.nextCellIndices,
+                owner_.transportCellVelocities_,
+                owner_.ddmcPointEligible_,
+                owner_.ddmcPointSigmaDiffusion_,
+                owner_.ddmcPointGroupCutoff_,
+                owner_.ddmcPointVelocity_,
+                owner_.ddmcPointCellID_,
+                owner_.parameters_.withHydro &&
+                    !owner_.parameters_.MMC &&
+                    owner_.parameters_.ddmcUseMovingInterfaceCorrection,
+                owner_.parameters_.ddmcMaxInterfaceVelocityOverC,
+                owner_.parameters_.ddmcInterfaceTargetWeightRatio,
+                owner_.parameters_.ddmcMaxInterfaceSplits,
+                owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection);
         }
         else
         {
@@ -131,6 +151,26 @@ public:
 #endif
     }
 
+    void addDDMCDiagnostics()
+    {
+#ifdef STORM_WITH_GPU
+        if(gpuTransportEnabled_ && gpuData_)
+        {
+            gpuData_->AddDDMCDiagnostics(
+                owner_.ddmcInterfaceIncidentCount_,
+                owner_.ddmcInterfaceAdmittedCount_,
+                owner_.ddmcInterfaceReflectedCount_,
+                owner_.ddmcInterfaceGuAppliedCount_,
+                owner_.ddmcInterfaceGuFallbackCount_,
+                owner_.ddmcInterfaceBypassCount_,
+                owner_.ddmcInterfaceSplitPacketCount_,
+                owner_.ddmcFallbackCount_);
+        }
+#else
+        (void) 0;
+#endif
+    }
+
     void addTallies(std::vector<double> &material,
                     std::vector<double> &radiation,
                     std::vector<double> &groupRadiation,
@@ -182,11 +222,9 @@ public:
         bool depositMomentum = false;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            comovingTransport = owner_.parameters_.withHydro &&
-                                !owner_.parameters_.MMC;
+            comovingTransport = owner_.parameters_.withHydro and not owner_.parameters_.MMC;
         }
-        if constexpr(radiation_imc_detail::has_member_momentum<
-                         ExtensivesT>::value)
+        if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
         {
             depositMomentum = owner_.parameters_.withHydro &&
                               !owner_.parameters_.diffusionPressureGradient &&
@@ -249,6 +287,21 @@ public:
         result.ddmc = ddmcSnapshot_.View();
         result.ddmc.fluxRhs =
             owner_.ddmcFluxRhsIntegrated_.data();
+        result.ddmc.interfaceIncidentCount =
+            &owner_.ddmcInterfaceIncidentCount_;
+        result.ddmc.interfaceAdmittedCount =
+            &owner_.ddmcInterfaceAdmittedCount_;
+        result.ddmc.interfaceReflectedCount =
+            &owner_.ddmcInterfaceReflectedCount_;
+        result.ddmc.interfaceGuAppliedCount =
+            &owner_.ddmcInterfaceGuAppliedCount_;
+        result.ddmc.interfaceGuFallbackCount =
+            &owner_.ddmcInterfaceGuFallbackCount_;
+        result.ddmc.interfaceBypassCount =
+            &owner_.ddmcInterfaceBypassCount_;
+        result.ddmc.interfaceSplitPacketCount =
+            &owner_.ddmcInterfaceSplitPacketCount_;
+        result.ddmc.hostFallbackCount = &owner_.ddmcFallbackCount_;
         result.energyBoundaries = owner_.energyBoundaries_.data();
         result.spectralAbsorptionScale =
             owner_.spectralAbsorptionScale_.data();
@@ -341,8 +394,7 @@ public:
                !owner_.parameters_.withCompton &&
                !owner_.parameters_.postProcess.enabled &&
                !owner_.observer_ &&
-               !owner_.polarizationEnabled() &&
-               !owner_.parameters_.ddmcInterfaceDiagnostics;
+               !owner_.polarizationEnabled();
 #endif
     }
 
