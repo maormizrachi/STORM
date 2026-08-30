@@ -39,7 +39,7 @@
     "force_slurm": true,
     "default_command": "{binary}",
     "default_commands": {
-      "mpi": "mpirun -np ${SLURM_NTASKS} \"{binary}\""
+      "mpi": "bash \"{project_root}/regression_tests/run_mpi_from_cmake.sh\" \"{build_dir}\" ${SLURM_NTASKS} \"{binary}\""
     },
     "binary_environment": "STORM_BIN",
     "timeout": 3600,

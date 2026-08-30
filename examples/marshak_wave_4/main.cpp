@@ -82,6 +82,19 @@ int main(int argc, char *argv[])
     int rank, nprocs;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+
+    const std::uint64_t expectedRanks =
+        EnvUInt64("MPI_NP", static_cast<std::uint64_t>(nprocs));
+    if(expectedRanks != static_cast<std::uint64_t>(nprocs))
+    {
+        if(rank == 0)
+        {
+            std::cerr << "MPI launch error: requested " << expectedRanks
+                      << " ranks, but MPI_COMM_WORLD contains " << nprocs << std::endl;
+        }
+        MPI_Finalize();
+        return EXIT_FAILURE;
+    }
 #else
     int rank = 0;
     int nprocs = 1;
