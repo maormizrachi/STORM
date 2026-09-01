@@ -240,6 +240,123 @@ inline double StaticAdmissionProbability(double mu,
     return std::clamp(2.0 * (1.0 + 1.5 * mu) / denominator, 0.0, 1.0);
 }
 
+struct Densmore2006InterfaceCoefficients
+{
+    double analyticEmissivity = std::numeric_limits<double>::quiet_NaN();
+    double conversionCoefficient = std::numeric_limits<double>::quiet_NaN();
+    bool valid = false;
+};
+
+inline double Densmore2006SingleScatterAlbedo(
+    double transportOpacity,
+    double effectiveAbsorptionOpacity)
+{
+    if(!(transportOpacity > 0.0) || !std::isfinite(transportOpacity) ||
+       !(effectiveAbsorptionOpacity >= 0.0) ||
+       !std::isfinite(effectiveAbsorptionOpacity))
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return 1.0 - effectiveAbsorptionOpacity / transportOpacity;
+}
+
+// Densmore, Davidson, and Carrington, Ann. Nucl. Energy 33 (2006),
+// Eqs. (19), (35), (39), and (48).  opticalThickness is sigma_t*Delta_x,
+// where Delta_x is twice the DDMC center-to-face normal distance for the
+// locally planar interface represented by the finite-volume face.
+inline Densmore2006InterfaceCoefficients Densmore2006Coefficients(
+    double opticalThickness,
+    double singleScatterAlbedo)
+{
+    Densmore2006InterfaceCoefficients result;
+    if(!(opticalThickness >= 0.0) || !std::isfinite(opticalThickness) ||
+       !(singleScatterAlbedo >= 0.0) || !(singleScatterAlbedo <= 1.0) ||
+       !std::isfinite(singleScatterAlbedo))
+    {
+        return result;
+    }
+
+    double const attenuation = std::sqrt(
+        3.0 * (1.0 - singleScatterAlbedo));
+    double const extrapolationDenominator =
+        1.0 + ExtrapolationLength * attenuation;
+    result.analyticEmissivity =
+        (4.0 / 3.0) * attenuation / extrapolationDenominator;
+
+    if(attenuation == 0.0)
+    {
+        // Continuous omega -> 1 limit of Eqs. (39) and (48).
+        result.conversionCoefficient = 8.0 /
+            (3.0 * opticalThickness + 6.0 * ExtrapolationLength);
+    }
+    else
+    {
+        double const scaledThickness = attenuation * opticalThickness;
+        double const halfScaledThickness = 0.5 * scaledThickness;
+        double const root = std::hypot(1.0, halfScaledThickness);
+        double const betaFactor = root + halfScaledThickness;
+
+        // Divide Eq. (48) by attenuation*opticalThickness.  Writing
+        // root - 1 as x^2/(root + 1) avoids cancellation as tau -> 0.
+        double const betaFactorMinusOne = halfScaledThickness +
+            halfScaledThickness * (halfScaledThickness / (root + 1.0));
+        double const emissivityTerm =
+            ExtrapolationLength * attenuation / extrapolationDenominator;
+        double const denominator = betaFactorMinusOne + emissivityTerm;
+        result.conversionCoefficient =
+            result.analyticEmissivity * betaFactor / denominator;
+    }
+
+    // Eq. (26) reaches (5/4)*P at normal incidence; Eq. (59) therefore
+    // requires 0 <= P <= 4/5 for a probabilistic IMC-to-DDMC conversion.
+    result.valid = std::isfinite(result.conversionCoefficient) &&
+        result.conversionCoefficient >= 0.0 &&
+        result.conversionCoefficient <= 0.8;
+    return result;
+}
+
+inline Densmore2006InterfaceCoefficients Densmore2006CellCoefficients(
+    double transportOpacity,
+    double singleScatterAlbedo,
+    double centerToFaceDistance)
+{
+    if(!(transportOpacity > 0.0) || !std::isfinite(transportOpacity) ||
+       !(centerToFaceDistance >= 0.0) ||
+       !std::isfinite(centerToFaceDistance))
+    {
+        return {};
+    }
+    return Densmore2006Coefficients(
+        2.0 * transportOpacity * centerToFaceDistance,
+        singleScatterAlbedo);
+}
+
+inline double Densmore2006AdmissionProbability(
+    double mu,
+    Densmore2006InterfaceCoefficients const &coefficients)
+{
+    if(!coefficients.valid || !std::isfinite(mu) || mu < 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
+    double const boundedMu = std::min(mu, 1.0);
+    return 0.5 * coefficients.conversionCoefficient *
+        (1.0 + 1.5 * boundedMu);
+}
+
+inline double Densmore2006BoundaryLeakRate(
+    double area,
+    double volume,
+    double lightSpeed,
+    Densmore2006InterfaceCoefficients const &coefficients)
+{
+    if(!coefficients.valid || !(area > 0.0) || !(volume > 0.0) ||
+       !(lightSpeed > 0.0))
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return lightSpeed * area * coefficients.conversionCoefficient /
+        (4.0 * volume);
+}
+
 inline double SampleAsymptoticMu(double random)
 {
     random = std::clamp(random, 0.0, 1.0);

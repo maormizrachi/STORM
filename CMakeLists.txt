@@ -284,6 +284,10 @@ if(BUILD_TESTING)
   target_link_libraries(storm_counter_rng_test PRIVATE storm)
   add_test(NAME storm_counter_rng_test COMMAND storm_counter_rng_test)
 
+  add_executable(storm_ddmc_interface_test tests/ddmc_interface_test.cpp)
+  target_link_libraries(storm_ddmc_interface_test PRIVATE storm)
+  add_test(NAME storm_ddmc_interface_test COMMAND storm_ddmc_interface_test)
+
   add_test(NAME storm_mpi_launcher_config_test
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_mpi_from_cmake_test.sh"
             "${CMAKE_CURRENT_SOURCE_DIR}/regression_tests/run_mpi_from_cmake.sh")

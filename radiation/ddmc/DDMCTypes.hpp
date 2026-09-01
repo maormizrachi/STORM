@@ -72,6 +72,7 @@ struct CellData
     double sigmaEnergyAbs = 0.0;
     double sigmaMomentum = 0.0;
     double sigmaDiffusion = 0.0;
+    double singleScatterAlbedo = std::numeric_limits<double>::quiet_NaN();
     double sigmaParticleGate = 0.0;
     double sigmaGroupExit = 0.0;
     double diffusionCoefficient = 0.0;

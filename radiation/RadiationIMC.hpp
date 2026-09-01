@@ -930,6 +930,7 @@ private:
     std::vector<int> ddmcPointEligible_;
     std::vector<double> ddmcPointDiffusionCoefficient_;
     std::vector<double> ddmcPointSigmaDiffusion_;
+    std::vector<double> ddmcPointSingleScatterAlbedo_;
     std::vector<double> ddmcPointSigmaParticleGate_;
     std::vector<std::size_t> ddmcPointGroupCutoff_;
     std::vector<PointT> ddmcPointVelocity_;
@@ -2137,6 +2138,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->ddmcPointEligible_.assign(pointCount, 0);
     this->ddmcPointDiffusionCoefficient_.assign(pointCount, 0.0);
     this->ddmcPointSigmaDiffusion_.assign(pointCount, 0.0);
+    this->ddmcPointSingleScatterAlbedo_.assign(
+        pointCount, std::numeric_limits<double>::quiet_NaN());
     this->ddmcPointSigmaParticleGate_.assign(pointCount, 0.0);
     this->ddmcPointGroupCutoff_.assign(pointCount, 0);
     this->ddmcPointVelocity_.assign(pointCount, PointT{});
@@ -2258,6 +2261,15 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                              && data.diffusionCoefficient > 0.0);
         }
 
+        if(data.sigmaDiffusion > 0.0)
+        {
+            double const effectiveAbsorptionOpacity =
+                this->factorFleck_[i] * data.sigmaEnergyAbs;
+            data.singleScatterAlbedo =
+                ddmc::Densmore2006SingleScatterAlbedo(
+                    data.sigmaDiffusion, effectiveAbsorptionOpacity);
+        }
+
         if(!data.eligible)
         {
             data.eligibilityReason = data.diffusionCoefficient > 0.0
@@ -2306,6 +2318,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         this->ddmcPointEligible_[i] = data.eligible ? 1 : 0;
         this->ddmcPointDiffusionCoefficient_[i] = data.diffusionCoefficient;
         this->ddmcPointSigmaDiffusion_[i] = data.sigmaDiffusion;
+        this->ddmcPointSingleScatterAlbedo_[i] = data.singleScatterAlbedo;
         this->ddmcPointSigmaParticleGate_[i] = data.sigmaParticleGate;
         this->ddmcPointGroupCutoff_[i] = data.groupCutoff;
         this->ddmcPointCellID_[i] = radiation_imc_detail::ddmcStableCellID(
@@ -2394,6 +2407,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         ddmc::ExchangePointMetadata(
             this->grid, this->ddmcPointDiffusionCoefficient_);
         ddmc::ExchangePointMetadata(this->grid, this->ddmcPointSigmaDiffusion_);
+        ddmc::ExchangePointMetadata(
+            this->grid, this->ddmcPointSingleScatterAlbedo_);
         ddmc::ExchangePointMetadata(
             this->grid, this->ddmcPointSigmaParticleGate_);
         ddmc::ExchangePointMetadata(this->grid, this->ddmcPointGroupCutoff_);
@@ -2589,9 +2604,6 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 internalRate = conductance / volume;
             }
 
-            double boundaryRate = ddmc::BoundaryLeakRate(
-                area, volume, data.sigmaDiffusion,
-                sourceDistance, units::clight);
             std::size_t const targetCutoff =
                 nextCellIndex < this->ddmcPointGroupCutoff_.size()
                 ? this->ddmcPointGroupCutoff_[nextCellIndex] : 0;
@@ -2613,6 +2625,27 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                             0, targetCutoff) / sourceBandMass,
                         0.0, 1.0);
                 }
+            }
+
+            double boundaryRate = ddmc::BoundaryLeakRate(
+                area, volume, data.sigmaDiffusion,
+                sourceDistance, units::clight);
+            bool const multigroupPGRW =
+                this->parameters_.ddmcUseMultigroupPGRW &&
+                this->parameters_.withMultigroupOpacity;
+            if(ddmcFraction < 1.0 && !multigroupPGRW)
+            {
+                ddmc::Densmore2006InterfaceCoefficients const coefficients =
+                    ddmc::Densmore2006CellCoefficients(
+                        data.sigmaDiffusion, data.singleScatterAlbedo,
+                        sourceDistance);
+                if(coefficients.valid)
+                {
+                    boundaryRate = ddmc::Densmore2006BoundaryLeakRate(
+                        area, volume, units::clight, coefficients);
+                }
+                // Outside Eq. (59)'s probabilistic range, retain the paired
+                // legacy boundary coefficient initialized above.
             }
 
             double const ddmcRate = ddmcFraction * internalRate;
@@ -3976,8 +4009,27 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         this->ddmcPointSigmaDiffusion_[targetCellIndex];
     double const targetDistance = std::abs(ScalarProd(
         targetCenter - this->grid.FaceCM(faceIndex), normal));
-    double const admission = ddmc::StaticAdmissionProbability(
+    double admission = ddmc::StaticAdmissionProbability(
         mu, targetOpacity, targetDistance);
+    bool const multigroupPGRW =
+        this->parameters_.ddmcUseMultigroupPGRW &&
+        this->parameters_.withMultigroupOpacity;
+    if(!multigroupPGRW &&
+       targetCellIndex < this->ddmcPointSingleScatterAlbedo_.size())
+    {
+        ddmc::Densmore2006InterfaceCoefficients const coefficients =
+            ddmc::Densmore2006CellCoefficients(
+                targetOpacity,
+                this->ddmcPointSingleScatterAlbedo_[targetCellIndex],
+                targetDistance);
+        if(coefficients.valid)
+        {
+            admission = ddmc::Densmore2006AdmissionProbability(
+                mu, coefficients);
+        }
+        // Outside Eq. (59)'s probabilistic range, retain the paired legacy
+        // admission probability initialized above.
+    }
     this->recordDDMCDiagnosticEvent(
         DDMCDiagnosticEventKind::IMCIncident, sourceCellIndex,
         targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
