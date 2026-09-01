@@ -2635,17 +2635,13 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 this->parameters_.withMultigroupOpacity;
             if(ddmcFraction < 1.0 && !multigroupPGRW)
             {
-                ddmc::Densmore2006InterfaceCoefficients const coefficients =
-                    ddmc::Densmore2006CellCoefficients(
-                        data.sigmaDiffusion, data.singleScatterAlbedo,
-                        sourceDistance);
-                if(coefficients.valid)
-                {
+                double const coefficient = ddmc::Densmore2006CellCoefficient(
+                    data.sigmaDiffusion, data.singleScatterAlbedo,
+                    sourceDistance);
+                if(std::isfinite(coefficient))
                     boundaryRate = ddmc::Densmore2006BoundaryLeakRate(
-                        area, volume, units::clight, coefficients);
-                }
-                // Outside Eq. (59)'s probabilistic range, retain the paired
-                // legacy boundary coefficient initialized above.
+                        area, volume, units::clight, coefficient);
+                // A non-probabilistic coefficient retains the legacy rate.
             }
 
             double const ddmcRate = ddmcFraction * internalRate;
@@ -4017,18 +4013,14 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     if(!multigroupPGRW &&
        targetCellIndex < this->ddmcPointSingleScatterAlbedo_.size())
     {
-        ddmc::Densmore2006InterfaceCoefficients const coefficients =
-            ddmc::Densmore2006CellCoefficients(
-                targetOpacity,
-                this->ddmcPointSingleScatterAlbedo_[targetCellIndex],
-                targetDistance);
-        if(coefficients.valid)
-        {
-            admission = ddmc::Densmore2006AdmissionProbability(
-                mu, coefficients);
-        }
-        // Outside Eq. (59)'s probabilistic range, retain the paired legacy
-        // admission probability initialized above.
+        double const coefficient = ddmc::Densmore2006CellCoefficient(
+            targetOpacity,
+            this->ddmcPointSingleScatterAlbedo_[targetCellIndex],
+            targetDistance);
+        if(std::isfinite(coefficient))
+            admission =
+                ddmc::Densmore2006AdmissionProbability(mu, coefficient);
+        // A non-probabilistic coefficient retains the legacy admission.
     }
     this->recordDDMCDiagnosticEvent(
         DDMCDiagnosticEventKind::IMCIncident, sourceCellIndex,
