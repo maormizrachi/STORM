@@ -2,6 +2,9 @@
 #define GHOST_MAP_HPP
 
 #include <cassert>
+#include <utility>
+#include "../manager/MonteCarloConfig.hpp"
+#include "../elementary/PointOps.hpp"
 
 #ifdef STORM_WITH_MPI
 
@@ -9,8 +12,47 @@
 #include <boost/container/flat_map.hpp>
 #include "../StormError.hpp"
 
+#endif // STORM_WITH_MPI
 namespace STORM {
 
+template<typename Grid, typename Point>
+void ApplyPeriodicCellMove(const Grid &grid, Point &location, size_t imageIndex, const Point &velocity)
+{
+    double speed = fastabs(velocity);
+    if(speed > 0.0)
+    {
+        double push = MONTECARLO_EPSILON / speed;
+        location.x += velocity.x * push;
+        location.y += velocity.y * push;
+        location.z += velocity.z * push;
+    }
+    else
+    {
+        location = (1 - MONTECARLO_EPSILON) * location + MONTECARLO_EPSILON * grid.GetMeshPoint(imageIndex);
+    }
+    grid.WrapPeriodicPoint(location);
+}
+
+template<typename Grid>
+size_t ResolvePhysicalCellIndex(const Grid &grid, size_t meshIndex, size_t cellNumber)
+{
+    if(meshIndex < cellNumber)
+    {
+        return meshIndex;
+    }
+    if(!grid.IsPeriodicImage(meshIndex))
+    {
+        return meshIndex;
+    }
+    const size_t physical = grid.ResolvePeriodicImageIndex(meshIndex);
+    if(physical < cellNumber)
+    {
+        return physical;
+    }
+    return meshIndex;
+}
+
+#ifdef STORM_WITH_MPI
 template<typename Grid>
 boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const Grid &grid)
 {
@@ -48,8 +90,8 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const 
     return ranks_ghost_map;
 }
 
-} // namespace STORM
-
 #endif // STORM_WITH_MPI
+
+} // namespace STORM
 
 #endif // GHOST_MAP_HPP

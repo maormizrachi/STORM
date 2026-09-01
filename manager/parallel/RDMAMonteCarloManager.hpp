@@ -1360,6 +1360,19 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
                                 auto it = ranks_ghost_map.find(nextCellIndex);
                                 if(it == ranks_ghost_map.end())
                                 {
+                                    const size_t physicalCell = ResolvePhysicalCellIndex(this->grid, nextCellIndex, this->Ncells);
+                                    if(physicalCell < this->Ncells)
+                                    {
+                                        ApplyPeriodicCellMove(this->grid, particle.location, nextCellIndex, particle.velocity);
+                                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                                            MONTECARLO_EPSILON * this->grid.GetMeshPoint(physicalCell);
+                                        if(not this->grid.IsPointInCell(particle.location, physicalCell))
+                                        {
+                                            particle.location = this->grid.GetCellCM(physicalCell);
+                                        }
+                                        particle.cellIndex = physicalCell;
+                                        continue;
+                                    }
                                     #ifdef STORM_WITH_TRACING_HISTORY
                                         T preReflectLoc = particle.location;
                                         T preReflectVel = particle.velocity;
@@ -1399,6 +1412,7 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
                                 #endif // STORM_DEBUG
 
                                 particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                                this->grid.WrapPeriodicPoint(particle.location);
                                 auto [otherRank, neighborIndexInRank] = it->second;
                                 #ifdef STORM_DEBUG
                                 particle.checkedHere = false;

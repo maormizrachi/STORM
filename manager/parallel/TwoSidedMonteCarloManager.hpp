@@ -499,6 +499,19 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     auto it = ranks_ghost_map.find(nextCellIndex);
                     if(it == ranks_ghost_map.end())
                     {
+                        const size_t physicalCell = ResolvePhysicalCellIndex(this->grid, nextCellIndex, this->Ncells);
+                        if(physicalCell < this->Ncells)
+                        {
+                            ApplyPeriodicCellMove(this->grid, particle.location, nextCellIndex, particle.velocity);
+                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                                MONTECARLO_EPSILON * this->grid.GetMeshPoint(physicalCell);
+                            if(not this->grid.IsPointInCell(particle.location, physicalCell))
+                            {
+                                particle.location = this->grid.GetCellCM(physicalCell);
+                            }
+                            particle.cellIndex = physicalCell;
+                            continue;
+                        }
                         // leaving domain
                         MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
                         this->physics->onBoundaryResult(
@@ -532,6 +545,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     }
 
                     particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                    this->grid.WrapPeriodicPoint(particle.location);
                     auto [otherRank, neighborIndexInRank] = it->second;
                     #ifdef STORM_DEBUG
                     particle.checkedHere = false; // reset checked here flag
