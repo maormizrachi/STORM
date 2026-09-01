@@ -229,6 +229,9 @@ Particle<T> cloneParticleWithNewIdentity(const Particle<T> &source)
 {
     Particle<T> clone = source;
     clone.id = std::numeric_limits<particle_id_t>::max();
+    #ifdef STORM_WITH_MPI
+        clone.rank = std::numeric_limits<rank_t>::max();
+    #endif
     clone.rngKey = std::numeric_limits<std::uint64_t>::max();
     clone.rngCounter = 0;
     return clone;

@@ -172,9 +172,6 @@ std::vector<Particle<T>> CombPopulationControl<T, Grid>::activate(const std::vec
                     double weight_split = particle->weight / Nsplit;
                     particleCpy.weight = weight_split;
                     particleCpy.initialWeight = std::abs(weight_split);
-                    #ifdef STORM_WITH_MPI
-                        particleCpy.rank = std::numeric_limits<rank_t>::max();
-                    #endif
                     particleCpy.cellIndex = i;
                     particleCpy.timeLeft = 0;
                     particleCpy.steps = 0;
@@ -211,9 +208,6 @@ std::vector<Particle<T>> CombPopulationControl<T, Grid>::activate(const std::vec
             {
                 ++comb_index;
                 result.push_back(cloneParticleWithNewIdentity(*particle));
-                #ifdef STORM_WITH_MPI
-                    result.back().rank = std::numeric_limits<rank_t>::max();
-                #endif
                 result.back().cellIndex = i;
                 result.back().timeLeft = 0;
                 result.back().weight = new_energy;
@@ -358,9 +352,6 @@ std::vector<Particle<T>> StratifiedCombPopulationControl<T, Grid>::activate(cons
                     MCParticle particleCopy = cloneParticleWithNewIdentity(*particle);
                     particleCopy.weight = splitWeight;
                     particleCopy.initialWeight = splitWeight;
-                    #ifdef STORM_WITH_MPI
-                    particleCopy.rank = std::numeric_limits<rank_t>::max();
-                    #endif
                     particleCopy.cellIndex = cellIndex;
                     particleCopy.timeLeft = 0;
                     particleCopy.steps = 0;
@@ -394,9 +385,6 @@ std::vector<Particle<T>> StratifiedCombPopulationControl<T, Grid>::activate(cons
             {
                 ++combIndex;
                 result.push_back(cloneParticleWithNewIdentity(*particle));
-                #ifdef STORM_WITH_MPI
-                result.back().rank = std::numeric_limits<rank_t>::max();
-                #endif
                 result.back().cellIndex = cellIndex;
                 result.back().timeLeft = 0;
                 result.back().weight = newWeight;
