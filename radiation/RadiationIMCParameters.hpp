@@ -7,6 +7,8 @@
 #include <ostream>
 #include <string>
 
+#include <units/units.hpp>
+
 namespace STORM {
 
 enum class ComptonInducedMode
@@ -26,9 +28,13 @@ template<std::size_t NumGroups>
 struct RadiationIMCParameters
 {
     std::size_t newPhotonsPerCell = 0;
+    double lightSpeed = units::clight;
     bool withHydro = false;
     bool diffusionPressureGradient = false;
     bool MMC = false;
+    // Keep lab-frame transport and scattering while still tallying momentum
+    // into hydrodynamics. This omits all material-velocity (O(v/c)) terms.
+    bool staticScatterers = false;
     bool withMultigroupOpacity = false;
     bool withRandomWalk = false;
     double rwMinCellOpticalDepth = 25.0;
@@ -84,9 +90,11 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
 {
     os << "STORM IMC, with parameters:\n";
     os << "\tnew photons per cell: " << parameters.newPhotonsPerCell << '\n';
+    os << "\tlight speed: " << parameters.lightSpeed << '\n';
     os << "\twith hydro: " << parameters.withHydro << '\n';
     os << "\tdiffusion pressure gradient: " << parameters.diffusionPressureGradient << '\n';
     os << "\tMMC: " << parameters.MMC << '\n';
+    os << "\tstatic scatterers: " << parameters.staticScatterers << '\n';
     os << "\twith multigroup opacity: " << parameters.withMultigroupOpacity << '\n';
     os << "\twith random walk: " << parameters.withRandomWalk << '\n';
     os << "\twith DDMC: " << parameters.withDDMC << '\n';

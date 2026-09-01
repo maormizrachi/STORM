@@ -325,8 +325,13 @@ void accumulateAcceleratedPolarizationHistory(ParticleT &p, double dtCo,
         return std::clamp(uniformDist(engine), std::numeric_limits<double>::min(),
                           1.0 - std::numeric_limits<double>::epsilon());
     };
-    double const resetRate = saturatingProduct(units::clight, sigmaUnresolvedReset);
-    double const scatterRate = saturatingProduct(units::clight, sigmaScattering);
+    double lightSpeed = fallback::abs(p.velocity);
+    if(!(lightSpeed > kEpsilon) || !std::isfinite(lightSpeed))
+    {
+        lightSpeed = units::clight;
+    }
+    double const resetRate = saturatingProduct(lightSpeed, sigmaUnresolvedReset);
+    double const scatterRate = saturatingProduct(lightSpeed, sigmaScattering);
     bool resetOccurred = false;
     double const age = sampleAgeSinceLastReset(resetRate, dtCo, u01, resetOccurred);
     double const intervalMean = saturatingProduct(scatterRate, resetOccurred ? age : dtCo);
