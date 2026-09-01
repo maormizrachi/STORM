@@ -1,0 +1,11 @@
+TEST_ID="desmore2012_mc"
+TAGS="mpi"
+CATEGORY="physics"
+MPI_NP=32
+SLURM_NODES=8
+SLURM_MEM_PER_CPU="10G"
+SLURM_EXCLUSIVE=YES
+SBATCH_ARGS='--distribution=cyclic'
+RUN_COMMAND='mpirun --map-by node -np ${SLURM_NTASKS} "${STORM_BIN}"'
+CHECK_FUNCTION="check_desmore2012_mc_case"
+TIMEOUT=5400
