@@ -160,6 +160,12 @@ Override with:
 | `hohlraum_parallel` | MPI | 512 tasks |
 | `cartesian_parallel_check` | MPI | 4 tasks |
 | `till_compton_mc` | serial | 1 task |
+| `crooked_pipe` | MPI | 512 tasks |
+
+Voronoi geometry regression tests (`voronoi_volume`, `voronoi_volume_periodic`,
+`voronoi_parallel_check`, `voronoi_mock_mesh_periodic`) live in MadVoro at
+`source/3D/tessellation/voronoi/regression_tests/` and are run from the RICH
+root via `./regression_tests/run_all.sh --with-mpi`.
 
 ### Options
 

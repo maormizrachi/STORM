@@ -117,6 +117,96 @@ check_densmore2012_case() {
     return 1
 }
 
+check_desmore2012_mc_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/desmore2012_mc_profile.txt"
+    local checker_stdout="${run_dir}/desmore2012_mc_check.stdout.log"
+    local checker_stderr="${run_dir}/desmore2012_mc_check.stderr.log"
+    local storm_root
+    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    local reference_file="${storm_root}/examples/densmore2012/data/densmore2012_fig4_mc.csv"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+    is_nonempty_and_newer "$profile_file" "$start_epoch" || return 1
+    if [[ ! -f "$reference_file" ]]; then
+        REGRESSION_CHECK_MSG="missing reference file: ${reference_file}"
+        return 1
+    fi
+    python3 "${storm_root}/examples/desmore2012_mc/check_desmore2012_mc.py" \
+        --profile "$profile_file" \
+        --reference "$reference_file" \
+        --max-tgas-l1 "${DESMORE2012_MC_MAX_TGAS_L1:-0.05}" \
+        >"$checker_stdout" 2>"$checker_stderr" || {
+        REGRESSION_CHECK_MSG="Densmore 2012 MC gas temperature comparison failed"
+        return 1
+    }
+    REGRESSION_CHECK_MSG="Densmore 2012 MC gas temperature comparison passed"
+    return 0
+}
+
+check_desmore2012_mc_ddmc_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/desmore2012_mc_ddmc_profile.txt"
+    local checker_stdout="${run_dir}/desmore2012_mc_ddmc_check.stdout.log"
+    local checker_stderr="${run_dir}/desmore2012_mc_ddmc_check.stderr.log"
+    local storm_root
+    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    local reference_file="${storm_root}/examples/densmore2012/data/densmore2012_fig4_mc.csv"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+    is_nonempty_and_newer "$profile_file" "$start_epoch" || return 1
+    if [[ ! -f "$reference_file" ]]; then
+        REGRESSION_CHECK_MSG="missing reference file: ${reference_file}"
+        return 1
+    fi
+    python3 "${storm_root}/examples/desmore2012_mc/check_desmore2012_mc.py" \
+        --profile "$profile_file" \
+        --reference "$reference_file" \
+        --max-tgas-l1 "${DESMORE2012_MC_DDMC_MAX_TGAS_L1:-0.06}" \
+        >"$checker_stdout" 2>"$checker_stderr" || {
+        REGRESSION_CHECK_MSG="Densmore 2012 MC+DDMC gas temperature comparison failed"
+        return 1
+    }
+    REGRESSION_CHECK_MSG="Densmore 2012 MC+DDMC gas temperature comparison passed"
+    return 0
+}
+
+check_desmore2012_mc_serial_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/desmore2012_mc_serial_profile.txt"
+    local checker_stdout="${run_dir}/desmore2012_mc_serial_check.stdout.log"
+    local checker_stderr="${run_dir}/desmore2012_mc_serial_check.stderr.log"
+    local storm_root
+    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    local reference_file="${storm_root}/examples/densmore2012/data/densmore2012_fig4_mc.csv"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+    is_nonempty_and_newer "$profile_file" "$start_epoch" || return 1
+    if [[ ! -f "$reference_file" ]]; then
+        REGRESSION_CHECK_MSG="missing reference file: ${reference_file}"
+        return 1
+    fi
+    python3 "${storm_root}/examples/desmore2012_mc/check_desmore2012_mc.py" \
+        --profile "$profile_file" \
+        --reference "$reference_file" \
+        --max-tgas-l1 "${DESMORE2012_MC_SERIAL_MAX_TGAS_L1:-0.05}" \
+        >"$checker_stdout" 2>"$checker_stderr" || {
+        REGRESSION_CHECK_MSG="Densmore 2012 serial MC+RW gas temperature comparison failed"
+        return 1
+    }
+    REGRESSION_CHECK_MSG="Densmore 2012 serial MC+RW gas temperature comparison passed"
+    return 0
+}
+
 # Moving slab benchmark
 # The Python check_spectrum.py prints "PASS" or "FAIL: F-error ... exceeds threshold"
 check_moving_slab_case() {
@@ -147,6 +237,31 @@ check_moving_slab_case() {
     return 1
 }
 
+check_moving_slab_mc_32_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local spectrum_file="${run_dir}/moving_slab_mc_32_spectrum.txt"
+    local checker_stdout="${run_dir}/moving_slab_mc_32_check.stdout.log"
+    local checker_stderr="${run_dir}/moving_slab_mc_32_check.stderr.log"
+    local storm_root
+    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+    is_nonempty_and_newer "$spectrum_file" "$start_epoch" || return 1
+    python3 "${storm_root}/examples/moving_slab_mc_32/check_moving_slab_mc_32.py" \
+        --spectrum "$spectrum_file" \
+        --max-ferror "${MOVING_SLAB_MC_32_MAX_FERROR:-0.30}" \
+        --plot-dir "$run_dir" \
+        >"$checker_stdout" 2>"$checker_stderr" || {
+        REGRESSION_CHECK_MSG="Moving slab MC 32-group spectrum comparison failed"
+        return 1
+    }
+    REGRESSION_CHECK_MSG="Moving slab MC 32-group spectrum comparison passed"
+    return 0
+}
+
 # Hohlraum parallel benchmark
 # No analytic solution; just check it ran to completion without fatal errors
 # and produced a profile.
@@ -159,6 +274,40 @@ check_hohlraum_parallel_case() {
     check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
 
     REGRESSION_CHECK_MSG="PASS (completed without errors)"
+    return 0
+}
+
+# Crooked Pipe benchmark. Compare the five material-temperature histories with
+# the digitized DIMC curves from Steinberg & Heizler (2022), Fig. 8(a).
+check_crooked_pipe_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+
+    local probes="${run_dir}/crookedpipe_probes.txt"
+    is_nonempty_and_newer "$probes" "$start_epoch" || return 1
+
+    local storm_root
+    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    local comparison_script="${storm_root}/examples/crooked_pipe/compare_reference.py"
+    local comparison
+    if ! comparison="$(python3 "$comparison_script" "$probes" 2>&1)"; then
+        printf '%s\n' "$comparison"
+        REGRESSION_CHECK_MSG="$(printf '%s\n' "$comparison" | grep -m1 '^FAIL:' || true)"
+        REGRESSION_CHECK_MSG="${REGRESSION_CHECK_MSG:-Crooked Pipe reference comparison failed}"
+        return 1
+    fi
+
+    printf '%s\n' "$comparison"
+    if ! grep -q '^PASS:' <<< "$comparison"; then
+        REGRESSION_CHECK_MSG="Crooked Pipe comparison did not report PASS"
+        return 1
+    fi
+
+    REGRESSION_CHECK_MSG="PASS (five probe histories match Steinberg-Heizler Fig. 8(a))"
     return 0
 }
 
