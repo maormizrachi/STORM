@@ -237,7 +237,10 @@ inline double StaticAdmissionProbability(double mu,
         return 0.0;
     double const denominator = 3.0 *
         (transportOpacity * centerToFaceDistance + ExtrapolationLength);
-    return std::clamp(2.0 * (1.0 + 1.5 * mu) / denominator, 0.0, 1.0);
+    // Densmore et al. (2012), Eqs. (43)-(44): W(mu)/mu is represented by
+    // 0.91 + 1.635*mu. Its Lambertian mean is exactly two.
+    return std::clamp(
+        2.0 * (0.91 + 1.635 * mu) / denominator, 0.0, 1.0);
 }
 
 inline double Densmore2006SingleScatterAlbedo(
@@ -298,10 +301,11 @@ inline double Densmore2006ConversionCoefficient(
 
 inline bool IsProbabilisticDensmore2006Coefficient(double coefficient)
 {
-    // Eq. (26) reaches (5/4)*P at normal incidence, so Eq. (59) requires
-    // 0 <= P <= 4/5.
+    // The 2006 coefficient is combined with the 2012 angular law below.
+    // Normal incidence is the maximum, so C*(0.91+1.635)/2 must not exceed 1.
+    constexpr double maximumCoefficient = 2.0 / (0.91 + 1.635);
     return std::isfinite(coefficient) &&
-        coefficient >= 0.0 && coefficient <= 0.8;
+        coefficient >= 0.0 && coefficient <= maximumCoefficient;
 }
 
 inline double Densmore2006CellCoefficient(
@@ -331,7 +335,7 @@ inline double Densmore2006AdmissionProbability(
         return std::numeric_limits<double>::quiet_NaN();
     double const boundedMu = std::min(mu, 1.0);
     return 0.5 * conversionCoefficient *
-        (1.0 + 1.5 * boundedMu);
+        (0.91 + 1.635 * boundedMu);
 }
 
 inline double Densmore2006BoundaryLeakRate(
@@ -354,13 +358,13 @@ inline double SampleAsymptoticMu(double random)
     random = std::clamp(random, 0.0, 1.0);
     double lo = 0.0;
     double hi = 1.0;
-    // Detailed balance with the static admission law gives
-    // p(mu) proportional to mu*(1 + 3*mu/2), whose normalized CDF is
-    // mu^2*(1 + mu)/2.
+    // Detailed balance with the 2012 admission law gives
+    // p(mu) = mu*(0.91 + 1.635*mu), whose normalized CDF is
+    // 0.455*mu^2 + 0.545*mu^3.
     for(int iteration = 0; iteration < 56; ++iteration)
     {
         double const mu = 0.5 * (lo + hi);
-        double const cdf = 0.5 * mu * mu * (1.0 + mu);
+        double const cdf = mu * mu * (0.455 + 0.545 * mu);
         if(cdf < random)
             lo = mu;
         else

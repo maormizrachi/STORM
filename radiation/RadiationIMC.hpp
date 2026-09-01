@@ -797,6 +797,7 @@ private:
                                std::size_t sourceCellIndex,
                                std::size_t targetCellIndex,
                                std::size_t faceIndex);
+    bool keepDDMCThermalBoundaryParticle(MCParticle &particle);
 
     enum class DDMCDiagnosticEventKind : unsigned char
     {
@@ -1222,10 +1223,16 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                     this->parameters_.ddmcMaxMovingInterfaceWeightCorrection);
         throw eo;
     }
-    if(this->parameters_.withDDMC && this->parameters_.ddmcUseMultigroupPGRW &&
+    if(this->parameters_.withDDMC && this->parameters_.withMultigroupDDMC &&
        !this->parameters_.withMultigroupOpacity)
     {
-        rejectUnsupportedParameter("ddmcUseMultigroupPGRW requires withMultigroupOpacity");
+        rejectUnsupportedParameter("withMultigroupDDMC requires withMultigroupOpacity");
+    }
+    if(this->parameters_.withDDMC && this->parameters_.withMultigroupOpacity &&
+       !this->parameters_.withMultigroupDDMC)
+    {
+        rejectUnsupportedParameter(
+            "multigroup DDMC requires withMultigroupDDMC");
     }
     if(this->parameters_.withCompton && !this->parameters_.withMultigroupOpacity)
     {
@@ -2167,7 +2174,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
         double meanChordLength = 4.0 * volume / surfaceArea;
 
-        if(this->parameters_.ddmcUseMultigroupPGRW &&
+        if(this->parameters_.withMultigroupDDMC &&
            this->parameters_.withMultigroupOpacity)
         {
             GroupArray energyCenters =
@@ -2204,7 +2211,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                 double Bg = ddmc::PlanckBandMass(
                     this->energyBoundaries_, kT, g, g + 1);
                 totalSigABg += sigA_g * Bg;
-                if(!foundNonDiffusive && sigT_g * meanChordLength >= this->parameters_.ddmcMinCellOpticalDepth)
+                if(!foundNonDiffusive &&
+                   g < this->parameters_.ddmcMaxGroupCutoff &&
+                   sigT_g * meanChordLength >=
+                       this->parameters_.ddmcMinCellOpticalDepth)
                 {
                     cutoff = g + 1;
                     totalBgDiff += Bg;
@@ -2222,20 +2232,17 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             }
             if(cutoff > 0 && totalBgDiff > 0.0)
             {
-                data.groupCutoff = std::min(
-                    cutoff, this->parameters_.ddmcMaxGroupCutoff);
+                data.groupCutoff = cutoff;
                 data.sigmaA = sumBgSigADiff / totalBgDiff;
                 data.sigmaT = sumBgSigTDiff / totalBgDiff;
                 data.sigmaEnergyAbs = data.sigmaA;
                 data.sigmaMomentum = data.sigmaT;
-                data.sigmaDiffusion = data.sigmaT;
+                data.sigmaDiffusion = ddmc::RosselandOpacityFromBandSums(
+                    totalBgDiff, sumBgOverSigTDiff);
                 data.sigmaParticleGate = data.sigmaT;
                 data.sigmaGroupExit = data.sigmaT;
-                data.diffusionCoefficient =
-                    (sumBgOverSigTDiff > 0.0)
-                    ? (units::clight / 3.0) *
-                        sumBgOverSigTDiff / totalBgDiff
-                    : 0.0;
+                data.diffusionCoefficient = data.sigmaDiffusion > 0.0
+                    ? units::clight / (3.0 * data.sigmaDiffusion) : 0.0;
                 data.gamma = totalSigABg > 0.0
                     ? sumBgSigADiff / totalSigABg : 1.0;
             data.eligible =
@@ -2294,10 +2301,9 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                         this->boundary->getDDMCBoundaryFaceBehavior(
                             faceIdx, i, next);
                     if(behavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
-                    {
                         ++data.rigidBoundaryFaceCount;
-                    }
-                    else
+                    else if(behavior !=
+                            DDMCBoundaryFaceBehavior::ThermalSource)
                     {
                         ++data.unsupportedBoundaryFaceCount;
                         ++this->ddmcUnsupportedBoundaryFaceCount_;
@@ -2468,7 +2474,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         double volume = this->grid.GetVolume(i);
         PointT const cellCenter = this->grid.GetMeshPoint(i);
         double const sourceBandMass =
-            (this->parameters_.ddmcUseMultigroupPGRW &&
+            (this->parameters_.withMultigroupDDMC &&
              this->parameters_.withMultigroupOpacity)
             ? ddmc::PlanckBandMass(
                 this->energyBoundaries_, units::k_boltz * this->cells_[i].temperature,
@@ -2542,12 +2548,78 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             std::size_t nextCellIndex = (neighbors.first == i) ? neighbors.second : neighbors.first;
             if(this->grid.IsPointOutsideBox(nextCellIndex))
             {
-                if(this->boundary->getDDMCBoundaryFaceBehavior(
-                       faceIdx, i, nextCellIndex) !=
-                   DDMCBoundaryFaceBehavior::ReflectingRigid)
+                DDMCBoundaryFaceBehavior const behavior =
+                    this->boundary->getDDMCBoundaryFaceBehavior(
+                        faceIdx, i, nextCellIndex);
+                if(behavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
+                    continue;
+                if(behavior != DDMCBoundaryFaceBehavior::ThermalSource)
                 {
                     data.boundaryExcluded = true;
+                    continue;
                 }
+
+                PointT normal = this->grid.Normal(faceIdx);
+                double const normalMag = fastabs(normal);
+                double const area = this->grid.GetArea(faceIdx);
+                if(!(normalMag > 0.0) || !std::isfinite(normalMag) ||
+                   !(area > 0.0) || !std::isfinite(area))
+                {
+                    ++this->ddmcLeakInvalidGeometryCount_;
+                    data.boundaryExcluded = true;
+                    continue;
+                }
+                normal = normal / normalMag;
+                if(ScalarProd(
+                       normal,
+                       this->grid.GetMeshPoint(nextCellIndex) - cellCenter) < 0.0)
+                {
+                    normal = -normal;
+                }
+
+                double const sourceDistanceToFace = std::abs(ScalarProd(
+                    this->grid.FaceCM(faceIdx) - cellCenter, normal));
+                double boundaryRate = ddmc::BoundaryLeakRate(
+                    area, volume, data.sigmaDiffusion,
+                    sourceDistanceToFace, units::clight);
+                double const coefficient = ddmc::Densmore2006CellCoefficient(
+                    data.sigmaDiffusion, data.singleScatterAlbedo,
+                    sourceDistanceToFace);
+                if(std::isfinite(coefficient))
+                {
+                    boundaryRate = ddmc::Densmore2006BoundaryLeakRate(
+                        area, volume, units::clight, coefficient);
+                }
+                if(!(boundaryRate > 0.0) || !std::isfinite(boundaryRate))
+                {
+                    data.boundaryExcluded = true;
+                    continue;
+                }
+
+                DDMCFaceLeak faceLeak;
+                faceLeak.faceIndex = faceIdx;
+                faceLeak.nextCellIndex = nextCellIndex;
+                faceLeak.kind = ddmc::FaceKind::InterfaceToIMC;
+                faceLeak.rate = boundaryRate;
+                faceLeak.boundaryRate = boundaryRate;
+                faceLeak.ddmcRate = boundaryRate;
+                faceLeak.sourceBandMass = sourceBandMass;
+                faceLeak.commonBandMass = sourceBandMass;
+                faceLeak.area = area;
+                faceLeak.sourceDistanceToFace = sourceDistanceToFace;
+                faceLeak.outwardNormal = normal;
+                data.faceLeaks.push_back(faceLeak);
+                data.totalLeakRate += boundaryRate;
+                data.faceAreaSum += area;
+                double const nx = normal[0];
+                double const ny = normal[1];
+                double const nz = normal[2];
+                data.fluxMatrix[0] += area * nx * nx;
+                data.fluxMatrix[1] += area * nx * ny;
+                data.fluxMatrix[2] += area * nx * nz;
+                data.fluxMatrix[3] += area * ny * ny;
+                data.fluxMatrix[4] += area * ny * nz;
+                data.fluxMatrix[5] += area * nz * nz;
                 continue;
             }
             PointT normal = this->grid.Normal(faceIdx);
@@ -2610,7 +2682,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             double ddmcFraction = 0.0;
             if(targetEligible && internalRate > 0.0)
             {
-                if(!(this->parameters_.ddmcUseMultigroupPGRW &&
+                if(!(this->parameters_.withMultigroupDDMC &&
                      this->parameters_.withMultigroupOpacity) ||
                    targetCutoff >= data.groupCutoff)
                 {
@@ -2630,10 +2702,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             double boundaryRate = ddmc::BoundaryLeakRate(
                 area, volume, data.sigmaDiffusion,
                 sourceDistance, units::clight);
-            bool const multigroupPGRW =
-                this->parameters_.ddmcUseMultigroupPGRW &&
-                this->parameters_.withMultigroupOpacity;
-            if(ddmcFraction < 1.0 && !multigroupPGRW)
+            if(ddmcFraction < 1.0)
             {
                 double const coefficient = ddmc::Densmore2006CellCoefficient(
                     data.sigmaDiffusion, data.singleScatterAlbedo,
@@ -3029,7 +3098,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         return false;
     }
 
-    if(this->parameters_.ddmcUseMultigroupPGRW && this->parameters_.withMultigroupOpacity)
+    if(this->parameters_.withMultigroupDDMC && this->parameters_.withMultigroupOpacity)
     {
         if(data.groupCutoff == 0 || data.groupCutoff > NumGroups)
         {
@@ -3103,7 +3172,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 
     double f = this->factorFleck_[cellIndex];
     double upscatterRate = 0.0;
-    if(this->parameters_.ddmcUseMultigroupPGRW && data.gamma < 1.0 &&
+    if(this->parameters_.withMultigroupDDMC && data.gamma < 1.0 &&
        data.sigmaEnergyAbs > 0.0 &&
        (f > 0.0 || this->postProcessExternalSourceMode_))
     {
@@ -3121,7 +3190,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     double tEvent = -std::log(this->randomUnitOpen(particle)) / eventRate;
     double tCensus = particle.timeLeft;
     double tCutoff = std::numeric_limits<double>::max();
-    if(this->parameters_.ddmcUseMultigroupPGRW &&
+    if(this->parameters_.withMultigroupDDMC &&
        data.groupCutoff > 0 && data.groupCutoff <= NumGroups &&
        data.velocityDivergence < 0.0)
     {
@@ -3204,7 +3273,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 
     if(this->parameters_.withEgTimeAvg && this->parameters_.withMultigroupOpacity)
     {
-        if(this->parameters_.ddmcUseMultigroupPGRW && data.groupCutoff > 0 &&
+        if(this->parameters_.withMultigroupDDMC && data.groupCutoff > 0 &&
            data.groupCutoff <= NumGroups)
         {
             double const kT = units::k_boltz *
@@ -3307,7 +3376,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         if(this->parameters_.withMultigroupOpacity)
         {
             bool sampledResidentBand = false;
-            if(this->parameters_.ddmcUseMultigroupPGRW &&
+            if(this->parameters_.withMultigroupDDMC &&
                data.groupCutoff > 0 && data.groupCutoff <= NumGroups)
             {
                 double const kT = units::k_boltz *
@@ -3444,7 +3513,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             }
 
             bool const leaveDDMCBand =
-                this->parameters_.ddmcUseMultigroupPGRW &&
+                this->parameters_.withMultigroupDDMC &&
                 data.groupCutoff < NumGroups &&
                 particle.frequency >=
                     this->energyBoundaries_[data.groupCutoff];
@@ -3545,7 +3614,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         particle.velocity = dir * units::clight;
 
         bool const targetDDMC = useDDMCChannel && chosen->targetDDMCEligible;
-        if(!targetDDMC && this->parameters_.ddmcUseMultigroupPGRW &&
+        if(!targetDDMC && this->parameters_.withMultigroupDDMC &&
            this->parameters_.withMultigroupOpacity)
         {
             std::size_t beginGroup = 0;
@@ -3652,6 +3721,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 
         functionality.change = ParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = chosen->nextCellIndex;
+        functionality.boundaryCrossing =
+            this->grid.IsPointOutsideBox(chosen->nextCellIndex);
         if(targetDDMC)
         {
             ++this->ddmcResidentLeakCount_;
@@ -3668,7 +3739,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     }
     else
     {
-        if(!this->parameters_.ddmcUseMultigroupPGRW)
+        if(!this->parameters_.withMultigroupDDMC)
         {
             finalizePolarization(particle.velocity);
             particle.radiationState.clearDDMC();
@@ -3677,35 +3748,30 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             return true;
         }
         CellT &cell = this->cells_[cellIndex];
-        double const kT = units::k_boltz * cell.temperature;
-        double const upperBandMass = ddmc::PlanckBandMass(
-            this->energyBoundaries_, kT, data.groupCutoff, NumGroups);
-        if(!(upperBandMass > 0.0))
+        GroupArray const cumulativeOpacity =
+            this->opacity_->GetCumulativeOpacity(
+                cell, this->energyBoundaries_);
+        double const opacityCdfCoordinate =
+            ddmc::UpperBandOpacityCdfCoordinate(
+                cumulativeOpacity, data.groupCutoff,
+                this->randomUnitOpen(particle));
+        if(!std::isfinite(opacityCdfCoordinate))
         {
-            StormError eo("RadiationIMC DDMC upscatter has no representable upper frequency band");
+            StormError eo(
+                "RadiationIMC DDMC upscatter has no opacity-weighted upper frequency band");
             eo.addEntry("Cell index", cellIndex);
             eo.addEntry("Group cutoff", data.groupCutoff);
-            eo.addEntry("Upper-band Planck mass", upperBandMass);
+            eo.addEntry("Total emission weight", cumulativeOpacity.back());
+            double const weightThroughCutoff = data.groupCutoff > 0 &&
+                    data.groupCutoff <= cumulativeOpacity.size()
+                ? cumulativeOpacity[data.groupCutoff - 1] : 0.0;
+            eo.addEntry(
+                "Emission weight through cutoff",
+                weightThroughCutoff);
             throw eo;
         }
-        double remaining = this->randomUnitOpen(particle) * upperBandMass;
-        std::size_t selectedGroup = data.groupCutoff;
-        for(std::size_t group = data.groupCutoff; group < NumGroups; ++group)
-        {
-            double const groupMass = ddmc::PlanckBandMass(
-                this->energyBoundaries_, kT, group, group + 1);
-            if(remaining <= groupMass || group + 1 == NumGroups)
-            {
-                selectedGroup = group;
-                double const localRandom = groupMass > 0.0
-                    ? std::clamp(remaining / groupMass, 0.0, 1.0)
-                    : this->randomUnitOpen(particle);
-                particle.frequency = this->opacity_->SampleThermalEnergyInGroup(
-                    cell, selectedGroup, localRandom, this->energyBoundaries_);
-                break;
-            }
-            remaining -= groupMass;
-        }
+        particle.frequency = this->opacity_->GetThermalEnergy(
+            cell, opacityCdfCoordinate, this->energyBoundaries_);
         this->clampFrequencyToBounds(particle.frequency);
         particle.velocity = this->sampleRandomVelocity(cell, particle);
         exitDDMCToTransport(false);
@@ -3906,7 +3972,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         std::numeric_limits<double>::quiet_NaN(),
         std::numeric_limits<double>::quiet_NaN());
 
-    if(this->parameters_.ddmcUseMultigroupPGRW &&
+    if(this->parameters_.withMultigroupDDMC &&
        this->parameters_.withMultigroupOpacity)
     {
         std::size_t const cutoff = this->ddmcPointGroupCutoff_[targetCellIndex];
@@ -4007,11 +4073,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         targetCenter - this->grid.FaceCM(faceIndex), normal));
     double admission = ddmc::StaticAdmissionProbability(
         mu, targetOpacity, targetDistance);
-    bool const multigroupPGRW =
-        this->parameters_.ddmcUseMultigroupPGRW &&
-        this->parameters_.withMultigroupOpacity;
-    if(!multigroupPGRW &&
-       targetCellIndex < this->ddmcPointSingleScatterAlbedo_.size())
+    if(targetCellIndex < this->ddmcPointSingleScatterAlbedo_.size())
     {
         double const coefficient = ddmc::Densmore2006CellCoefficient(
             targetOpacity,
@@ -4173,6 +4235,133 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         DDMCDiagnosticEventKind::IMCAdmitted, sourceCellIndex,
         targetCellIndex, faceIndex, diagnosticGroup, admittedTargetWeight,
         sourceGroupCutoff, targetGroupCutoff, mu, admission);
+    return true;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::keepDDMCThermalBoundaryParticle(
+    MCParticle &particle)
+{
+    std::size_t const cellIndex = particle.cellIndex;
+    if(!this->parameters_.withDDMC || !this->boundary ||
+       cellIndex >= this->grid.GetPointNo() ||
+       cellIndex >= this->ddmcCellData_.size() ||
+       !this->ddmcCellData_[cellIndex].eligible)
+    {
+        return true;
+    }
+
+    PointT const cellCenter = this->grid.GetMeshPoint(cellIndex);
+    std::size_t sourceFace = std::numeric_limits<std::size_t>::max();
+    PointT outwardNormal{};
+    double centerToFaceDistance = 0.0;
+    double closestPlaneDistance = std::numeric_limits<double>::infinity();
+    for(std::size_t faceIdx : this->grid.GetCellFaces(cellIndex))
+    {
+        auto const &neighbors = this->grid.GetFaceNeighbors(faceIdx);
+        std::size_t const nextCellIndex = neighbors.first == cellIndex
+            ? neighbors.second : neighbors.first;
+        if(!this->grid.IsPointOutsideBox(nextCellIndex) ||
+           this->boundary->getDDMCBoundaryFaceBehavior(
+               faceIdx, cellIndex, nextCellIndex) !=
+               DDMCBoundaryFaceBehavior::ThermalSource)
+        {
+            continue;
+        }
+
+        PointT normal = this->grid.Normal(faceIdx);
+        double const normalMagnitude = fastabs(normal);
+        if(!(normalMagnitude > 0.0) || !std::isfinite(normalMagnitude))
+            continue;
+        normal = normal / normalMagnitude;
+        if(ScalarProd(
+               normal,
+               this->grid.GetMeshPoint(nextCellIndex) - cellCenter) < 0.0)
+        {
+            normal = -normal;
+        }
+
+        double const speed = fastabs(particle.velocity);
+        if(!(speed > 0.0) ||
+           ScalarProd(particle.velocity / speed, normal) >= 0.0)
+        {
+            continue;
+        }
+        double const cellDistance = std::abs(ScalarProd(
+            this->grid.FaceCM(faceIdx) - cellCenter, normal));
+        double const planeDistance = std::abs(ScalarProd(
+            particle.location - this->grid.FaceCM(faceIdx), normal));
+        double const faceScale = std::max(
+            {cellDistance, std::sqrt(this->grid.GetArea(faceIdx)),
+             std::numeric_limits<double>::min()});
+        if(planeDistance <= 1.0e-8 * faceScale &&
+           planeDistance < closestPlaneDistance)
+        {
+            sourceFace = faceIdx;
+            outwardNormal = normal;
+            centerToFaceDistance = cellDistance;
+            closestPlaneDistance = planeDistance;
+        }
+    }
+    if(sourceFace == std::numeric_limits<std::size_t>::max())
+        return true;
+
+    MCParticle targetComoving = particle;
+    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+    {
+        if((this->parameters_.withHydro && !this->parameters_.MMC) ||
+           (this->parameters_.postProcess.enabled &&
+            this->parameters_.postProcess.useCellVelocities))
+        {
+            radiation_imc_detail::lorentzTransformToComoving<PointT>(
+                targetComoving, this->cells_[cellIndex]);
+        }
+    }
+    if(this->parameters_.withMultigroupOpacity)
+    {
+        this->clampFrequencyToBounds(targetComoving.frequency);
+        std::size_t const groupCutoff =
+            this->ddmcCellData_[cellIndex].groupCutoff;
+        if(groupCutoff == 0 || groupCutoff > NumGroups ||
+           targetComoving.frequency >= this->energyBoundaries_[groupCutoff])
+        {
+            return true;
+        }
+    }
+
+    double const speed = fastabs(targetComoving.velocity);
+    if(!(speed > 0.0) || !std::isfinite(speed))
+        return true;
+    double const mu = std::clamp(
+        -ScalarProd(targetComoving.velocity / speed, outwardNormal), 0.0, 1.0);
+    DDMCCellData const &data = this->ddmcCellData_[cellIndex];
+    double admission = ddmc::StaticAdmissionProbability(
+        mu, data.sigmaDiffusion, centerToFaceDistance);
+    double const coefficient = ddmc::Densmore2006CellCoefficient(
+        data.sigmaDiffusion, data.singleScatterAlbedo,
+        centerToFaceDistance);
+    if(std::isfinite(coefficient))
+        admission = ddmc::Densmore2006AdmissionProbability(mu, coefficient);
+
+    if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
+        this->initializeParticleRNG(particle);
+    if(this->randomUnitOpen(particle) > admission)
+        return false;
+
+    particle.velocity = targetComoving.velocity;
+    particle.frequency = targetComoving.frequency;
+    particle.weight = targetComoving.weight;
+    particle.initialWeight = std::abs(particle.weight);
+    this->addDDMCFluxContribution(
+        cellIndex, particle.weight * (particle.velocity / speed));
+    particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+    particle.radiationState.set(
+        RadiationTransportState<PointT>::DDMCCellResident);
+    particle.radiationState.set(
+        RadiationTransportState<PointT>::DDMCComovingFrame);
+    particle.location = cellCenter;
+    particle.velocity = this->sampleRandomVelocity(
+        this->cells_[cellIndex], particle);
     return true;
 }
 
@@ -6758,14 +6947,16 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     if(this->boundary)
     {
         std::vector<MCParticle> boundaryParticles = this->boundary->generateNewBoundaryParticles(fullDt);
-        for(MCParticle &particle : boundaryParticles)
-        {
+        boundaryParticles.erase(std::remove_if(
+            boundaryParticles.begin(), boundaryParticles.end(),
+            [&](MCParticle &particle) {
             this->setInitialWeightFromWeight(particle);
             if(this->parameters_.postProcess.enabled)
             {
                 particle.timeLeft = transportDt * this->randomUnitOpen(particle);
             }
-        }
+            return !this->keepDDMCThermalBoundaryParticle(particle);
+        }), boundaryParticles.end());
         newParticles.insert(newParticles.end(), boundaryParticles.begin(), boundaryParticles.end());
     }
     if(this->observer_)

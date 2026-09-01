@@ -22,9 +22,14 @@ using namespace STORM::fallback;
 //   The face is a rigid reflecting wall. In DDMC this is a zero-normal-current
 //   boundary. No leakage event should be added through this face, but the cell
 //   should not be excluded solely because of this face.
+//
+// ThermalSource:
+//   The face supplies incident thermal packets and absorbs packets leaving the
+//   domain. DDMC may apply the reciprocal asymptotic boundary condition.
 enum class DDMCBoundaryFaceBehavior {
     Unsupported,
-    ReflectingRigid
+    ReflectingRigid,
+    ThermalSource
 };
 
 template<typename T, typename Grid>

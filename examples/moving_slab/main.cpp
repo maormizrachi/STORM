@@ -597,6 +597,7 @@ int main(int argc, char *argv[])
     imcParams.withHydro = true;
     imcParams.withMultigroupOpacity = true;
     imcParams.withDDMC = true;
+    imcParams.withMultigroupDDMC = true;
     imcParams.noHydroFeedback = true;
     imcParams.withEgTimeAvg = true;
     imcParams.energyBoundariesProvided = true;

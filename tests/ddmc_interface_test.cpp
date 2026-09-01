@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 
+#include "radiation/ddmc/DDMCSampling.hpp"
 #include "radiation/ddmc/DDMCWollaegerInterface.hpp"
 
 namespace {
@@ -29,8 +31,8 @@ void testCoefficient()
     requireClose(reference, 0.5754275279498156, 2.0e-15,
                  "conversion coefficient does not match Eq. (48)");
     requireClose(STORM::ddmc::Densmore2006AdmissionProbability(1.0, reference),
-                 1.25 * reference, 2.0e-15,
-                 "normal-incidence probability does not match Eq. (26)");
+                 1.2725 * reference, 2.0e-15,
+                 "normal-incidence probability does not use the 2012 W(mu)");
 
     double const thin =
         STORM::ddmc::Densmore2006ConversionCoefficient(1.0e-6, 0.9);
@@ -53,6 +55,14 @@ void testCoefficient()
 
 void testProbabilityAndReciprocity()
 {
+    double const maximumCoefficient = 2.0 / (0.91 + 1.635);
+    require(STORM::ddmc::IsProbabilisticDensmore2006Coefficient(
+                std::nextafter(maximumCoefficient, 0.0)),
+            "valid combined 2006/2012 coefficient was rejected");
+    require(!STORM::ddmc::IsProbabilisticDensmore2006Coefficient(
+                std::nextafter(maximumCoefficient, 1.0)),
+            "combined 2006/2012 coefficient can exceed unit probability");
+
     double const invalid =
         STORM::ddmc::Densmore2006CellCoefficient(5.0, 0.5, 1.5);
     require(!std::isfinite(invalid),
@@ -80,6 +90,23 @@ void testProbabilityAndReciprocity()
                      2.0, 5.0, 7.0, coefficient),
                  7.0 * 2.0 * coefficient / (4.0 * 5.0), 2.0e-15,
                  "boundary leak rate does not match Eq. (29)");
+
+    double const mu = 0.4;
+    requireClose(STORM::ddmc::StaticAdmissionProbability(mu, 5.0, 1.5),
+                 2.0 * (0.91 + 1.635 * mu) /
+                     (3.0 * (7.5 + STORM::ddmc::ExtrapolationLength)),
+                 2.0e-15,
+                 "standard admission does not use the 2012 W(mu)");
+
+    for(double const probability : {0.1, 0.5, 0.9})
+    {
+        double const sampledMu =
+            STORM::ddmc::SampleAsymptoticMu(probability);
+        double const cdf = sampledMu * sampledMu *
+            (0.455 + 0.545 * sampledMu);
+        requireClose(cdf, probability, 2.0e-15,
+                     "asymptotic cosine sampler is not reciprocal");
+    }
 }
 
 void testCellMappingFallbackAndRoundoff()
@@ -104,6 +131,39 @@ void testCellMappingFallbackAndRoundoff()
                  "roundoff above unit cosine changes interface admission");
 }
 
+void testFrequencyDependentHelpers()
+{
+    double const totalBandWeight = 2.0;
+    double const weightedInverseOpacity = 1.0 / 2.0 + 1.0 / 8.0;
+    requireClose(
+        STORM::ddmc::RosselandOpacityFromBandSums(
+            totalBandWeight, weightedInverseOpacity),
+        3.2, 2.0e-15,
+        "DDMC diffusion opacity is not the Rosseland mean");
+    require(STORM::ddmc::RosselandOpacityFromBandSums(1.0, 0.0) == 0.0,
+            "invalid Rosseland denominator does not fail closed");
+
+    std::array<double, 4> const cumulativeEmission{{1.0, 3.0, 7.0, 10.0}};
+    requireClose(
+        STORM::ddmc::UpperBandOpacityCdfCoordinate(
+            cumulativeEmission, 2, 0.0),
+        0.3, 2.0e-15,
+        "upper-band sampler does not start at the opacity-weighted cutoff");
+    requireClose(
+        STORM::ddmc::UpperBandOpacityCdfCoordinate(
+            cumulativeEmission, 2, 0.5),
+        0.65, 2.0e-15,
+        "upper-band sampler does not condition the opacity-weighted CDF");
+    requireClose(
+        STORM::ddmc::UpperBandOpacityCdfCoordinate(
+            cumulativeEmission, 0, 0.25),
+        0.25, 2.0e-15,
+        "zero cutoff does not sample the full opacity-weighted CDF");
+    require(std::isnan(STORM::ddmc::UpperBandOpacityCdfCoordinate(
+                cumulativeEmission, cumulativeEmission.size(), 0.5)),
+            "out-of-range group cutoff does not fail closed");
+}
+
 } // namespace
 
 int main()
@@ -113,6 +173,7 @@ int main()
         testCoefficient();
         testProbabilityAndReciprocity();
         testCellMappingFallbackAndRoundoff();
+        testFrequencyDependentHelpers();
     }
     catch(std::exception const &error)
     {

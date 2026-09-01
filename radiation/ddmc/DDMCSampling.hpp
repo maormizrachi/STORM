@@ -4,10 +4,44 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 #include <planck_integral/planck_integral.hpp>
 
 namespace STORM::ddmc {
+
+inline double RosselandOpacityFromBandSums(
+    double totalBandWeight,
+    double weightedInverseOpacity)
+{
+    if(!(totalBandWeight > 0.0) || !(weightedInverseOpacity > 0.0))
+        return 0.0;
+    double const opacity = totalBandWeight / weightedInverseOpacity;
+    return std::isfinite(opacity) ? opacity : 0.0;
+}
+
+template<typename CumulativeOpacity>
+double UpperBandOpacityCdfCoordinate(
+    const CumulativeOpacity &cumulativeOpacity,
+    std::size_t groupCutoff,
+    double unitRandom)
+{
+    if(groupCutoff >= cumulativeOpacity.size() ||
+       !(unitRandom >= 0.0 && unitRandom < 1.0))
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    double const lower = groupCutoff > 0
+        ? cumulativeOpacity[groupCutoff - 1] : 0.0;
+    double const total = cumulativeOpacity.back();
+    if(!std::isfinite(lower) || !std::isfinite(total) ||
+       !(total > lower) || lower < 0.0)
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return (lower + unitRandom * (total - lower)) / total;
+}
 
 template<typename Boundaries>
 double PlanckBandMass(const Boundaries &boundaries,
