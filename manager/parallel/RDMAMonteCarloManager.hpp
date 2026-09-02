@@ -22,8 +22,11 @@
 #include "../../utils/RankSync.hpp"
 #include "../LocalTransportExecutor.hpp"
 #include "../MonteCarloTransportCore.hpp"
+#include "../../gpu/ProfileRegion.hpp"
 #ifdef STORM_WITH_GPU
 #include "../../gpu/KokkosLocalTransportExecutor.hpp"
+#include "../../gpu/DevicePopulationContext.hpp"
+#include "../../gpu/DeviceSourceContext.hpp"
 #endif // STORM_WITH_GPU
 #include "RankHandler2.hpp"
 #include "RegisteredSendBuffer.hpp"
@@ -223,7 +226,22 @@ public:
         return this->handlerMemoryBytes;
     }
 
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
+    /// Advances the owned particle census. References returned by
+    /// getParticles() are invalidated by this call.
+    void step(dt_t fullDt);
+
+    const std::vector<MCParticle> &getParticles(void) const
+    {
+        this->MaterializeDeviceCensus();
+        return this->ownedParticles;
+    }
+
+    std::vector<MCParticle> &getParticles(void)
+    {
+        this->MaterializeDeviceCensus();
+        this->particlesChanged = true;
+        return this->ownedParticles;
+    }
 
     inline const Tracker &getTracker(void)
     {
@@ -256,7 +274,7 @@ private:
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
     Tracker tracker;
     std::shared_ptr<ReallocationAgent> reallocationAgent;
-    size_t myIDCounter;
+    mutable size_t myIDCounter;
     size_t currentStep;
     size_t allStepsCounter;
     size_t transfersCounter;
@@ -281,6 +299,11 @@ private:
     size_t preStepParticleCount = 0;
     std::vector<size_t> beginningParticleCount;
     size_t handlerMemoryBytes = 0;
+    mutable std::vector<MCParticle> ownedParticles;
+    mutable bool hostParticlesValid = true;
+    bool particlesChanged = false;
+    bool deviceCensusValid = false;
+    std::uint64_t populationActivationEpoch_ = 0;
 
     std::vector<RegisteredSendBuffer_t> sendBuffers;
     std::vector<rank_t> sendBufferActiveRanks;
@@ -312,7 +335,9 @@ private:
     unsigned long long gpuPhysicsStepCount = 0;
     unsigned long long gpuHoldCount = 0;
     unsigned long long gpuElidedRemovalCount = 0;
+    mutable std::size_t gpuDeferredD2HBytes = 0;
     size_t gpuHoldSkips = 0;
+    std::size_t gpuLastStepMaxActive_ = 0;
 #endif // STORM_WITH_GPU
 
     // Reused across transport rounds so the merge does not reallocate and
@@ -357,15 +382,40 @@ private:
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
+    bool HaveParticlesChanged(void) const { return this->particlesChanged; }
+
+    void ClearParticlesChanged(void) { this->particlesChanged = false; }
+
+    void MaterializeDeviceCensus(void) const
+    {
 #ifdef STORM_WITH_GPU
-    bool TransportBatchOnDevice(std::vector<MCParticle> &localParticles, rank_t bufferRank,
-                                MonteCarloStepFinalData &stepData, bool &isEmpty);
+        if(this->hostParticlesValid or not this->deviceCensusValid or not this->gpuTransportExecutor)
+        {
+            return;
+        }
+        const std::size_t assigned = this->gpuTransportExecutor->AssignPendingCensusIdentities(this->rank_world, static_cast<particle_id_t>(this->myIDCounter));
+        this->myIDCounter += assigned;
+        const std::size_t d2hBefore = this->gpuTransportExecutor->Metrics().d2hBytes;
+        gpu::CompletedBatch census = this->gpuTransportExecutor->SnapshotPendingCensus();
+        this->gpuDeferredD2HBytes += this->gpuTransportExecutor->Metrics().d2hBytes - d2hBefore;
+        this->ownedParticles.clear();
+        this->ownedParticles.reserve(census.census.size);
+        for(const gpu::CompletedTransport &transported : census.census)
+        {
+            MCParticle particle;
+            gpu::UnpackParticle(transported.particle, transported.cold, particle);
+            this->ownedParticles.push_back(std::move(particle));
+        }
+        this->hostParticlesValid = true;
+#endif
+    }
+
+#ifdef STORM_WITH_GPU
+    bool TransportBatchOnDevice(std::vector<MCParticle> &localParticles, rank_t bufferRank, MonteCarloStepFinalData &stepData, bool &isEmpty);
 
     void CollectHostParticlesForDevice(std::vector<MCParticle> &arrivals);
 
-    bool TransportResidentOnDevice(std::vector<MCParticle> &arrivals,
-                                   MonteCarloStepFinalData &stepData,
-                                   bool &isEmpty);
+    bool TransportResidentOnDevice(std::vector<MCParticle> &arrivals, MonteCarloStepFinalData &stepData, bool &isEmpty);
 
     void ApplyDeviceCompletions(gpu::CompletedBatch &completed,
                                 MonteCarloStepFinalData &stepData);
@@ -375,8 +425,7 @@ private:
 
     void PutSelfParticles(std::vector<MCParticle> &&particles);
 
-    void StageLocalParticlesForDevice(std::vector<MCParticle> &&particles,
-                                      bool assignNewIDs);
+    void StageLocalParticlesForDevice(std::vector<MCParticle> &&particles, bool assignNewIDs);
 
     void PrepareHandlers(void);
 
@@ -419,7 +468,6 @@ private:
     bool AllSendBuffersEmpty(void) const;
 
     void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
-
 };
 
 #include "RDMAManagerOperations.hpp"

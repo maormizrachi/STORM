@@ -221,9 +221,7 @@ void RDMAMonteCarloManager<T, Grid, Physics>::CollectHostParticlesForDevice(std:
         std::vector<MCParticle> &deferred = this->detachedRankParticles[rank];
         if(not deferred.empty())
         {
-            arrivals.insert(arrivals.end(),
-                            std::make_move_iterator(deferred.begin()),
-                            std::make_move_iterator(deferred.end()));
+            arrivals.insert(arrivals.end(), std::make_move_iterator(deferred.begin()), std::make_move_iterator(deferred.end()));
             deferred.clear();
         }
 
@@ -234,9 +232,7 @@ void RDMAMonteCarloManager<T, Grid, Physics>::CollectHostParticlesForDevice(std:
         }
         this->mergeScratchBuffer.clear();
         handler->DetachLocalParticles(this->mergeScratchBuffer);
-        arrivals.insert(arrivals.end(),
-                        std::make_move_iterator(this->mergeScratchBuffer.begin()),
-                        std::make_move_iterator(this->mergeScratchBuffer.end()));
+        arrivals.insert(arrivals.end(), std::make_move_iterator(this->mergeScratchBuffer.begin()), std::make_move_iterator(this->mergeScratchBuffer.end()));
         this->mergeScratchBuffer.clear();
     }
 }
@@ -262,8 +258,7 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
         }
         if(not this->gpuTransportExecutor)
         {
-            this->gpuTransportExecutor =
-                std::make_unique<gpu::KokkosLocalTransportExecutor>(this->config.gpuMaxInnerSteps);
+            this->gpuTransportExecutor = std::make_unique<gpu::KokkosLocalTransportExecutor>(this->config.gpuMaxInnerSteps);
         }
 
         for(MCParticle &particle : arrivals)
@@ -280,8 +275,7 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
         const std::chrono::steady_clock::time_point packStart = std::chrono::steady_clock::now();
         this->gpuIngestCount += incoming;
         this->gpuTransportExecutor->Ingest(arrivals);
-        this->gpuPackSeconds +=
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
+        this->gpuPackSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
         arrivals.clear();
 
         if(this->gpuTransportExecutor->ActiveCount() == 0 and
@@ -295,15 +289,12 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
         const std::size_t activeCount = this->gpuTransportExecutor->ActiveCount();
         const std::size_t minLaunch = this->config.gpuMinLaunchSize;
         const bool fatEnough = minLaunch == 0 or activeCount >= minLaunch;
-        const bool heldTooLong =
-            this->config.gpuHoldMaxSkips > 0 and
-            this->gpuHoldSkips >= this->config.gpuHoldMaxSkips;
+        const bool heldTooLong = (this->config.gpuHoldMaxSkips > 0) and (this->gpuHoldSkips >= this->config.gpuHoldMaxSkips);
         if(not fatEnough and not heldTooLong)
         {
             ++this->gpuHoldSkips;
             ++this->gpuHoldCount;
-            gpu::CompletedBatch held = this->gpuTransportExecutor->FlushPendingRemotes(
-                minLaunch, this->config.gpuHoldMaxSkips, false);
+            gpu::CompletedBatch held = this->gpuTransportExecutor->FlushPendingRemotes(minLaunch, this->config.gpuHoldMaxSkips, false);
             this->gpuCopyBackSeconds += held.copyBackSeconds;
             this->ApplyDeviceCompletions(held, stepData);
             return true;
@@ -324,11 +315,8 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
         this->gpuLaunchCount += completed.launchCount;
         this->gpuParticleCount += completed.launchedParticles;
         this->gpuPhysicsStepCount += completed.physicsSteps;
-        this->localDecrementAmount +=
-            static_cast<typename AmountManager::counter_t>(completed.censusCount);
-        this->localDecrementAmount -=
-            static_cast<typename AmountManager::counter_t>(
-                completed.createdParticles);
+        this->localDecrementAmount += static_cast<typename AmountManager::counter_t>(completed.censusCount);
+        this->localDecrementAmount -= static_cast<typename AmountManager::counter_t>(completed.createdParticles);
         this->dynamicallyAdded += completed.createdParticles;
         this->allStepsCounter += completed.censusSteps;
         this->ApplyDeviceCompletions(completed, stepData);
@@ -337,21 +325,17 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vec
 }
 
 template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(
-    gpu::CompletedBatch &completed,
-    MonteCarloStepFinalData &stepData)
+void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(gpu::CompletedBatch &completed, MonteCarloStepFinalData &stepData)
 {
-    if(completed.terminals.empty() &&
-       completed.fallbacks.empty() &&
-       completed.remotes.empty())
+    STORM_PROFILE_REGION("storm/host_events");
+    if(completed.terminals.empty() and completed.fallbacks.empty() and completed.remotes.empty())
     {
         return;
     }
 
     const TransportStepContext context;
     std::vector<MCParticle> bounced;
-    const std::chrono::steady_clock::time_point hostEventStart =
-        std::chrono::steady_clock::now();
+    const std::chrono::steady_clock::time_point hostEventStart = std::chrono::steady_clock::now();
     auto ensureHostIdentity = [this](MCParticle &particle)
     {
         if(particle.id == std::numeric_limits<particle_id_t>::max())
@@ -361,44 +345,33 @@ void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(
         }
     };
 
-    auto processFallbacks =
-        [this, &stepData, &context, &bounced, &ensureHostIdentity](
-            const gpu::CompletedTransportSpan span)
+    auto processFallbacks = [this, &stepData, &context, &bounced, &ensureHostIdentity](const gpu::CompletedTransportSpan span)
     {
         for(const gpu::CompletedTransport &transported : span)
         {
             if(transported.result.error != gpu::TransportError::HostFallback)
             {
-                STORMError eo(
-                    "RDMAMonteCarloManager: non-fallback packet in fallback batch");
+                STORMError eo("RDMAMonteCarloManager: non-fallback packet in fallback batch");
                 eo.addEntry("Rank", this->rank_world);
-                eo.addEntry(
-                    "Transport error",
-                    static_cast<int>(transported.result.error));
+                eo.addEntry("Transport error", static_cast<int>(transported.result.error));
                 throw eo;
             }
             MCParticle particle;
-            gpu::UnpackParticle(
-                transported.particle, transported.cold, particle);
+            gpu::UnpackParticle(transported.particle, transported.cold, particle);
             ensureHostIdentity(particle);
             std::vector<MCParticle> particlesToAdd;
-            MonteCarloFunctionality functionality =
-                this->physics->step(particle, particlesToAdd);
+            MonteCarloFunctionality functionality = this->physics->step(particle, particlesToAdd);
             if(functionality.change == MonteCarloParticleStatus::NO_CELL_MOVE or
-               this->ApplyTransportEvent(particle, functionality, this->rank_world, 0,
-                                         stepData, context) == TransportEventAction::Continue)
+               this->ApplyTransportEvent(particle, functionality, this->rank_world, 0, stepData, context) == TransportEventAction::Continue)
             {
                 bounced.push_back(std::move(particle));
             }
-            this->localDecrementAmount -=
-                static_cast<typename AmountManager::counter_t>(
-                    particlesToAdd.size());
+            this->localDecrementAmount -= static_cast<typename AmountManager::counter_t>(particlesToAdd.size());
             this->dynamicallyAdded += particlesToAdd.size();
             for(MCParticle &extra : particlesToAdd)
             {
                 ensureHostIdentity(extra);
-                if(this->ApplyTransportEvent(extra, functionality, this->rank_world, 0,
-                                            stepData, context) == TransportEventAction::Continue)
+                if(this->ApplyTransportEvent(extra, functionality, this->rank_world, 0, stepData, context) == TransportEventAction::Continue)
                 {
                     bounced.push_back(std::move(extra));
                 }
@@ -406,27 +379,20 @@ void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(
         }
     };
 
-    auto processOrdinary =
-        [this, &stepData, &context, &bounced, &ensureHostIdentity](
-            const gpu::CompletedTransportSpan span)
+    auto processOrdinary = [this, &stepData, &context, &bounced, &ensureHostIdentity](const gpu::CompletedTransportSpan span)
     {
         for(const gpu::CompletedTransport &transported : span)
         {
             if(transported.result.error != gpu::TransportError::None)
             {
-                STORMError eo(
-                    "RDMAMonteCarloManager: device grey transport failed");
+                STORMError eo("RDMAMonteCarloManager: device grey transport failed");
                 eo.addEntry("Rank", this->rank_world);
-                eo.addEntry(
-                    "Cell index", transported.particle.cellIndex);
-                eo.addEntry(
-                    "Transport error",
-                    static_cast<int>(transported.result.error));
+                eo.addEntry("Cell index", transported.particle.cellIndex);
+                eo.addEntry("Transport error", static_cast<int>(transported.result.error));
                 throw eo;
             }
 
-            if(transported.result.step.change ==
-               MonteCarloParticleStatus::REMOVE)
+            if(transported.result.step.change == MonteCarloParticleStatus::REMOVE)
             {
                 this->allStepsCounter += transported.particle.steps;
                 this->localDecrementAmount += 1;
@@ -435,14 +401,10 @@ void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(
             }
 
             MCParticle particle;
-            gpu::UnpackParticle(
-                transported.particle, transported.cold, particle);
+            gpu::UnpackParticle(transported.particle, transported.cold, particle);
             ensureHostIdentity(particle);
-            if(transported.result.step.change ==
-                   MonteCarloParticleStatus::NO_CELL_MOVE or
-               this->ApplyTransportEvent(
-                   particle, transported.result.step, this->rank_world, 0,
-                   stepData, context) == TransportEventAction::Continue)
+            if(transported.result.step.change == MonteCarloParticleStatus::NO_CELL_MOVE or
+               this->ApplyTransportEvent(particle, transported.result.step, this->rank_world, 0, stepData, context) == TransportEventAction::Continue)
             {
                 bounced.push_back(std::move(particle));
             }
@@ -452,9 +414,7 @@ void RDMAMonteCarloManager<T, Grid, Physics>::ApplyDeviceCompletions(
     processFallbacks(completed.fallbacks);
     processOrdinary(completed.terminals);
     processOrdinary(completed.remotes);
-    this->gpuHostEventSeconds +=
-        std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - hostEventStart).count();
+    this->gpuHostEventSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - hostEventStart).count();
 
     if(not bounced.empty())
     {
@@ -604,13 +564,10 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
     {
         if(this->physics->UsesDeviceTransport())
         {
-            const std::chrono::steady_clock::time_point mergeStart =
-                std::chrono::steady_clock::now();
+            const std::chrono::steady_clock::time_point mergeStart = std::chrono::steady_clock::now();
             std::vector<MCParticle> &arrivals = this->mergedParticleBuffer;
             this->CollectHostParticlesForDevice(arrivals);
-            this->loopMergeSeconds +=
-                std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - mergeStart).count();
+            this->loopMergeSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - mergeStart).count();
 
             if(this->TransportResidentOnDevice(arrivals, stepData, isEmpty))
             {
@@ -911,8 +868,7 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
 
             assert(removeCurrent);
         };
-        this->transportCore.HandleAll(localParticles, processParticle,
-                                       this->config.localTransportBatchSize);
+        this->transportCore.HandleAll(localParticles, processParticle, this->config.localTransportBatchSize);
 
             if(not localParticles.empty())
             {
@@ -947,9 +903,7 @@ bool RDMAMonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData 
         if(handledDeviceSweep)
         {
             completedNeighborSweep = true;
-            const bool deviceBusy =
-                this->gpuTransportExecutor and
-                this->gpuTransportExecutor->DeviceBusy();
+            const bool deviceBusy = this->gpuTransportExecutor and this->gpuTransportExecutor->DeviceBusy();
             isEmpty = not deviceBusy;
         }
     }

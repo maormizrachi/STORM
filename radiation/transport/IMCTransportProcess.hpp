@@ -319,10 +319,7 @@ public:
         #endif
     }
 
-    typename Owner::Functionality
-    stepImpl(
-        MCParticle &particle,
-        std::vector<MCParticle> &particlesToAdd)
+    typename Owner::Functionality stepImpl(MCParticle &particle, std::vector<MCParticle> &particlesToAdd)
     {
 
             Functionality functionality;
@@ -330,11 +327,9 @@ public:
             std::size_t cellIndex = particle.cellIndex;
             CellT &cell = owner_.cells_[cellIndex];
 
-            if(particle.radiationState.hasPendingFlux() &&
-               cellIndex < owner_.componentGrid().GetPointNo())
+            if(particle.radiationState.hasPendingFlux() and cellIndex < owner_.componentGrid().GetPointNo())
             {
-                owner_.addDDMCFluxContribution(
-                    cellIndex, particle.radiationState.pendingFlux);
+                owner_.addDDMCFluxContribution(cellIndex, particle.radiationState.pendingFlux);
                 particle.radiationState.clearPendingFlux();
             }
 
@@ -361,96 +356,75 @@ public:
                 }
             }
 
-            if(owner_.SharedDDMCKernelEligible() ||
-               particle.radiationState.isDDMC() ||
-               (owner_.parameters_.withDDMC &&
-                cellIndex < owner_.ddmcCellData_.size() &&
-                owner_.ddmcCellData_[cellIndex].eligible))
+            if(owner_.SharedDDMCKernelEligible() or particle.radiationState.isDDMC() or
+                (owner_.parameters_.withDDMC and cellIndex < owner_.ddmcCellData_.size() and owner_.ddmcCellData_[cellIndex].eligible))
             {
-                const bool sharedDDMC =
-                    owner_.SharedDDMCKernelEligible();
-                if(sharedDDMC)
+                const bool sharedDDMC = owner_.SharedDDMCKernelEligible();
+                const bool sharedDDMCEvent =
+                    owner_.SharedDDMCEventKernelEligible();
+                ddmc::ColdState<PointT> cold;
+                cold.pendingFlux = particle.radiationState.pendingFlux;
+                if(sharedDDMCEvent)
                 {
-                    ddmc::ColdState<PointT> cold;
-                    cold.pendingFlux =
-                        particle.radiationState.pendingFlux;
-                    const ddmc::AdvanceResult<PointT> result =
-                        ddmc::AdvanceDDMC(
-                            particle, cold,
-                            owner_.GetHostTransportViews());
-                    particle.radiationState.pendingFlux =
-                        cold.pendingFlux;
+                    const ddmc::AdvanceResult<PointT> result = ddmc::AdvanceDDMC(particle, cold, owner_.GetHostTransportViews());
+                    particle.radiationState.pendingFlux = cold.pendingFlux;
                     if(result.error != ddmc::AdvanceError::None)
                     {
-                    if(result.error == ddmc::AdvanceError::HostFallback)
-                    {
-                        if(owner_.tryDDMCStep(particle, functionality))
+                        if(result.error == ddmc::AdvanceError::HostFallback)
                         {
-                            return functionality;
+                            if(owner_.tryDDMCStep(particle, functionality))
+                            {
+                                return functionality;
+                            }
                         }
-                    }
-                        StormError eo(
-                            "RadiationIMC shared DDMC transport failed");
+                        StormError eo("RadiationIMC shared DDMC transport failed");
                         eo.addEntry("Cell index", particle.cellIndex);
-                        eo.addEntry(
-                            "DDMC error",
-                            static_cast<int>(result.error));
+                        eo.addEntry("DDMC error", static_cast<int>(result.error));
                         throw eo;
                     }
                     if(result.taken)
                     {
                         ++owner_.ddmcStepCount_;
                         if(result.event == ddmc::AdvanceEvent::Census)
+                        {
                             ++owner_.ddmcCensusCount_;
-                        else if(result.event ==
-                                ddmc::AdvanceEvent::DDMCLeak)
+                        }
+                        else if(result.event == ddmc::AdvanceEvent::DDMCLeak)
                         {
                             ++owner_.ddmcLeakCount_;
                             ++owner_.ddmcResidentLeakCount_;
                             if(result.remotePendingFlux)
                                 ++owner_.ddmcRemoteResidentLeakCount_;
                         }
-                        else if(result.event ==
-                                ddmc::AdvanceEvent::IMCLeak)
+                        else if(result.event == ddmc::AdvanceEvent::IMCLeak)
                         {
                             ++owner_.ddmcLeakCount_;
                             ++owner_.ddmcTransportLeakCount_;
                         }
-                        else if(result.event ==
-                                ddmc::AdvanceEvent::Upscatter)
+                        else if(result.event == ddmc::AdvanceEvent::Upscatter)
                         {
                             ++owner_.ddmcUpscatterCount_;
                         }
                         return result.step;
                     }
-                    gpu::TransportResult imcResult =
-                        transport::AdvanceIMC(
-                            particle, owner_.GetHostTransportViews());
-                    const ddmc::InterfaceResult interface =
-                        gpu::ApplyDDMCInterface(
-                            particle, cold, imcResult,
-                            owner_.GetHostTransportViews());
-                    particle.radiationState.pendingFlux =
-                        cold.pendingFlux;
-                    if(interface.taken &&
-                       interface.event == ddmc::InterfaceEvent::Admitted &&
-                       interface.extraSplitCount > 0)
+                }
+                if(sharedDDMC)
+                {
+                    gpu::TransportResult imcResult = transport::AdvanceIMC(particle, owner_.GetHostTransportViews());
+                    const ddmc::InterfaceResult interface = gpu::ApplyDDMCInterface(particle, cold, imcResult, owner_.GetHostTransportViews());
+                    particle.radiationState.pendingFlux = cold.pendingFlux;
+                    if(interface.taken and interface.event == ddmc::InterfaceEvent::Admitted and interface.extraSplitCount > 0)
                     {
-                        const cell_index_t targetCellIndex =
-                            imcResult.step.nextCellIndex;
-                        const std::size_t targetCell =
-                            static_cast<std::size_t>(targetCellIndex);
-                        cell_id_t targetID =
-                            std::numeric_limits<cell_id_t>::max();
+                        const cell_index_t targetCellIndex = imcResult.step.nextCellIndex;
+                        const std::size_t targetCell = static_cast<std::size_t>(targetCellIndex);
+                        cell_id_t targetID = std::numeric_limits<cell_id_t>::max();
                         if(targetCell < owner_.ddmcPointCellID_.size())
                         {
                             targetID = static_cast<cell_id_t>(
                                 owner_.ddmcPointCellID_[targetCell]);
                         }
-                        const PointT targetCenter =
-                            owner_.componentGrid().GetMeshPoint(targetCell);
-                        for(std::size_t copy = 0;
-                            copy < interface.extraSplitCount; ++copy)
+                        const PointT targetCenter = owner_.componentGrid().GetMeshPoint(targetCell);
+                        for(std::size_t copy = 0; copy < interface.extraSplitCount; ++copy)
                         {
                             MCParticle extra = particle;
                             extra.id = std::numeric_limits<std::size_t>::max();
@@ -469,12 +443,9 @@ public:
                     }
                     if(imcResult.error != gpu::TransportError::None)
                     {
-                        StormError eo(
-                            "RadiationIMC shared DDMC/IMC transport failed");
+                        StormError eo("RadiationIMC shared DDMC/IMC transport failed");
                         eo.addEntry("Cell index", particle.cellIndex);
-                        eo.addEntry(
-                            "IMC transport error",
-                            static_cast<int>(imcResult.error));
+                        eo.addEntry("IMC transport error", static_cast<int>(imcResult.error));
                         throw eo;
                     }
                     return imcResult.step;
@@ -487,9 +458,7 @@ public:
 
             if(owner_.GreyKernelEligible())
             {
-                gpu::TransportResult result =
-                    transport::AdvanceIMC(
-                        particle, owner_.GetHostTransportViews());
+                gpu::TransportResult result = transport::AdvanceIMC(particle, owner_.GetHostTransportViews());
                 if(result.error != gpu::TransportError::None)
                 {
                     StormError eo("RadiationIMC GPU-compatible grey transport failed");
@@ -502,25 +471,18 @@ public:
             if(owner_.SharedFullIMCKernelEligible())
             {
                 const SpectralOpacityPolicy opacityPolicy{&owner_};
-                const transport::TransportResult result =
-                    transport::AdvanceIMC(
-                        particle, owner_.GetHostTransportViews(),
-                        opacityPolicy);
+                const transport::TransportResult result = transport::AdvanceIMC(particle, owner_.GetHostTransportViews(), opacityPolicy);
                 if(result.error != transport::TransportError::None)
                 {
-                    StormError eo(
-                        "RadiationIMC shared full transport failed");
+                    StormError eo("RadiationIMC shared full transport failed");
                     eo.addEntry("Cell index", particle.cellIndex);
-                    eo.addEntry(
-                        "Transport error",
-                        static_cast<int>(result.error));
+                    eo.addEntry("Transport error", static_cast<int>(result.error));
                     throw eo;
                 }
                 return result.step;
             }
 
-            auto [faceIntersect, timeIntersect, nextCellIndex] =
-                owner_.componentIntersectionDetails(particle);
+            auto [faceIntersect, timeIntersect, nextCellIndex] = owner_.componentIntersectionDetails(particle);
 
             double shiftedFrequency = particle.frequency * dopplerShift;
             double absorptionOpacity;
@@ -552,11 +514,8 @@ public:
                 eo.addEntry("Scattering opacity", elasticScatteringOpacity);
                 throw eo;
             }
-            double const transportFleck = owner_.parameters_.withCompton && group < NumGroups
-                ? owner_.comptonData_[cellIndex].fleck
-                : owner_.factorFleck_[cellIndex];
-            double effectiveAbsorptionOpacity =
-                (1.0 - transportFleck) * absorptionOpacity;
+            double const transportFleck = (owner_.parameters_.withCompton and group < NumGroups)? owner_.comptonData_[cellIndex].fleck : owner_.factorFleck_[cellIndex];
+            double effectiveAbsorptionOpacity = (1.0 - transportFleck) * absorptionOpacity;
             double comptonOpacity = 0.0;
             if(owner_.parameters_.withCompton && group < NumGroups)
             {
@@ -585,8 +544,7 @@ public:
             ObserverCrossing<PointT> observerCrossing;
             if(owner_.observer_)
             {
-                observerCrossing = owner_.observer_->nextOutwardCrossing(
-                    particle.location, particle.velocity, particle.timeLeft);
+                observerCrossing = owner_.observer_->nextOutwardCrossing(particle.location, particle.velocity, particle.timeLeft);
                 if(observerCrossing.hit)
                 {
                     times[OBSERVER] = {OBSERVER, observerCrossing.time};
@@ -616,90 +574,72 @@ public:
                 integratedForTally = particle.weight * expFactor2 * (-1.0 / tmp2);
             }
             particle.location += particle.velocity * dt;
-            if(!owner_.parameters_.noHydroFeedback && !owner_.parameters_.postProcess.enabled)
+            if(not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled)
             {
                 double const materialDeposit = -expFactor2 * particle.weight;
-                owner_.tallyMaterialEnergy(
-                    cellIndex, materialDeposit, owner_.parameters_.withCompton);
+                owner_.tallyMaterialEnergy(cellIndex, materialDeposit, owner_.parameters_.withCompton);
                 if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                 {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.diffusionPressureGradient)
+                    if(owner_.parameters_.withHydro and not owner_.parameters_.diffusionPressureGradient)
                     {
-                        owner_.tallyMomentum(
-                            cellIndex, -expFactor1 * particle.weight * particle.velocity *
-                            units::inv_clight2);
+                        owner_.tallyMomentum(cellIndex, -expFactor1 * particle.weight * particle.velocity * units::inv_clight2);
                     }
                 }
             }
             owner_.tallyRadiationEnergy(cellIndex, integratedForTally);
-            if((owner_.parameters_.withEgTimeAvg ||
-                owner_.parameters_.withCompton) &&
-               owner_.parameters_.withMultigroupOpacity)
+            if((owner_.parameters_.withEgTimeAvg or owner_.parameters_.withCompton) and owner_.parameters_.withMultigroupOpacity)
             {
                 std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
                 if(g < NumGroups)
                 {
-                    owner_.tallyGroupRadiationEnergy(
-                        cellIndex, g, integratedForTally);
+                    owner_.tallyGroupRadiationEnergy(cellIndex, g, integratedForTally);
                 }
             }
             double const weightBeforeContinuousDecay = particle.weight;
             particle.weight *= 1.0 + expFactor1;
-            if(owner_.parameters_.postProcess.enabled && owner_.observer_)
+            if(owner_.parameters_.postProcess.enabled and owner_.observer_)
             {
-                owner_.observer_->addAbsorbedEnergy(
-                    weightBeforeContinuousDecay - particle.weight);
+                owner_.observer_->addAbsorbedEnergy(weightBeforeContinuousDecay - particle.weight);
             }
-                    MCParticle const labParticleBeforeCompton = particle;
+
+            MCParticle const labParticleBeforeCompton = particle;
 
             if(std::abs(particle.weight) < particle.initialWeight * 1e-3)
             {
-                if(owner_.observer_ && owner_.parameters_.postProcess.enabled)
+                if(owner_.observer_ and owner_.parameters_.postProcess.enabled)
                 {
                     owner_.observer_->addCutoffEnergy(particle.weight);
                 }
                 functionality.change = ParticleStatus::REMOVE;
-                if(!owner_.parameters_.noHydroFeedback && !owner_.parameters_.postProcess.enabled)
+                if(not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled)
                 {
-                    owner_.tallyMaterialEnergy(
-                        cellIndex, particle.weight, owner_.parameters_.withCompton);
+                    owner_.tallyMaterialEnergy(cellIndex, particle.weight, owner_.parameters_.withCompton);
                 }
                 return functionality;
             }
 
             if(min.first == INTERSECTION)
             {
-                if(owner_.handlePostProcessExternalSourceBoundary(
-                       particle, cellIndex, faceIntersect, functionality))
+                if(owner_.handlePostProcessExternalSourceBoundary(particle, cellIndex, faceIntersect, functionality))
                 {
                     return functionality;
                 }
-                if(!particle.radiationState.isDDMC() &&
-                   owner_.tryIMCToDDMCInterface(
-                       particle, functionality, particlesToAdd, cellIndex, nextCellIndex,
-                       faceIntersect))
+                if(not particle.radiationState.isDDMC() and owner_.tryIMCToDDMCInterface(particle, functionality, particlesToAdd, cellIndex, nextCellIndex, faceIntersect))
                 {
                     return functionality;
                 }
-                if(particle.radiationState.bypassCellID !=
-                   std::numeric_limits<std::size_t>::max())
+                if(particle.radiationState.bypassCellID != std::numeric_limits<std::size_t>::max())
                 {
-                    std::size_t const exchangedCellID = cellIndex <
-                        owner_.ddmcPointCellID_.size()
-                        ? owner_.ddmcPointCellID_[cellIndex]
-                        : std::numeric_limits<std::size_t>::max();
-                    std::size_t const currentCellID = exchangedCellID ==
-                        std::numeric_limits<std::size_t>::max() ? cellIndex : exchangedCellID;
+                    std::size_t const exchangedCellID = (cellIndex < owner_.ddmcPointCellID_.size())? owner_.ddmcPointCellID_[cellIndex] : std::numeric_limits<std::size_t>::max();
+                    std::size_t const currentCellID = (exchangedCellID == std::numeric_limits<std::size_t>::max())? cellIndex : exchangedCellID;
                     if(currentCellID == particle.radiationState.bypassCellID)
                     {
-                        particle.radiationState.bypassCellID =
-                            std::numeric_limits<std::size_t>::max();
+                        particle.radiationState.bypassCellID = std::numeric_limits<std::size_t>::max();
                     }
                 }
                 functionality.change = ParticleStatus::CELL_MOVE;
                 functionality.nextCellIndex = nextCellIndex;
-                functionality.boundaryCrossing =
-                    owner_.componentGrid().IsPointOutsideBox(nextCellIndex);
+                functionality.boundaryCrossing = owner_.componentGrid().IsPointOutsideBox(nextCellIndex);
             }
             else if(min.first == SCATTERING)
             {
@@ -834,11 +774,8 @@ public:
                     {
                         if(owner_.parameters_.withCompton)
                         {
-                            std::size_t const targetGroup = owner_.sampleComptonCdf(
-                                owner_.comptonData_[cellIndex].baseSourceCdf,
-                                owner_.randomUnitOpen(particle));
-                            particle.frequency =
-                                owner_.frequencyForComptonGroup(targetGroup);
+                            std::size_t const targetGroup = owner_.sampleComptonCdf(owner_.comptonData_[cellIndex].baseSourceCdf, owner_.randomUnitOpen(particle));
+                            particle.frequency = owner_.frequencyForComptonGroup(targetGroup);
                         }
                         else
                         {
@@ -869,13 +806,9 @@ public:
         #endif
                         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                         {
-                            if(!owner_.parameters_.diffusionPressureGradient && !owner_.parameters_.noHydroFeedback)
+                            if(not owner_.parameters_.diffusionPressureGradient and not owner_.parameters_.noHydroFeedback)
                             {
-                                owner_.tallyMomentum(
-                                    cellIndex,
-                                    (weightBefore * oldVelocity -
-                                     particle.weight * particle.velocity) *
-                                        units::inv_clight2);
+                                owner_.tallyMomentum(cellIndex, (weightBefore * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2);
                             }
                         }
                     }
@@ -883,13 +816,12 @@ public:
         #ifdef MONTECARLO_POLARIZATION
                 if(owner_.polarizationEnabled())
                 {
-                    if(isEffectiveScatter || isComptonScatter)
+                    if(isEffectiveScatter or isComptonScatter)
                     {
                         polarization::resetUnpolarized<PointT>(particle);
                     }
                     polarization::initializeIfNeeded<PointT>(particle);
-                    particle.polarizationBasis = polarization::projectBasisToDirection(
-                        particle.polarizationBasis, particle.velocity);
+                    particle.polarizationBasis = polarization::projectBasisToDirection(particle.polarizationBasis, particle.velocity);
                     polarization::clampLinearPolarization(particle.stokesQ, particle.stokesU);
                 }
         #endif
@@ -900,9 +832,7 @@ public:
                 owner_.recordObserverCrossing(particle, observerCrossing.point);
                 // Leave the packet outside the observer surface so the same positive
                 // outward root cannot be selected again on the next step.
-                particle.location = observerCrossing.point +
-                    normalize(particle.velocity) * std::max(1.0e-12, 1.0e-10 *
-                    std::max(1.0, fastabs(observerCrossing.point)));
+                particle.location = observerCrossing.point + normalize(particle.velocity) * std::max(1.0e-12, 1.0e-10 * std::max(1.0, fastabs(observerCrossing.point)));
                 functionality.change = ParticleStatus::NO_CELL_MOVE;
             }
             else if(min.first == TIMELEFT)
@@ -917,253 +847,276 @@ public:
             return functionality;
     }
 
-    void postStep(
-        const std::vector<MCParticle> &particles,
-        double fullDt)
-        {
+    void addCensusEnergyToExtensive(std::size_t cellIndex, double energy)
+    {
+            radiation_imc_detail::addRadiationEnergyIfPresent(owner_.extensives_[cellIndex], energy);
+    }
 
-            const std::size_t Ncells = owner_.componentGrid().GetPointNo();
-            owner_.deviceExecutor_->addTallies(
-                owner_.pendingMaterialEnergy_,
-                owner_.pendingRadiationEnergy_,
-                owner_.pendingGroupRadiationEnergy_,
-                owner_.pendingMomentum_,
-                owner_.ddmcFluxRhsIntegrated_,
-                owner_.rwStepCount_,
-                owner_.ddmcStepCount_,
-                owner_.ddmcLeakCount_,
-                owner_.ddmcResidentLeakCount_,
-                owner_.ddmcTransportLeakCount_,
-                owner_.ddmcRemoteResidentLeakCount_,
-                owner_.ddmcCensusCount_);
-            owner_.deviceExecutor_->addDDMCDiagnostics();
-            owner_.applyTransportTallies();
-            double const tallyDt = owner_.parameters_.postProcess.enabled
-                ? owner_.parameters_.postProcess.transportTime : fullDt;
+    void addCensusGroupEnergyToExtensive(std::size_t cellIndex, std::size_t group, double energy)
+    {
+            if constexpr(radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
+            {
+                if(group < NumGroups)
+                {
+                    owner_.extensives_[cellIndex].Eg[group] += energy;
+                }
+            }
+            else
+            {
+                (void) cellIndex;
+                (void) group;
+                (void) energy;
+            }
+    }
+
+    void postStep(const std::vector<MCParticle> &particles, double fullDt)
+    {
+        this->postStepImpl(particles, fullDt, false);
+    }
+
+    void postStepWithDeviceCensus(const std::vector<MCParticle> &hostParticles, double fullDt)
+    {
+        this->postStepImpl(hostParticles, fullDt, true);
+    }
+
+    void postStepImpl(const std::vector<MCParticle> &particles, double fullDt, bool includeDeviceCensus)
+    {
+        const std::size_t Ncells = owner_.componentGrid().GetPointNo();
+        owner_.deviceExecutor_->addTallies(
+            owner_.pendingMaterialEnergy_,
+            owner_.pendingRadiationEnergy_,
+            owner_.pendingGroupRadiationEnergy_,
+            owner_.pendingMomentum_,
+            owner_.ddmcFluxRhsIntegrated_,
+            owner_.rwStepCount_,
+            owner_.ddmcStepCount_,
+            owner_.ddmcLeakCount_,
+            owner_.ddmcResidentLeakCount_,
+            owner_.ddmcTransportLeakCount_,
+            owner_.ddmcRemoteResidentLeakCount_,
+            owner_.ddmcCensusCount_);
+        owner_.deviceExecutor_->addDDMCDiagnostics();
+        owner_.applyTransportTallies();
+        double const tallyDt = owner_.parameters_.postProcess.enabled? owner_.parameters_.postProcess.transportTime : fullDt;
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            owner_.Erad_time_avg_[i] /= (tallyDt * owner_.componentGrid().GetVolume(i));
+            if((owner_.parameters_.withEgTimeAvg ||
+                owner_.parameters_.withCompton) &&
+                owner_.parameters_.withMultigroupOpacity)
+            {
+                double norm = tallyDt * owner_.componentGrid().GetVolume(i);
+                for(std::size_t g = 0; g < NumGroups; ++g)
+                {
+                    owner_.Eg_time_avg_[i][g] /= norm;
+                }
+            }
+        }
+
+        // Post-processing is a diagnostic transport pass.  It must not feed
+        // packet absorption, Compton residuals, or hydro synchronization back
+        // into the snapshot that supplied the source.
+        if(owner_.parameters_.postProcess.enabled)
+        {
+            return;
+        }
+
+        if(not owner_.parameters_.noHydroFeedback)
+        {
+            if(owner_.parameters_.diffusionPressureGradient and owner_.parameters_.withHydro)
+            {
+                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                {
+    #ifdef STORM_WITH_MPI
+                    STORM::MPI_exchange_data(owner_.componentGrid(), owner_.Erad_time_avg_, true);
+    #endif
+                }
+            }
+
+            if(owner_.parameters_.withDDMC)
+            {
+                owner_.applyDDMCMomentumFeedback(fullDt);
+            }
+
             for(std::size_t i = 0; i < Ncells; ++i)
             {
-                owner_.Erad_time_avg_[i] /= (tallyDt * owner_.componentGrid().GetVolume(i));
-                if((owner_.parameters_.withEgTimeAvg ||
-                    owner_.parameters_.withCompton) &&
-                   owner_.parameters_.withMultigroupOpacity)
+                owner_.throwIfNegativeInternalEnergy(i, "postStep");
+                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value && radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                 {
-                    double norm = tallyDt * owner_.componentGrid().GetVolume(i);
-                    for(std::size_t g = 0; g < NumGroups; ++g)
+                    if(owner_.parameters_.withHydro)
                     {
-                        owner_.Eg_time_avg_[i][g] /= norm;
-                    }
-                }
-            }
-
-            // Post-processing is a diagnostic transport pass.  It must not feed
-            // packet absorption, Compton residuals, or hydro synchronization back
-            // into the snapshot that supplied the source.
-            if(owner_.parameters_.postProcess.enabled)
-            {
-                return;
-            }
-
-            if(!owner_.parameters_.noHydroFeedback)
-            {
-                if(owner_.parameters_.diffusionPressureGradient && owner_.parameters_.withHydro)
-                {
-                    if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
-                    {
-        #ifdef STORM_WITH_MPI
-                        STORM::MPI_exchange_data(
-                            owner_.componentGrid(), owner_.Erad_time_avg_, true);
-        #endif
-                    }
-                }
-
-                if(owner_.parameters_.withDDMC)
-                {
-                    owner_.applyDDMCMomentumFeedback(fullDt);
-                }
-
-                for(std::size_t i = 0; i < Ncells; ++i)
-                {
-                    owner_.throwIfNegativeInternalEnergy(i, "postStep");
-                    if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value && radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
-                    {
-                        if(owner_.parameters_.withHydro)
+                        if(owner_.parameters_.diffusionPressureGradient)
                         {
-                            if(owner_.parameters_.diffusionPressureGradient)
-                            {
-                                PointT const radiationEnergyGradient =
-                                    radiation_pressure_gradient_detail::
-                                        reconstructRadiationEnergyGradient<PointT>(
-                                            owner_.componentGrid(), owner_.Erad_time_avg_, i);
-                                owner_.extensives_[i].momentum +=
-                                    radiationEnergyGradient *
-                                    (-fullDt * owner_.componentGrid().GetVolume(i) / 3.0);
-                            }
+                            PointT const radiationEnergyGradient =
+                                radiation_pressure_gradient_detail::
+                                    reconstructRadiationEnergyGradient<PointT>(
+                                        owner_.componentGrid(), owner_.Erad_time_avg_, i);
+                            owner_.extensives_[i].momentum +=
+                                radiationEnergyGradient *
+                                (-fullDt * owner_.componentGrid().GetVolume(i) / 3.0);
                         }
                     }
+                }
+                owner_.synchronizeMaterialCell(i);
+            }
+        }
+
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            radiation_imc_detail::clearRadiationEnergyIfPresent(owner_.extensives_[i]);
+            radiation_imc_detail::clearGroupEnergyIfPresent(owner_.extensives_[i]);
+        }
+        if(includeDeviceCensus)
+        {
+            std::vector<double> censusRadiationEnergy;
+            std::vector<double> censusGroupRadiationEnergy;
+            if(not owner_.deviceExecutor_->copyCensusTallies(censusRadiationEnergy, censusGroupRadiationEnergy))
+            {
+                throw StormError("Device census post-step requested without device census tallies");
+            }
+            if(censusRadiationEnergy.size() != Ncells)
+            {
+                throw StormError("Device census radiation-energy tally size mismatch");
+            }
+            for(std::size_t i = 0; i < Ncells; ++i)
+            {
+                this->addCensusEnergyToExtensive(i, censusRadiationEnergy[i]);
+                if(owner_.parameters_.withMultigroupOpacity and censusGroupRadiationEnergy.size() == Ncells * NumGroups)
+                {
+                    const std::size_t offset = i * NumGroups;
+                    for(std::size_t group = 0; group < NumGroups; ++group)
+                    {
+                        this->addCensusGroupEnergyToExtensive(i, group, censusGroupRadiationEnergy[offset + group]);
+                    }
+                }
+            }
+        }
+        for(const MCParticle &particle : particles)
+        {
+            this->addCensusEnergyToExtensive(particle.cellIndex, particle.weight);
+            if(owner_.parameters_.withMultigroupOpacity)
+            {
+                std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
+                this->addCensusGroupEnergyToExtensive(particle.cellIndex, g, particle.weight);
+            }
+        }
+
+        if(owner_.parameters_.withCompton)
+        {
+            owner_.applyComptonEndOfStepCorrection(fullDt);
+            std::vector<MCParticle> &mutableParticles = const_cast<std::vector<MCParticle> &>(particles);
+            owner_.reconcileComptonParticles(mutableParticles);
+            if(not owner_.parameters_.noHydroFeedback)
+            {
+                for(std::size_t i = 0; i < Ncells; ++i)
+                {
                     owner_.synchronizeMaterialCell(i);
                 }
             }
+        }
 
-            for(std::size_t i = 0; i < Ncells; ++i)
+        for(std::size_t i = 0; i < Ncells; ++i)
+        {
+            const double mass = owner_.extensives_[i].mass;
+            const double radiationPerMass = (mass > 0.0)? radiation_imc_detail::radiationEnergyIfPresent(owner_.extensives_[i]) / mass : 0.0;
+            radiation_imc_detail::setCellRadiationEnergyIfPresent(owner_.cells_[i], radiationPerMass);
+            if constexpr(radiation_imc_detail::has_member_group_energy_mutable<CellT>::value)
             {
-                radiation_imc_detail::clearRadiationEnergyIfPresent(owner_.extensives_[i]);
-                radiation_imc_detail::clearGroupEnergyIfPresent(owner_.extensives_[i]);
-            }
-            for(const MCParticle &particle : particles)
-            {
-                radiation_imc_detail::addRadiationEnergyIfPresent(owner_.extensives_[particle.cellIndex], particle.weight);
-                if(owner_.parameters_.withMultigroupOpacity)
+                for(std::size_t g = 0; g < NumGroups; ++g)
                 {
-                    if constexpr(radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
-                    {
-                        std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
-                        if(g < NumGroups)
-                        {
-                            owner_.extensives_[particle.cellIndex].Eg[g] += particle.weight;
-                        }
-                    }
+                    double groupVal = (mass > 0.0 && radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
+                        ? owner_.traits_.extensiveGroupEnergy(owner_.extensives_[i], g) / mass
+                        : 0.0;
+                    radiation_imc_detail::setCellGroupEnergyIfPresent(owner_.cells_[i], g, groupVal);
                 }
             }
-
-            if(owner_.parameters_.withCompton)
-            {
-                owner_.applyComptonEndOfStepCorrection(fullDt);
-                std::vector<MCParticle> &mutableParticles =
-                    const_cast<std::vector<MCParticle> &>(particles);
-                owner_.reconcileComptonParticles(mutableParticles);
-                if(!owner_.parameters_.noHydroFeedback)
-                {
-                    for(std::size_t i = 0; i < Ncells; ++i)
-                    {
-                        owner_.synchronizeMaterialCell(i);
-                    }
-                }
-            }
-
-            for(std::size_t i = 0; i < Ncells; ++i)
-            {
-                const double mass = owner_.extensives_[i].mass;
-                const double radiationPerMass = (mass > 0.0)
-                    ? radiation_imc_detail::radiationEnergyIfPresent(owner_.extensives_[i]) / mass
-                    : 0.0;
-                radiation_imc_detail::setCellRadiationEnergyIfPresent(owner_.cells_[i], radiationPerMass);
-                if constexpr(radiation_imc_detail::has_member_group_energy_mutable<CellT>::value)
-                {
-                    for(std::size_t g = 0; g < NumGroups; ++g)
-                    {
-                        double groupVal = (mass > 0.0 && radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
-                            ? owner_.traits_.extensiveGroupEnergy(owner_.extensives_[i], g) / mass
-                            : 0.0;
-                        radiation_imc_detail::setCellGroupEnergyIfPresent(owner_.cells_[i], g, groupVal);
-                    }
-                }
-            }
+        }
     }
 
     std::string getAccelerationDebugInfo(std::size_t cellIndex, double frequency) const
     {
-
-            if(cellIndex >= owner_.ddmcCellData_.size())
+        if(cellIndex >= owner_.ddmcCellData_.size())
+        {
+            return std::string();
+        }
+        DDMCCellData const &data = owner_.ddmcCellData_[cellIndex];
+        double internalRate = 0.0;
+        double internalConductance = 0.0;
+        double boundaryRate = 0.0;
+        double ddmcChannelRate = 0.0;
+        double transportChannelRate = 0.0;
+        std::size_t mixedFaces = 0;
+        for(DDMCFaceLeak const &face : data.faceLeaks)
+        {
+            internalRate += face.internalRate;
+            internalConductance += face.conductance;
+            boundaryRate += face.boundaryRate;
+            ddmcChannelRate += face.ddmcRate;
+            transportChannelRate += face.transportRate;
+            if(face.ddmcRate > 0.0 && face.transportRate > 0.0)
             {
-                return std::string();
+                ++mixedFaces;
             }
-            DDMCCellData const &data = owner_.ddmcCellData_[cellIndex];
-            double internalRate = 0.0;
-            double internalConductance = 0.0;
-            double boundaryRate = 0.0;
-            double ddmcChannelRate = 0.0;
-            double transportChannelRate = 0.0;
-            std::size_t mixedFaces = 0;
-            for(DDMCFaceLeak const &face : data.faceLeaks)
-            {
-                internalRate += face.internalRate;
-                internalConductance += face.conductance;
-                boundaryRate += face.boundaryRate;
-                ddmcChannelRate += face.ddmcRate;
-                transportChannelRate += face.transportRate;
-                if(face.ddmcRate > 0.0 && face.transportRate > 0.0)
-                {
-                    ++mixedFaces;
-                }
-            }
-            std::ostringstream out;
-            out << std::setprecision(17)
-                << "eligible=" << (data.eligible ? 1 : 0)
-                << " boundary_excluded=" << (data.boundaryExcluded ? 1 : 0)
-                << " rigid_boundary_faces=" << data.rigidBoundaryFaceCount
-                << " unsupported_boundary_faces="
-                << data.unsupportedBoundaryFaceCount
-                << " first_unsupported_boundary_face="
-                << data.firstUnsupportedBoundaryFace
-                << " group_cutoff=" << data.groupCutoff
-                << " sigmaT=" << data.sigmaT
-                << " sigmaA=" << data.sigmaA
-                << " sigmaEnergyAbs=" << data.sigmaEnergyAbs
-                << " sigmaDiffusion=" << data.sigmaDiffusion
-                << " sigmaParticleGate=" << data.sigmaParticleGate
-                << " sigmaGroupExit=" << data.sigmaGroupExit
-                << " gamma=" << data.gamma
-                << " D=" << data.diffusionCoefficient
-                << " leak_rate=" << data.totalLeakRate
-                << " faces=" << data.faceLeaks.size()
-                << " frequency=" << frequency
-                << " ddmc_eligible=" << (data.eligible ? 1 : 0)
-                << " ddmc_boundary_excluded="
-                << (data.boundaryExcluded ? 1 : 0)
-                << " ddmc_rigid_boundary_faces=" << data.rigidBoundaryFaceCount
-                << " ddmc_unsupported_boundary_faces="
-                << data.unsupportedBoundaryFaceCount
-                << " ddmc_first_unsupported_boundary_face="
-                << data.firstUnsupportedBoundaryFace
-                << " ddmc_group_cutoff=" << data.groupCutoff
-                << " ddmc_sigmaT=" << data.sigmaT
-                << " ddmc_sigmaA=" << data.sigmaA
-                << " ddmc_sigmaEnergyAbs=" << data.sigmaEnergyAbs
-                << " ddmc_sigmaDiffusion=" << data.sigmaDiffusion
-                << " ddmc_sigmaParticleGate=" << data.sigmaParticleGate
-                << " ddmc_sigmaGroupExit=" << data.sigmaGroupExit
-                << " ddmc_gamma=" << data.gamma
-                << " ddmc_D=" << data.diffusionCoefficient
-                << " ddmc_total_leak_rate=" << data.totalLeakRate
-                << " ddmc_face_count=" << data.faceLeaks.size()
-                << " ddmc_internal_leak_rate_sum=" << internalRate
-                << " ddmc_internal_conductance_sum=" << internalConductance
-                << " ddmc_boundary_rate_sum=" << boundaryRate
-                << " ddmc_channel_rate_sum=" << ddmcChannelRate
-                << " ddmc_transport_channel_rate_sum=" << transportChannelRate
-                << " ddmc_mixed_face_count=" << mixedFaces
-                << " ddmc_resident_leaks=" << owner_.ddmcResidentLeakCount_
-                << " ddmc_transport_leaks=" << owner_.ddmcTransportLeakCount_
-                << " ddmc_remote_resident_leaks="
-                << owner_.ddmcRemoteResidentLeakCount_
-                << " ddmc_mpi_face_flux_reductions="
-                << owner_.ddmcMPIFaceFluxReductionCount_
-                << " ddmc_leak_invalid_geometry="
-                << owner_.ddmcLeakInvalidGeometryCount_
-                << " ddmc_leak_reciprocity_max="
-                << owner_.ddmcLeakReciprocityResidualMax_
-                << " ddmc_interface_incident="
-                << owner_.ddmcInterfaceIncidentCount_
-                << " ddmc_interface_admitted="
-                << owner_.ddmcInterfaceAdmittedCount_
-                << " ddmc_interface_reflected="
-                << owner_.ddmcInterfaceReflectedCount_
-                << " ddmc_interface_gu_applied="
-                << owner_.ddmcInterfaceGuAppliedCount_
-                << " ddmc_interface_gu_fallback="
-                << owner_.ddmcInterfaceGuFallbackCount_
-                << " ddmc_interface_bypass="
-                << owner_.ddmcInterfaceBypassCount_
-                << " ddmc_interface_split_packets="
-                << owner_.ddmcInterfaceSplitPacketCount_
-                << " ddmc_interface_min_mu=" << owner_.ddmcInterfaceMinimumMu_
-                << " ddmc_interface_max_gu="
-                << owner_.ddmcMovingInterfaceMaxFactor_
-                << " ddmc_interface_flux_tallies="
-                << owner_.ddmcInterfaceFluxTallyCount_
-                << " ddmc_leak_reciprocity_checks="
-                << owner_.ddmcLeakReciprocityCheckCount_;
-            return out.str();
+        }
+        std::ostringstream out;
+        out << std::setprecision(17)
+            << "eligible=" << (data.eligible ? 1 : 0)
+            << " boundary_excluded=" << (data.boundaryExcluded ? 1 : 0)
+            << " rigid_boundary_faces=" << data.rigidBoundaryFaceCount
+            << " unsupported_boundary_faces=" << data.unsupportedBoundaryFaceCount
+            << " first_unsupported_boundary_face=" << data.firstUnsupportedBoundaryFace
+            << " group_cutoff=" << data.groupCutoff
+            << " sigmaT=" << data.sigmaT
+            << " sigmaA=" << data.sigmaA
+            << " sigmaEnergyAbs=" << data.sigmaEnergyAbs
+            << " sigmaDiffusion=" << data.sigmaDiffusion
+            << " sigmaParticleGate=" << data.sigmaParticleGate
+            << " sigmaGroupExit=" << data.sigmaGroupExit
+            << " gamma=" << data.gamma
+            << " D=" << data.diffusionCoefficient
+            << " leak_rate=" << data.totalLeakRate
+            << " faces=" << data.faceLeaks.size()
+            << " frequency=" << frequency
+            << " ddmc_eligible=" << (data.eligible ? 1 : 0)
+            << " ddmc_boundary_excluded=" << (data.boundaryExcluded ? 1 : 0)
+            << " ddmc_rigid_boundary_faces=" << data.rigidBoundaryFaceCount
+            << " ddmc_unsupported_boundary_faces=" << data.unsupportedBoundaryFaceCount
+            << " ddmc_first_unsupported_boundary_face=" << data.firstUnsupportedBoundaryFace
+            << " ddmc_group_cutoff=" << data.groupCutoff
+            << " ddmc_sigmaT=" << data.sigmaT
+            << " ddmc_sigmaA=" << data.sigmaA
+            << " ddmc_sigmaEnergyAbs=" << data.sigmaEnergyAbs
+            << " ddmc_sigmaDiffusion=" << data.sigmaDiffusion
+            << " ddmc_sigmaParticleGate=" << data.sigmaParticleGate
+            << " ddmc_sigmaGroupExit=" << data.sigmaGroupExit
+            << " ddmc_gamma=" << data.gamma
+            << " ddmc_D=" << data.diffusionCoefficient
+            << " ddmc_total_leak_rate=" << data.totalLeakRate
+            << " ddmc_face_count=" << data.faceLeaks.size()
+            << " ddmc_internal_leak_rate_sum=" << internalRate
+            << " ddmc_internal_conductance_sum=" << internalConductance
+            << " ddmc_boundary_rate_sum=" << boundaryRate
+            << " ddmc_channel_rate_sum=" << ddmcChannelRate
+            << " ddmc_transport_channel_rate_sum=" << transportChannelRate
+            << " ddmc_mixed_face_count=" << mixedFaces
+            << " ddmc_resident_leaks=" << owner_.ddmcResidentLeakCount_
+            << " ddmc_transport_leaks=" << owner_.ddmcTransportLeakCount_
+            << " ddmc_remote_resident_leaks=" << owner_.ddmcRemoteResidentLeakCount_
+            << " ddmc_mpi_face_flux_reductions=" << owner_.ddmcMPIFaceFluxReductionCount_
+            << " ddmc_leak_invalid_geometry=" << owner_.ddmcLeakInvalidGeometryCount_
+            << " ddmc_leak_reciprocity_max=" << owner_.ddmcLeakReciprocityResidualMax_
+            << " ddmc_interface_incident=" << owner_.ddmcInterfaceIncidentCount_
+            << " ddmc_interface_admitted=" << owner_.ddmcInterfaceAdmittedCount_
+            << " ddmc_interface_reflected=" << owner_.ddmcInterfaceReflectedCount_
+            << " ddmc_interface_gu_applied=" << owner_.ddmcInterfaceGuAppliedCount_
+            << " ddmc_interface_gu_fallback=" << owner_.ddmcInterfaceGuFallbackCount_
+            << " ddmc_interface_bypass=" << owner_.ddmcInterfaceBypassCount_
+            << " ddmc_interface_split_packets=" << owner_.ddmcInterfaceSplitPacketCount_
+            << " ddmc_interface_min_mu=" << owner_.ddmcInterfaceMinimumMu_
+            << " ddmc_interface_max_gu=" << owner_.ddmcMovingInterfaceMaxFactor_
+            << " ddmc_interface_flux_tallies=" << owner_.ddmcInterfaceFluxTallyCount_
+            << " ddmc_leak_reciprocity_checks=" << owner_.ddmcLeakReciprocityCheckCount_;
+        return out.str();
     }
 
 };

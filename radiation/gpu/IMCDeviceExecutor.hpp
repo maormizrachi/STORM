@@ -1,10 +1,13 @@
 #ifndef STORM_RADIATION_IMC_DEVICE_EXECUTOR_HPP
 #define STORM_RADIATION_IMC_DEVICE_EXECUTOR_HPP
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <vector>
 
 #include "../imc/IMCComponentBase.hpp"
+#include "../../gpu/ProfileRegion.hpp"
 
 namespace STORM::radiation_imc_detail {
 
@@ -20,6 +23,7 @@ class IMCDeviceExecutor final : public IMCComponentBase<Owner>
     using typename Base::CellT;
     using typename Base::ExtensivesT;
     using Base::NumGroups;
+
 public:
     explicit IMCDeviceExecutor(Owner &owner) : Base(owner)
     {}
@@ -29,8 +33,9 @@ public:
     // no-op, keeping the lifecycle process independent of Kokkos headers.
     void prepareStep()
     {
-        const bool ddmcKernelEligible = this->SharedDDMCKernelEligible();
-        if(ddmcKernelEligible)
+        ddmcThermalSamplingEligible_ = this->ThermalSamplingSnapshotEligible();
+        const bool ddmcEventKernelEligible = this->SharedDDMCEventKernelEligible();
+        if(ddmcEventKernelEligible)
         {
             std::vector<double> temperatures(owner_.cells_.size(), 0.0);
             for(std::size_t i = 0; i < owner_.cells_.size(); ++i)
@@ -72,7 +77,8 @@ public:
         }
 #ifdef STORM_WITH_GPU
         const bool ddmcDeviceEligible =
-            ddmcKernelEligible && owner_.parameters_.ddmcGpuEnable;
+            ddmcEventKernelEligible &&
+            owner_.parameters_.ddmcGpuEnable;
         gpuTransportEnabled_ = owner_.GreyKernelEligible() or
                                owner_.SharedFullIMCKernelEligible() or
                                ddmcDeviceEligible;
@@ -88,31 +94,55 @@ public:
         {
             gpuData_ = std::make_unique<gpu::GreyIMCData>();
         }
+        STORM_PROFILE_REGION("storm/upload");
 
         const std::size_t buildGeneration = owner_.componentGrid().GetBuildGeneration();
         if(gpuGridBuildGeneration_ != buildGeneration)
         {
+            STORM_PROFILE_REGION("storm/upload/grid");
             const auto &gridData = owner_.componentGridData();
+            std::vector<cell_id_t> cellIDs(
+                owner_.cells_.size());
+            for(std::size_t i = 0;
+                i < owner_.cells_.size(); ++i)
+            {
+                cellIDs[i] = static_cast<cell_id_t>(
+                    radiation_imc_detail::ddmcStableCellID(
+                        owner_.componentGrid(), i,
+                        owner_.cells_[i]));
+            }
             gpuData_->UploadGrid(
                 gridData.cellFaceOffsets,
                 gridData.cellCenters,
+                cellIDs,
                 gridData.normals,
                 gridData.facePlaneOffsets,
                 gridData.nextCellIndices,
                 gridData.boundaryCrossings,
                 gridData.deviceBoundaryBehaviors);
+            gpuData_->UploadSourceTets(
+                gridData.tetOffsets,
+                gridData.tetCumVolumes,
+                gridData.tetTris,
+                gridData.vertices);
             gpuGridBuildGeneration_ = buildGeneration;
         }
-        gpuData_->UploadTables(
-            owner_.planckOpacities_,
-            owner_.scatteringOpacities_,
-            owner_.factorFleck_);
+        {
+            STORM_PROFILE_REGION("storm/upload/tables");
+            gpuData_->UploadTables(owner_.planckOpacities_, owner_.scatteringOpacities_, owner_.factorFleck_);
+        }
         if(ddmcDeviceEligible)
+        {
+            STORM_PROFILE_REGION("storm/upload/ddmc");
             gpuData_->UploadDDMC(ddmcSnapshot_);
+        }
         else
+        {
             gpuData_->DisableDDMC();
+        }
         if(owner_.parameters_.withHydro)
         {
+            STORM_PROFILE_REGION("storm/upload/hydro");
             gpuData_->UploadHydro(owner_.transportCellVelocities_);
         }
         else
@@ -123,6 +153,7 @@ public:
         if(owner_.parameters_.withMultigroupOpacity &&
            (owner_.SharedFullIMCKernelEligible() || ddmcDeviceEligible))
         {
+            STORM_PROFILE_REGION("storm/upload/spectral");
             std::vector<double> energyBoundaries(
                 owner_.energyBoundaries_.begin(),
                 owner_.energyBoundaries_.end());
@@ -133,12 +164,14 @@ public:
         }
         else
             gpuData_->DisableSpectral();
+        gpuData_->ResetCensusTallies();
 
         if(owner_.parameters_.withRandomWalk && owner_.randomWalk_ &&
            (owner_.GreyKernelEligible() ||
             owner_.SharedFullIMCKernelEligible() ||
             ddmcDeviceEligible))
         {
+            STORM_PROFILE_REGION("storm/upload/random_walk");
             gpuData_->UploadRandomWalk(
                 owner_.rwCellEligible_,
                 owner_.rwCellTotalOpacity_,
@@ -148,6 +181,36 @@ public:
         }
         else
             gpuData_->DisableRandomWalk();
+#endif
+    }
+
+    bool SupportsDeviceCensusTallies() const
+    {
+#ifdef STORM_WITH_GPU
+        return gpuTransportEnabled_ && gpuData_ &&
+               !owner_.parameters_.withCompton &&
+               !owner_.parameters_.postProcess.enabled;
+#else
+        return false;
+#endif
+    }
+
+    bool copyCensusTallies(
+        std::vector<double> &radiationEnergy,
+        std::vector<double> &groupRadiationEnergy)
+    {
+#ifdef STORM_WITH_GPU
+        if(!this->SupportsDeviceCensusTallies())
+        {
+            return false;
+        }
+        gpuData_->CopyCensusTallies(
+            radiationEnergy, groupRadiationEnergy);
+        return true;
+#else
+        (void) radiationEnergy;
+        (void) groupRadiationEnergy;
+        return false;
 #endif
     }
 
@@ -164,7 +227,12 @@ public:
                 owner_.ddmcInterfaceGuFallbackCount_,
                 owner_.ddmcInterfaceBypassCount_,
                 owner_.ddmcInterfaceSplitPacketCount_,
-                owner_.ddmcFallbackCount_);
+                owner_.ddmcFallbackCount_,
+                owner_.ddmcExternalSourceThermalizationCount_,
+                owner_.ddmcExternalSourceStayDDMCCount_,
+                owner_.ddmcExternalSourceToIMCCount_,
+                owner_.ddmcExternalSourceThermalizedEnergy_,
+                owner_.ddmcExternalSourceToIMCEnergy_);
         }
 #else
         (void) 0;
@@ -216,6 +284,22 @@ public:
         return gpuTransportEnabled_;
     }
 
+    gpu::GreyIMCData *DeviceData()
+    {
+        return gpuData_.get();
+    }
+
+    bool SupportsDeviceSourceGeneration() const
+    {
+        return !owner_.parameters_.withCompton &&
+               !owner_.parameters_.postProcess.enabled &&
+               !owner_.adaptiveSourceCellGroupScoresEnabled_ &&
+               !owner_.postProcessExternalSourceMode_ &&
+               (owner_.GreyKernelEligible() ||
+                owner_.SharedFullIMCKernelEligible() ||
+                owner_.SharedDDMCKernelEligible());
+    }
+
     gpu::GreyIMCViews<gpu::DeviceVec3> GetDeviceTransportViews() const
     {
         bool comovingTransport = false;
@@ -230,11 +314,15 @@ public:
                               !owner_.parameters_.diffusionPressureGradient &&
                               !owner_.parameters_.noHydroFeedback;
         }
-        return gpuData_->Views(
+        gpu::GreyIMCViews<gpu::DeviceVec3> result =
+            gpuData_->Views(
             units::clight,
             !owner_.parameters_.noHydroFeedback,
             comovingTransport,
             depositMomentum);
+        result.ddmcOnlyTransport =
+            this->SharedDDMCKernelEligible() ? 0u : 1u;
+        return result;
     }
 #endif
 
@@ -274,8 +362,7 @@ public:
         result.grid.facePlaneOffsets = gridData.facePlaneOffsets.data();
         result.grid.nextCellIndices = gridData.nextCellIndices.data();
         result.grid.boundaryCrossings = gridData.boundaryCrossings.data();
-        result.grid.deviceBoundaryBehaviors =
-            gridData.deviceBoundaryBehaviors.data();
+        result.grid.deviceBoundaryBehaviors = gridData.deviceBoundaryBehaviors.data();
         result.grid.cellCount = owner_.componentGrid().GetPointNo();
         result.absorptionOpacities = owner_.planckOpacities_.data();
         result.scatteringOpacities = owner_.scatteringOpacities_.data();
@@ -285,81 +372,53 @@ public:
         result.pendingRadiationEnergy = owner_.pendingRadiationEnergy_.data();
         result.pendingMomentum = owner_.pendingMomentum_.data();
         result.ddmc = ddmcSnapshot_.View();
-        result.ddmc.fluxRhs =
-            owner_.ddmcFluxRhsIntegrated_.data();
-        result.ddmc.interfaceIncidentCount =
-            &owner_.ddmcInterfaceIncidentCount_;
-        result.ddmc.interfaceAdmittedCount =
-            &owner_.ddmcInterfaceAdmittedCount_;
-        result.ddmc.interfaceReflectedCount =
-            &owner_.ddmcInterfaceReflectedCount_;
-        result.ddmc.interfaceGuAppliedCount =
-            &owner_.ddmcInterfaceGuAppliedCount_;
-        result.ddmc.interfaceGuFallbackCount =
-            &owner_.ddmcInterfaceGuFallbackCount_;
-        result.ddmc.interfaceBypassCount =
-            &owner_.ddmcInterfaceBypassCount_;
-        result.ddmc.interfaceSplitPacketCount =
-            &owner_.ddmcInterfaceSplitPacketCount_;
+        result.ddmc.fluxRhs = owner_.ddmcFluxRhsIntegrated_.data();
+        result.ddmc.interfaceIncidentCount = &owner_.ddmcInterfaceIncidentCount_;
+        result.ddmc.interfaceAdmittedCount = &owner_.ddmcInterfaceAdmittedCount_;
+        result.ddmc.interfaceReflectedCount = &owner_.ddmcInterfaceReflectedCount_;
+        result.ddmc.interfaceGuAppliedCount = &owner_.ddmcInterfaceGuAppliedCount_;
+        result.ddmc.interfaceGuFallbackCount = &owner_.ddmcInterfaceGuFallbackCount_;
+        result.ddmc.interfaceBypassCount = &owner_.ddmcInterfaceBypassCount_;
+        result.ddmc.interfaceSplitPacketCount = &owner_.ddmcInterfaceSplitPacketCount_;
         result.ddmc.hostFallbackCount = &owner_.ddmcFallbackCount_;
+        result.ddmc.externalSourceThermalizationCount = &owner_.ddmcExternalSourceThermalizationCount_;
+        result.ddmc.externalSourceStayDDMCCount = &owner_.ddmcExternalSourceStayDDMCCount_;
+        result.ddmc.externalSourceToIMCCount = &owner_.ddmcExternalSourceToIMCCount_;
+        result.ddmc.externalSourceThermalizedEnergy = &owner_.ddmcExternalSourceThermalizedEnergy_;
+        result.ddmc.externalSourceToIMCEnergy = &owner_.ddmcExternalSourceToIMCEnergy_;
         result.energyBoundaries = owner_.energyBoundaries_.data();
-        result.spectralAbsorptionScale =
-            owner_.spectralAbsorptionScale_.data();
+        result.spectralAbsorptionScale = owner_.spectralAbsorptionScale_.data();
         result.thermalEmissionCdf = owner_.thermalEmissionCdf_.data();
-        result.pendingGroupRadiationEnergy =
-            owner_.parameters_.withEgTimeAvg &&
-            !owner_.pendingGroupRadiationEnergy_.empty()
-                ? owner_.pendingGroupRadiationEnergy_.data()
-                : nullptr;
+        result.pendingGroupRadiationEnergy = (owner_.parameters_.withEgTimeAvg and not owner_.pendingGroupRadiationEnergy_.empty())?
+                                                owner_.pendingGroupRadiationEnergy_.data() : nullptr;
         result.groupCount = NumGroups;
-        if(owner_.parameters_.withRandomWalk && owner_.randomWalk_)
+        if(owner_.parameters_.withRandomWalk and owner_.randomWalk_)
         {
             result.randomWalk.cellEligible = owner_.rwCellEligible_.data();
-            result.randomWalk.cellTotalOpacity =
-                owner_.rwCellTotalOpacity_.data();
-            result.randomWalk.pgrwCells =
-                owner_.rwCellData_.data();
-            result.randomWalk.tables.tau =
-                owner_.randomWalk_->GetTauTable().data();
-            result.randomWalk.tables.survival =
-                owner_.randomWalk_->GetSurvivalTable().data();
-            result.randomWalk.tables.radius =
-                owner_.randomWalk_->GetRadiusTable().data();
-            result.randomWalk.tables.tableSize =
-                owner_.randomWalk_->GetTauTable().size();
-            result.randomWalk.tables.radiusTableSize =
-                RandomWalk::GetRadiusTableSize();
+            result.randomWalk.cellTotalOpacity = owner_.rwCellTotalOpacity_.data();
+            result.randomWalk.pgrwCells = owner_.rwCellData_.data();
+            result.randomWalk.tables.tau = owner_.randomWalk_->GetTauTable().data();
+            result.randomWalk.tables.survival = owner_.randomWalk_->GetSurvivalTable().data();
+            result.randomWalk.tables.radius = owner_.randomWalk_->GetRadiusTable().data();
+            result.randomWalk.tables.tableSize = owner_.randomWalk_->GetTauTable().size();
+            result.randomWalk.tables.radiusTableSize = RandomWalk::GetRadiusTableSize();
             result.randomWalk.tables.tauMin = RandomWalk::GetMinimumTau();
             result.randomWalk.tables.tauMax = RandomWalk::GetMaximumTau();
-            result.randomWalk.minimumParticleOpticalDepth =
-                owner_.parameters_.rwMinParticleOpticalDepth;
+            result.randomWalk.minimumParticleOpticalDepth = owner_.parameters_.rwMinParticleOpticalDepth;
             result.randomWalk.enabled = 1;
-            result.randomWalk.spectralEnabled =
-                owner_.parameters_.withMultigroupOpacity &&
-                owner_.rwCellData_.size() == result.grid.cellCount;
+            result.randomWalk.spectralEnabled = owner_.parameters_.withMultigroupOpacity and owner_.rwCellData_.size() == result.grid.cellCount;
         }
         result.speedOfLight = units::clight;
-        result.depositMaterialEnergy =
-            !owner_.parameters_.noHydroFeedback &&
-            !owner_.parameters_.postProcess.enabled;
+        result.depositMaterialEnergy = not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            result.comovingTransport = owner_.parameters_.withHydro &&
-                                        !owner_.parameters_.MMC;
+            result.comovingTransport = owner_.parameters_.withHydro and not owner_.parameters_.MMC;
         }
-        if constexpr(radiation_imc_detail::has_member_momentum<
-                         ExtensivesT>::value)
+        if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
         {
-            result.depositMomentum = owner_.parameters_.withHydro &&
-                                      !owner_.parameters_.diffusionPressureGradient &&
-                                      !owner_.parameters_.noHydroFeedback;
+            result.depositMomentum = owner_.parameters_.withHydro and not owner_.parameters_.diffusionPressureGradient and not owner_.parameters_.noHydroFeedback;
         }
-        result.spectralEnabled =
-            (owner_.SharedFullIMCKernelEligible() ||
-             (this->SharedDDMCKernelEligible() &&
-              owner_.parameters_.withMultigroupOpacity))
-                ? 1
-                : 0;
+        result.spectralEnabled = (owner_.SharedFullIMCKernelEligible() or(this->SharedDDMCEventKernelEligible() and owner_.parameters_.withMultigroupOpacity))? 1 : 0;
         return result;
     }
 
@@ -394,18 +453,71 @@ public:
                !owner_.parameters_.withCompton &&
                !owner_.parameters_.postProcess.enabled &&
                !owner_.observer_ &&
-               !owner_.polarizationEnabled();
+               !owner_.polarizationEnabled() &&
+               ddmcThermalSamplingEligible_;
+#endif
+    }
+
+    bool SharedDDMCEventKernelEligible() const
+    {
+#if defined(STORM_DEBUG) || defined(STORM_WITH_TRACING_HISTORY)
+        return false;
+#else
+        return owner_.parameters_.withDDMC &&
+               !owner_.parameters_.withCompton &&
+               (!owner_.parameters_.postProcess.enabled ||
+                owner_.postProcessExternalSourceMode_) &&
+               !owner_.polarizationEnabled() &&
+               ddmcThermalSamplingEligible_;
 #endif
     }
 
 private:
+    bool ThermalSamplingSnapshotEligible() const
+    {
+        if(not owner_.parameters_.withDDMC or not owner_.parameters_.withMultigroupOpacity)
+        {
+            return true;
+        }
+        const std::size_t cellCount = owner_.cells_.size();
+        if(cellCount == 0)
+        {
+            return true;
+        }
+        if(owner_.thermalEmissionCdf_.size() != cellCount * (NumGroups + 1))
+        {
+            return false;
+        }
+        constexpr std::size_t maximumCheckedCells = 8;
+        const std::size_t checkedCells = std::min(cellCount, maximumCheckedCells);
+        constexpr double randomValues[] = {0.25, 0.75};
+        for(std::size_t sample = 0; sample < checkedCells; ++sample)
+        {
+            const std::size_t cellIndex = (checkedCells == 1)? 0 : sample * (cellCount - 1) / (checkedCells - 1);
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                for(const double random : randomValues)
+                {
+                    const double snapshot = ddmc::SampleFrequencyInGroupFromCellCdf(owner_.energyBoundaries_.data(), owner_.thermalEmissionCdf_.data(), NumGroups, cellIndex, group, random);
+                    const double opacity = owner_.opacity_->SampleThermalEnergyInGroup(owner_.cells_[cellIndex], group, random, owner_.energyBoundaries_);
+                    const double scale = std::max(1.0, std::max(std::abs(snapshot), std::abs(opacity)));
+                    if(not std::isfinite(snapshot) or not std::isfinite(opacity) or std::abs(snapshot - opacity) > 1.0e-11 * scale)
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
     ddmc::HostSnapshot<PointT> ddmcSnapshot_;
+    bool ddmcThermalSamplingEligible_ = true;
 #ifdef STORM_WITH_GPU
     std::unique_ptr<gpu::KokkosRuntime> gpuRuntime_;
     std::unique_ptr<gpu::GreyIMCData> gpuData_;
     bool gpuTransportEnabled_ = false;
-    std::size_t gpuGridBuildGeneration_ =
-        std::numeric_limits<std::size_t>::max();
+    std::size_t gpuGridBuildGeneration_ = std::numeric_limits<std::size_t>::max();
 #endif
 };
 

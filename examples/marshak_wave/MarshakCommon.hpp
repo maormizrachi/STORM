@@ -11,6 +11,7 @@
 #include <string>
 #include <numeric>
 #include <algorithm>
+#include <utility>
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
 #include <units/units.hpp>
@@ -331,7 +332,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         std::make_shared<CombPopulationControl<Vector3D, MarshakGrid>>(grid, 15, 6.0);
 
     MonteCarloManagerSerial<Vector3D, MarshakGrid> manager(grid, physics, popControl, boundary);
-    std::vector<Particle<Vector3D>> particles;
+    manager.getParticles().clear();
 
     double dt = params.initialDt;
     double simTime = 0;
@@ -348,7 +349,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         boundary->SetTemperature(T_bath);
 
         dt = std::min(dt, params.tf - simTime);
-        particles = manager.step(std::move(particles), dt);
+        manager.step(dt);
 
         simTime += dt;
         cycle++;
@@ -365,7 +366,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
             }
             int pct = static_cast<int>(simTime / params.tf * 100);
             std::cout << "Cycle " << cycle << " (" << pct << "%)  t=" << simTime * 1e9 << "/" << params.tf * 1e9 << " ns  dt=" << dt
-                      << "  particles=" << particles.size() << "  maxT=" << maxT_keV << " keV"
+                      << "  particles=" << std::as_const(manager).getParticles().size() << "  maxT=" << maxT_keV << " keV"
                       << "  T_bath=" << T_bath / keV_K << " keV" << std::endl;
         }
     }

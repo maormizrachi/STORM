@@ -4,6 +4,7 @@
 #ifdef STORM_WITH_GPU
 #include <cstdint>
 #endif
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -39,6 +40,11 @@ public:
 
     virtual void postStep(const std::vector<MCParticle> &particles, double fullDt) = 0;
 
+    virtual bool requiresHostParticleAdjustment() const
+    {
+        return true;
+    }
+
     virtual size_t getRandomWalkStepCount() const { return 0; }
     virtual size_t getDDMCStepCount() const { return 0; }
     virtual size_t getDDMCLeakCount() const { return 0; }
@@ -64,6 +70,10 @@ protected:
         std::vector<cell_index_t> nextCellIndices;
         std::vector<std::uint8_t> boundaryCrossings;
         std::vector<std::uint8_t> deviceBoundaryBehaviors;
+        std::vector<std::size_t> tetOffsets;
+        std::vector<double> tetCumVolumes;
+        std::vector<std::uint32_t> tetTris;
+        std::vector<T> vertices;
     } gridData;
     std::size_t gridDataBuildGeneration_ =
         std::numeric_limits<std::size_t>::max();

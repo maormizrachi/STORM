@@ -57,6 +57,7 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
 
     this->validateGridSizedState();
     this->rejectUnsupportedParameters();
+    ddmc::RequireSharedSamplingCore();
 
     if(this->parameters_.energyBoundariesProvided)
     {
@@ -95,6 +96,39 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
     this->Erad_time_avg_.assign(Ncells, 0.0);
 }
 
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::updateGridData(void)
+{
+    Base::updateGridData();
+    auto &data = this->gridData;
+    const std::size_t Ncells = this->grid.GetPointNo();
+    const auto &verts = this->grid.GetFacePoints();
+    data.vertices.assign(verts.begin(), verts.end());
+    data.tetOffsets.assign(Ncells + 1, 0);
+    data.tetCumVolumes.clear();
+    data.tetTris.clear();
+    RandomInCellPositionSampler<PointT, GridT> sampler;
+    CellVolumeDecomposition decomp;
+    for(std::size_t i = 0; i < Ncells; ++i)
+    {
+        sampler.BuildDecomposition(this->grid, i, decomp);
+        for(std::size_t tet = 0; tet < decomp.tris.size(); ++tet)
+        {
+            data.tetCumVolumes.push_back(decomp.cumVolumes[tet]);
+            data.tetTris.push_back(
+                static_cast<std::uint32_t>(decomp.tris[tet][0]));
+            data.tetTris.push_back(
+                static_cast<std::uint32_t>(decomp.tris[tet][1]));
+            data.tetTris.push_back(
+                static_cast<std::uint32_t>(decomp.tris[tet][2]));
+        }
+        data.tetOffsets[i + 1] = data.tetCumVolumes.size();
+    }
+}
+
 #ifdef STORM_WITH_GPU
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
          typename EOST, std::size_t NumGroups, typename OpacityT,
@@ -113,6 +147,50 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
              TraitsT, PositionSamplerT>::GetDeviceTransportViews() const
 {
     return this->deviceExecutor_->GetDeviceTransportViews();
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                   TraitsT, PositionSamplerT>::
+    SupportsDeviceCensusPostStep() const
+{
+    return this->deviceExecutor_->SupportsDeviceCensusTallies();
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::postStepWithDeviceCensus(
+    const std::vector<MCParticle> &hostParticles, double fullDt)
+{
+    this->transportProcess_->postStepWithDeviceCensus(
+        hostParticles, fullDt);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                   TraitsT, PositionSamplerT>::
+    SupportsDeviceSourceGeneration() const
+{
+    return this->deviceExecutor_->SupportsDeviceSourceGeneration();
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST,
+                                  NumGroups, OpacityT, TraitsT,
+                                  PositionSamplerT>::MCParticle>
+RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+             TraitsT, PositionSamplerT>::preStepOnDevice(
+    gpu::DeviceSourceContext &context)
+{
+    return this->lifecycleProcess_->preStepOnDevice(context);
 }
 #endif
 
@@ -141,6 +219,15 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
                    TraitsT, PositionSamplerT>::SharedDDMCKernelEligible() const
 {
     return this->deviceExecutor_->SharedDDMCKernelEligible();
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                   TraitsT, PositionSamplerT>::SharedDDMCEventKernelEligible() const
+{
+    return this->deviceExecutor_->SharedDDMCEventKernelEligible();
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
@@ -279,6 +366,17 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
     std::vector<MCParticle> &particles, double fullDt)
 {
     this->sourceProcess_->adjustExistingParticles(particles, fullDt);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::
+    requiresHostParticleAdjustment() const
+{
+    return this->parameters_.withCompton ||
+           this->parameters_.MMC;
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
@@ -1119,8 +1217,7 @@ double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT
 samplePostProcessExternalSourcePlanckFrequencyInGroup(
     const CellT &cell, std::size_t group)
 {
-    return this->observerProcess_->samplePostProcessExternalSourcePlanckFrequencyInGroup(
-        cell, group);
+    return this->observerProcess_->samplePostProcessExternalSourcePlanckFrequencyInGroup(cell, group);
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,

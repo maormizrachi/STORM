@@ -2,6 +2,7 @@
 #define STORM_RADIATION_IMCLIFECYCLE_PROCESS_HPP
 
 #include "../imc/IMCComponentBase.hpp"
+#include "../../gpu/ProfileRegion.hpp"
 
 namespace STORM::radiation_imc_detail {
 
@@ -654,8 +655,7 @@ public:
             owner_.sourceEmissionLearnedExtraBudget_ = 0;
     }
 
-    std::vector<typename Owner::MCParticle>
-    preStep(double fullDt)
+    double preparePreStepTables(double fullDt)
     {
 
             if(!std::isfinite(fullDt) || fullDt <= 0.0)
@@ -773,7 +773,7 @@ public:
             }
 
             if(owner_.SharedFullIMCKernelEligible() ||
-               (owner_.SharedDDMCKernelEligible() &&
+               (owner_.parameters_.withDDMC &&
                 owner_.parameters_.withMultigroupOpacity) ||
                (owner_.SharedRandomWalkKernelEligible() &&
                 owner_.parameters_.withMultigroupOpacity))
@@ -833,13 +833,78 @@ public:
                 owner_.ddmcFluxRhsIntegrated_.clear();
             }
 
-            double const transportDt = owner_.parameters_.postProcess.enabled
-                ? owner_.parameters_.postProcess.transportTime : fullDt;
             if(owner_.parameters_.withCompton && !reuseComptonPrecompute)
             {
                 owner_.precomputeComptonData(sourceDt);
             }
             owner_.comptonDataReusableInPreStep_ = false;
+            owner_.deviceExecutor_->prepareStep();
+            return sourceDt;
+    }
+
+    void appendBoundaryParticles(
+        std::vector<MCParticle> &newParticles,
+        double fullDt,
+        double transportDt)
+    {
+            if(!owner_.componentBoundary())
+            {
+                return;
+            }
+            std::vector<MCParticle> boundaryParticles =
+                owner_.componentBoundary()->generateNewBoundaryParticles(fullDt);
+            for(MCParticle &particle : boundaryParticles)
+            {
+                if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
+                {
+                    owner_.initializeParticleRNG(particle);
+                }
+                owner_.setInitialWeightFromWeight(particle);
+                if(owner_.parameters_.postProcess.enabled)
+                {
+                    particle.timeLeft = transportDt * owner_.randomUnitOpen(particle);
+                }
+            }
+            newParticles.insert(
+                newParticles.end(),
+                boundaryParticles.begin(),
+                boundaryParticles.end());
+    }
+
+    void recordEmittedEnergy(
+        const std::vector<MCParticle> &newParticles,
+        double extraEnergy)
+    {
+            if(!owner_.observer_)
+            {
+                return;
+            }
+            double emittedEnergy = extraEnergy;
+            double emittedPositiveEnergy = extraEnergy > 0.0 ? extraEnergy : 0.0;
+            double emittedNegativeEnergy = extraEnergy < 0.0 ? -extraEnergy : 0.0;
+            for(const MCParticle &particle : newParticles)
+            {
+                emittedEnergy += particle.weight;
+                if(particle.weight >= 0.0)
+                {
+                    emittedPositiveEnergy += particle.weight;
+                }
+                else
+                {
+                    emittedNegativeEnergy -= particle.weight;
+                }
+            }
+            owner_.observer_->addEmittedEnergy(emittedEnergy);
+            owner_.observer_->addEmittedEnergyComponents(
+                emittedPositiveEnergy, emittedNegativeEnergy);
+    }
+
+    std::vector<typename Owner::MCParticle>
+    preStep(double fullDt)
+    {
+            const double sourceDt = this->preparePreStepTables(fullDt);
+            const double transportDt = owner_.parameters_.postProcess.enabled
+                ? owner_.parameters_.postProcess.transportTime : fullDt;
             std::vector<MCParticle> newParticles = owner_.generateParticles(sourceDt);
             if(owner_.parameters_.postProcess.enabled)
             {
@@ -848,52 +913,53 @@ public:
                     particle.timeLeft = transportDt * owner_.randomUnitOpen(particle);
                 }
             }
-            if(owner_.componentBoundary())
-            {
-                std::vector<MCParticle> boundaryParticles = owner_.componentBoundary()->generateNewBoundaryParticles(fullDt);
-                for(MCParticle &particle : boundaryParticles)
-                {
-                    // Boundary implementations construct fresh packets outside IMC,
-                    // so they do not own a transport RNG stream.  The shared host/
-                    // device kernel consumes CounterRNG directly and therefore cannot
-                    // lazily initialize the sentinel key as the legacy host path did.
-                    if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
-                    {
-                        owner_.initializeParticleRNG(particle);
-                    }
-                    owner_.setInitialWeightFromWeight(particle);
-                    if(owner_.parameters_.postProcess.enabled)
-                    {
-                        particle.timeLeft = transportDt * owner_.randomUnitOpen(particle);
-                    }
-                }
-                newParticles.insert(newParticles.end(), boundaryParticles.begin(), boundaryParticles.end());
-            }
-            if(owner_.observer_)
-            {
-                double emittedEnergy = 0.0;
-                double emittedPositiveEnergy = 0.0;
-                double emittedNegativeEnergy = 0.0;
-                for(const MCParticle &particle : newParticles)
-                {
-                    emittedEnergy += particle.weight;
-                    if(particle.weight >= 0.0)
-                    {
-                        emittedPositiveEnergy += particle.weight;
-                    }
-                    else
-                    {
-                        emittedNegativeEnergy -= particle.weight;
-                    }
-                }
-                owner_.observer_->addEmittedEnergy(emittedEnergy);
-                owner_.observer_->addEmittedEnergyComponents(
-                    emittedPositiveEnergy, emittedNegativeEnergy);
-            }
+            this->appendBoundaryParticles(newParticles, fullDt, transportDt);
+            this->recordEmittedEnergy(newParticles, 0.0);
             owner_.preStepInitialized_ = true;
-            owner_.deviceExecutor_->prepareStep();
             return newParticles;
     }
+
+#ifdef STORM_WITH_GPU
+    std::vector<typename Owner::MCParticle>
+    preStepOnDevice(gpu::DeviceSourceContext &context)
+    {
+            double sourceDt = 0.0;
+            {
+                STORM_PROFILE_REGION("storm/generation/tables");
+                sourceDt = this->preparePreStepTables(context.fullDt);
+            }
+            ddmc::RequireHostDeviceSamplingKernelMatch();
+            if(context.executor == nullptr && context.executorStorage != nullptr)
+            {
+                if(*context.executorStorage == nullptr)
+                {
+                    *context.executorStorage =
+                        std::make_unique<gpu::KokkosLocalTransportExecutor>(
+                            context.gpuMaxInnerSteps);
+                }
+                context.executor = context.executorStorage->get();
+            }
+            const double transportDt = owner_.parameters_.postProcess.enabled
+                ? owner_.parameters_.postProcess.transportTime : context.fullDt;
+            {
+                STORM_PROFILE_REGION("storm/generation/emit");
+                owner_.sourceProcess_->generateParticles(sourceDt, false);
+                context.gpuData = owner_.deviceExecutor_->DeviceData();
+                owner_.sourceProcess_->emitPlanToDevice(
+                    context, owner_.lastSourcePlan_);
+            }
+            std::vector<MCParticle> boundaryParticles;
+            {
+                STORM_PROFILE_REGION("storm/generation/boundary");
+                this->appendBoundaryParticles(
+                    boundaryParticles, context.fullDt, transportDt);
+            }
+            this->recordEmittedEnergy(
+                boundaryParticles, owner_.lastSourcePlan_.emittedEnergy);
+            owner_.preStepInitialized_ = true;
+            return boundaryParticles;
+    }
+#endif
 
 };
 

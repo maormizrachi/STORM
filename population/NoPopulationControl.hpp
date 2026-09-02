@@ -14,6 +14,22 @@ public:
     NoPopulationControl(const Grid &grid);
 
     std::vector<MCParticle> activate(const std::vector<MCParticle> &particles) override;
+    bool IsIdentity() const override
+    {
+        return true;
+    }
+
+#ifdef STORM_WITH_GPU
+    bool SupportsDeviceActivation() const override
+    {
+        return true;
+    }
+
+    void activateDevice(gpu::DevicePopulationContext &context) const override
+    {
+        (void)context;
+    }
+#endif
 };
 
 template<typename T, typename Grid>

@@ -105,8 +105,20 @@ public:
         return this->handlerMemoryBytes_;
     }
 
-    // todo: should return that?
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
+    /// Advances the owned particle census. References returned by
+    /// getParticles() are invalidated by this call.
+    void step(dt_t fullDt);
+
+    const std::vector<MCParticle> &getParticles(void) const
+    {
+        return this->ownedParticles;
+    }
+
+    std::vector<MCParticle> &getParticles(void)
+    {
+        this->particlesChanged = true;
+        return this->ownedParticles;
+    }
 
     inline const Tracker &getTracker(void)
     {
@@ -129,6 +141,8 @@ private:
     std::shared_ptr<PopulationControl<T, Grid>> populationControl;
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
 
+    std::vector<MCParticle> ownedParticles;
+    bool particlesChanged = false;
     std::vector<MCParticle> particles;
     std::shared_ptr<BuffersManager<MCParticle>> buffersManager;
     typename AmountManager::counter_t localDecrementAmount;
@@ -148,6 +162,10 @@ private:
     size_t handlerMemoryBytes_ = 0;
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
+
+    bool HaveParticlesChanged(void) const { return this->particlesChanged; }
+
+    void ClearParticlesChanged(void) { this->particlesChanged = false; }
 
     void PutSelfParticles(const MCParticle *particles, size_t particlesNum);
 

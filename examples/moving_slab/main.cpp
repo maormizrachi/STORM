@@ -22,6 +22,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <utility>
 #include <mpi.h>
 #include "examples/Vector3D.hpp"
 #include "MadVoro/Voronoi3D.hpp"
@@ -334,7 +335,6 @@ static SimulationResult RunSimulation(
     STORM::MonteCarloManager<Vector3D, Grid> &manager,
     std::vector<MovingSlabCell> &cells,
     std::vector<MovingSlabExtensives> &extensives,
-    std::vector<STORM::Particle<Vector3D>> &particles,
     double vSlab, double L_slab, double xSym, double tO,
     int rank, int nprocs)
 {
@@ -387,7 +387,8 @@ static SimulationResult RunSimulation(
                 switchLoadBalancer(remeshLB, "switch-to-remesh");
             }
 
-            Remesh(grid, vSlab, L_slab, xSym, prevTime, simTime, cells, extensives, particles, manager);
+            Remesh(grid, vSlab, L_slab, xSym, prevTime, simTime, cells,
+                   extensives, manager.getParticles(), manager);
             Ncells = grid.GetPointNo();
 
             if(nprocs > 1)
@@ -409,11 +410,13 @@ static SimulationResult RunSimulation(
                     {
                         cellIDs[i] = cells[i].ID;
                     }
-                    STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
-                    SyncParticleCellIDs(cells, particles);
+                    STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(
+                        grid, manager.getParticles(), cellIDs);
+                    SyncParticleCellIDs(cells, manager.getParticles());
                 }
 
-                if(Rebalance(grid, manager, cells, extensives, particles, rank))
+                if(Rebalance(grid, manager, cells, extensives,
+                             manager.getParticles(), rank))
                 {
                     Ncells = grid.GetPointNo();
                 }
@@ -433,19 +436,21 @@ static SimulationResult RunSimulation(
             }
             MPI_Barrier(MPI_COMM_WORLD);
             auto uncStart = std::chrono::high_resolution_clock::now();
-            STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(grid, particles, cellIDs);
+            STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(
+                grid, manager.getParticles(), cellIDs);
             MPI_Barrier(MPI_COMM_WORLD);
             double uncTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - uncStart).count();
             if(rank == 0)
             {
-                std::cout << "  UNC (pre-transport): " << uncTime << "s, particles=" << particles.size() << std::endl;
+                std::cout << "  UNC (pre-transport): " << uncTime << "s, particles="
+                          << std::as_const(manager).getParticles().size() << std::endl;
             }
-            SyncParticleCellIDs(cells, particles);
+            SyncParticleCellIDs(cells, manager.getParticles());
         }
 
         prevTime = simTime;
-        particles = manager.step(std::move(particles), thisDt);
-        SyncParticleCellIDs(cells, particles);
+        manager.step(thisDt);
+        SyncParticleCellIDs(cells, manager.getParticles());
 
         simTime += thisDt;
         cycle++;
@@ -638,7 +643,7 @@ int main(int argc, char *argv[])
         STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
             grid, physics, popControl, boundary,
             STORM::ManagerType::RDMA, STORM::RDMAEngine::OFI);
-        std::vector<STORM::Particle<Vector3D>> particles;
+        manager.getParticles().clear();
 
         if(rank == 0)
         {
@@ -657,7 +662,7 @@ int main(int argc, char *argv[])
                       << std::endl;
         }
 
-        result = RunSimulation(grid, manager, cells, extensives, particles,
+        result = RunSimulation(grid, manager, cells, extensives,
                                vSlab, L_slab, xSym, tO, rank, nprocs);
     }
 

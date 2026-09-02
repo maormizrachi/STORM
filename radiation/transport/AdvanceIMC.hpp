@@ -34,8 +34,7 @@ struct TransportResult
     StepResult step;
     TransportError error = TransportError::None;
     std::size_t directedFace = std::numeric_limits<std::size_t>::max();
-    ddmc::HostFallbackReason hostFallbackReason =
-        ddmc::HostFallbackReason::None;
+    ddmc::HostFallbackReason hostFallbackReason = ddmc::HostFallbackReason::None;
     std::size_t pendingLeakFace = std::numeric_limits<std::size_t>::max();
     std::size_t ddmcExtraSplits = 0;
 };
@@ -52,67 +51,52 @@ struct GreyOpacityPolicy
 {
     template<typename ParticleT, typename ViewsT>
     STORM_TRANSPORT_INLINE
-    IMCOpacityState Evaluate(const ParticleT &,
-                             const ViewsT &views,
-                             const std::size_t cellIndex,
-                             const double) const
+    IMCOpacityState Evaluate(const ParticleT &, const ViewsT &views, const std::size_t cellIndex, const double) const
     {
         IMCOpacityState result;
-        result.absorption =
-            views.absorptionOpacities[cellIndex];
-        result.scattering =
-            views.scatteringOpacities[cellIndex];
+        result.absorption = views.absorptionOpacities[cellIndex];
+        result.scattering = views.scatteringOpacities[cellIndex];
         result.fleck = views.fleckFactors[cellIndex];
         return result;
     }
 
     template<typename ParticleT, typename ViewsT>
     STORM_TRANSPORT_INLINE
-    void Scatter(ParticleT &particle,
-                 const ViewsT &views,
-                 const std::size_t,
-                 const IMCOpacityState &,
-                 const bool,
-                 const double) const
+    void Scatter(ParticleT &particle, const ViewsT &views, const std::size_t, const IMCOpacityState &, const bool, const double) const
     {
-        const double random1 = CounterRNG::unitOpen(
-            particle.rngKey, particle.rngCounter++);
-        const double random2 = CounterRNG::unitOpen(
-            particle.rngKey, particle.rngCounter++);
+        const double random1 = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
+        const double random2 = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
         const double mu = 1.0 - 2.0 * random1;
-        const double phi =
-            6.28318530717958647692 * random2;
+        const double phi = 6.28318530717958647692 * random2;
         const double radial = 1.0 - mu * mu;
-        const double sinTheta =
-            Sqrt(radial > 0.0 ? radial : 0.0);
-        particle.velocity.x =
-            sinTheta * Cos(phi) * views.speedOfLight;
-        particle.velocity.y =
-            sinTheta * Sin(phi) * views.speedOfLight;
+        const double sinTheta = Sqrt(radial > 0.0 ? radial : 0.0);
+        particle.velocity.x = sinTheta * Cos(phi) * views.speedOfLight;
+        particle.velocity.y = sinTheta * Sin(phi) * views.speedOfLight;
         particle.velocity.z = mu * views.speedOfLight;
     }
 
     template<typename ParticleT, typename ViewsT>
-    STORM_TRANSPORT_INLINE
-    void TallyGroupRadiation(const ParticleT &,
-                             const ViewsT &,
-                             const std::size_t,
-                             const IMCOpacityState &,
-                             const double) const
+    STORM_TRANSPORT_INLINE void TallyGroupRadiation(const ParticleT &, const ViewsT &, const std::size_t, const IMCOpacityState &, const double) const
     {}
 };
 
 struct SpectralTableOpacityPolicy
 {
     template<typename ViewsT>
-    STORM_TRANSPORT_INLINE
-    std::size_t FindGroup(const ViewsT &views, const double frequency) const
+    STORM_TRANSPORT_INLINE std::size_t FindGroup(const ViewsT &views, const double frequency) const
     {
         const std::size_t groupCount = views.groupCount;
         if(groupCount == 0 || views.energyBoundaries == nullptr)
         {
             return 0;
         }
+        // Deliberately a linear scan rather than a binary search. The group
+        // count is small (tens), and here the index is the loop counter, so it
+        // is uniform across the wavefront and each boundary load becomes a
+        // broadcast scalar load. A binary search indexes by a thread-divergent
+        // midpoint, which turns the same lookup into a chain of dependent
+        // per-lane gathers and measures slower despite the lower operation
+        // count.
         for(std::size_t group = 0; group + 1 < groupCount; ++group)
         {
             if(frequency < views.energyBoundaries[group + 1])
@@ -124,174 +108,105 @@ struct SpectralTableOpacityPolicy
     }
 
     template<typename ParticleT, typename ViewsT>
-    STORM_TRANSPORT_INLINE
-    IMCOpacityState Evaluate(const ParticleT &,
-                             const ViewsT &views,
-                             const std::size_t cellIndex,
-                             const double transportFrequency) const
+    STORM_TRANSPORT_INLINE IMCOpacityState Evaluate(const ParticleT &, const ViewsT &views, const std::size_t cellIndex, const double transportFrequency) const
     {
         IMCOpacityState result;
         result.group = this->FindGroup(views, transportFrequency);
         double energy = transportFrequency;
         if(views.energyBoundaries != nullptr)
         {
-            energy = transportFrequency > views.energyBoundaries[0]
-                ? transportFrequency
-                : views.energyBoundaries[0];
+            energy = (transportFrequency > views.energyBoundaries[0])? transportFrequency : views.energyBoundaries[0];
         }
         const double energyCubed = energy * energy * energy;
-        result.absorption =
-            (views.spectralAbsorptionScale != nullptr &&
-             energyCubed > 0.0)
-                ? views.spectralAbsorptionScale[cellIndex] /
-                    energyCubed
-                : views.absorptionOpacities[cellIndex];
-        result.scattering =
-            views.scatteringOpacities[cellIndex];
+        result.absorption = (views.spectralAbsorptionScale != nullptr and energyCubed > 0.0)? views.spectralAbsorptionScale[cellIndex] / energyCubed : views.absorptionOpacities[cellIndex];
+        result.scattering = views.scatteringOpacities[cellIndex];
         result.fleck = views.fleckFactors[cellIndex];
         return result;
     }
 
     template<typename ParticleT, typename ViewsT>
-    STORM_TRANSPORT_INLINE
-    void Scatter(ParticleT &particle,
-                 const ViewsT &views,
-                 const std::size_t cellIndex,
-                 const IMCOpacityState &,
-                 const bool effectiveScatter,
-                 const double dopplerShift) const
+    STORM_TRANSPORT_INLINE void Scatter(ParticleT &particle, const ViewsT &views, const std::size_t cellIndex, const IMCOpacityState &, const bool effectiveScatter, const double dopplerShift) const
     {
-        const double random1 = CounterRNG::unitOpen(
-            particle.rngKey, particle.rngCounter++);
-        const double random2 = CounterRNG::unitOpen(
-            particle.rngKey, particle.rngCounter++);
+        const double random1 = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
+        const double random2 = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
         const double mu = 1.0 - 2.0 * random1;
-        const double phi =
-            6.28318530717958647692 * random2;
+        const double phi = 6.28318530717958647692 * random2;
         const double radial = 1.0 - mu * mu;
-        const double sinTheta =
-            Sqrt(radial > 0.0 ? radial : 0.0);
-        particle.velocity.x =
-            sinTheta * Cos(phi) * views.speedOfLight;
-        particle.velocity.y =
-            sinTheta * Sin(phi) * views.speedOfLight;
+        const double sinTheta = Sqrt((radial > 0.0)? radial : 0.0);
+        particle.velocity.x = sinTheta * Cos(phi) * views.speedOfLight;
+        particle.velocity.y = sinTheta * Sin(phi) * views.speedOfLight;
         particle.velocity.z = mu * views.speedOfLight;
 
         particle.frequency *= dopplerShift;
-        if(!effectiveScatter ||
-           views.thermalEmissionCdf == nullptr ||
-           views.energyBoundaries == nullptr ||
-           views.groupCount == 0)
+        if(not effectiveScatter or views.thermalEmissionCdf == nullptr or views.energyBoundaries == nullptr or views.groupCount == 0)
         {
             return;
         }
 
-        const double reemitRandom = CounterRNG::unitOpen(
-            particle.rngKey, particle.rngCounter++);
-        particle.frequency = ddmc::SampleFrequencyFromCellCdf(
-            views.energyBoundaries,
-            views.thermalEmissionCdf,
-            views.groupCount,
-            cellIndex,
-            reemitRandom);
+        const double reemitRandom = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
+        particle.frequency = ddmc::SampleFrequencyFromCellCdf(views.energyBoundaries, views.thermalEmissionCdf, views.groupCount, cellIndex, reemitRandom);
     }
 
     template<typename ParticleT, typename ViewsT>
     STORM_TRANSPORT_INLINE
-    void TallyGroupRadiation(
-        const ParticleT &,
-        const ViewsT &views,
-        const std::size_t cellIndex,
-        const IMCOpacityState &opacityState,
-        const double integratedEnergy) const
+    void TallyGroupRadiation(const ParticleT &, const ViewsT &views, const std::size_t cellIndex, const IMCOpacityState &opacityState, const double integratedEnergy) const
     {
-        if(views.pendingGroupRadiationEnergy == nullptr ||
-           opacityState.group >= views.groupCount)
+        if(views.pendingGroupRadiationEnergy == nullptr or opacityState.group >= views.groupCount)
         {
             return;
         }
-        STORM_TRANSPORT_ACCUMULATE(
-            views.pendingGroupRadiationEnergy[
-                cellIndex * views.groupCount +
-                opacityState.group],
-            integratedEnergy);
+        STORM_TRANSPORT_ACCUMULATE(views.pendingGroupRadiationEnergy[cellIndex * views.groupCount + opacityState.group], integratedEnergy);
     }
 };
 
 template<typename PointT>
-STORM_TRANSPORT_INLINE
-double Dot(const PointT &left, const PointT &right)
+STORM_TRANSPORT_INLINE double Dot(const PointT &left, const PointT &right)
 {
-    return left.x * right.x +
-           left.y * right.y +
-           left.z * right.z;
+    return left.x * right.x + left.y * right.y + left.z * right.z;
 }
 
 template<typename ViewsT>
-STORM_TRANSPORT_INLINE
-void AddMomentum(const ViewsT &views,
-                 const std::size_t cellIndex,
-                 const double x,
-                 const double y,
-                 const double z)
+STORM_TRANSPORT_INLINE void AddMomentum(const ViewsT &views, const std::size_t cellIndex, const double x, const double y, const double z)
 {
-    if(!views.depositMomentum)
+    if(not views.depositMomentum)
     {
         return;
     }
-    STORM_TRANSPORT_ACCUMULATE(
-        views.pendingMomentum[cellIndex].x, x);
-    STORM_TRANSPORT_ACCUMULATE(
-        views.pendingMomentum[cellIndex].y, y);
-    STORM_TRANSPORT_ACCUMULATE(
-        views.pendingMomentum[cellIndex].z, z);
+    STORM_TRANSPORT_ACCUMULATE(views.pendingMomentum[cellIndex].x, x);
+    STORM_TRANSPORT_ACCUMULATE(views.pendingMomentum[cellIndex].y, y);
+    STORM_TRANSPORT_ACCUMULATE(views.pendingMomentum[cellIndex].z, z);
 }
 
 template<typename ParticleT, typename PointT>
-STORM_TRANSPORT_INLINE
-bool TransformToLab(ParticleT &particle,
-                    const PointT &cellVelocity,
-                    const double speedOfLight)
+STORM_TRANSPORT_INLINE bool TransformToLab(ParticleT &particle, const PointT &cellVelocity, const double speedOfLight)
 {
-    const double velocitySquared =
-        Dot(cellVelocity, cellVelocity);
+    const double velocitySquared = Dot(cellVelocity, cellVelocity);
     if(velocitySquared < 1.0e-30)
     {
         return true;
     }
-    const double inverseC2 =
-        1.0 / (speedOfLight * speedOfLight);
-    const double gammaArgument =
-        1.0 - velocitySquared * inverseC2;
-    if(!(gammaArgument > 0.0) ||
-       !IsFinite(gammaArgument))
+    const double inverseC2 = 1.0 / (speedOfLight * speedOfLight);
+    const double gammaArgument = 1.0 - velocitySquared * inverseC2;
+    if(not (gammaArgument > 0.0) or not IsFinite(gammaArgument))
     {
         return false;
     }
     const double gamma = 1.0 / Sqrt(gammaArgument);
-    const double dopplerShift = gamma *
-        (1.0 + Dot(cellVelocity, particle.velocity) *
-                   inverseC2);
-    if(!(dopplerShift > 0.0) ||
-       !IsFinite(dopplerShift))
+    const double dopplerShift = gamma * (1.0 + Dot(cellVelocity, particle.velocity) * inverseC2);
+    if(not (dopplerShift > 0.0) or not IsFinite(dopplerShift))
     {
         return false;
     }
     particle.frequency *= dopplerShift;
     particle.weight *= dopplerShift;
 
-    const double velocityDotNegativeCell =
-        -Dot(particle.velocity, cellVelocity);
-    const double factor =
-        (gamma - 1.0) * velocityDotNegativeCell /
-            velocitySquared -
-        gamma;
+    const double velocityDotNegativeCell = -Dot(particle.velocity, cellVelocity);
+    const double factor = (gamma - 1.0) * velocityDotNegativeCell / velocitySquared - gamma;
     particle.velocity.x -= cellVelocity.x * factor;
     particle.velocity.y -= cellVelocity.y * factor;
     particle.velocity.z -= cellVelocity.z * factor;
 
-    const double newSpeed = Sqrt(
-        Dot(particle.velocity, particle.velocity));
+    const double newSpeed = Sqrt(Dot(particle.velocity, particle.velocity));
     if(newSpeed > 0.0)
     {
         const double scale = speedOfLight / newSpeed;
@@ -307,27 +222,19 @@ bool TransformToLab(ParticleT &particle,
 // and frequency-changing scatter are isolated in a policy so spectral models
 // can be added without duplicating tracking, event selection, or tallies.
 template<typename ParticleT, typename ViewsT, typename OpacityPolicyT>
-STORM_TRANSPORT_INLINE
-TransportResult AdvanceIMC(ParticleT &particle,
-                           const ViewsT &views,
-                           const OpacityPolicyT &opacity)
+STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const ViewsT &views, const OpacityPolicyT &opacity)
 {
     TransportResult result;
-    const std::size_t cellIndex =
-        static_cast<std::size_t>(particle.cellIndex);
+    const std::size_t cellIndex = static_cast<std::size_t>(particle.cellIndex);
     if(cellIndex >= views.grid.cellCount)
     {
         result.error = TransportError::InvalidCell;
         return result;
     }
 
-    const double speed = Sqrt(
-        particle.velocity.x * particle.velocity.x +
-        particle.velocity.y * particle.velocity.y +
-        particle.velocity.z * particle.velocity.z);
-    const gpu::Intersection intersection =
-        gpu::FindIntersection(particle, views.grid, speed);
-    if(!intersection.valid)
+    const double speed = Sqrt(particle.velocity.x * particle.velocity.x + particle.velocity.y * particle.velocity.y + particle.velocity.z * particle.velocity.z);
+    const gpu::Intersection intersection = gpu::FindIntersection(particle, views.grid, speed);
+    if(not intersection.valid)
     {
         result.error = TransportError::NoIntersection;
         return result;
@@ -341,77 +248,44 @@ TransportResult AdvanceIMC(ParticleT &particle,
             result.error = TransportError::InvalidDoppler;
             return result;
         }
-        const auto &cellVelocity =
-            views.cellVelocities[cellIndex];
-        const double velocitySquared =
-            Dot(cellVelocity, cellVelocity);
+        const auto &cellVelocity = views.cellVelocities[cellIndex];
+        const double velocitySquared = Dot(cellVelocity, cellVelocity);
         if(velocitySquared >= 1.0e-30)
         {
-            const double inverseC2 =
-                1.0 /
-                (views.speedOfLight * views.speedOfLight);
-            const double gammaArgument =
-                1.0 - velocitySquared * inverseC2;
-            if(!(gammaArgument > 0.0) ||
-               !IsFinite(gammaArgument))
+            const double inverseC2 = 1.0 / (views.speedOfLight * views.speedOfLight);
+            const double gammaArgument = 1.0 - velocitySquared * inverseC2;
+            if(not (gammaArgument > 0.0) or not IsFinite(gammaArgument))
             {
-                result.error =
-                    TransportError::InvalidDoppler;
+                result.error = TransportError::InvalidDoppler;
                 return result;
             }
-            const double gamma =
-                1.0 / Sqrt(gammaArgument);
-            dopplerShift = gamma *
-                (1.0 -
-                 Dot(cellVelocity, particle.velocity) *
-                     inverseC2);
-            if(!(dopplerShift > 0.0) ||
-               !IsFinite(dopplerShift))
-            {
-                result.error =
-                    TransportError::InvalidDoppler;
-                return result;
-            }
+            const double gamma = 1.0 / Sqrt(gammaArgument);
+            dopplerShift = gamma * (1.0 - Dot(cellVelocity, particle.velocity) * inverseC2);
+                if(not (dopplerShift > 0.0) or not IsFinite(dopplerShift))
+                {
+                    result.error = TransportError::InvalidDoppler;
+                    return result;
+                }
         }
     }
 
-    const double transportFrequency =
-        particle.frequency * dopplerShift;
-    const IMCOpacityState opacityState =
-        opacity.Evaluate(
-            particle, views, cellIndex,
-            transportFrequency);
-    const double absorptionOpacity =
-        opacityState.absorption;
-    const double scatteringOpacity =
-        opacityState.scattering;
+    const double transportFrequency = particle.frequency * dopplerShift;
+    const IMCOpacityState opacityState = opacity.Evaluate(particle, views, cellIndex, transportFrequency);
+    const double absorptionOpacity = opacityState.absorption;
+    const double scatteringOpacity = opacityState.scattering;
     const double fleck = opacityState.fleck;
-    if(!IsFinite(absorptionOpacity) ||
-       !IsFinite(scatteringOpacity) ||
-       absorptionOpacity < 0.0 ||
-       scatteringOpacity < 0.0 ||
-       fleck < 0.0 ||
-       fleck > 1.0)
+    if(not IsFinite(absorptionOpacity) or not IsFinite(scatteringOpacity) or absorptionOpacity < 0.0 or scatteringOpacity < 0.0 or fleck < 0.0 or fleck > 1.0)
     {
         result.error = TransportError::InvalidOpacity;
         return result;
     }
 
-    const double effectiveAbsorptionOpacity =
-        (1.0 - fleck) * absorptionOpacity;
-    const double eventOpacity =
-        scatteringOpacity + effectiveAbsorptionOpacity;
-    const double distanceRandom = CounterRNG::unitOpen(
-        particle.rngKey, particle.rngCounter++);
-    const double randomDistance =
-        -Log1p(distanceRandom - 1.0);
-    const double scatteringDistance = eventOpacity > 0.0
-        ? randomDistance /
-            (eventOpacity * dopplerShift)
-        : DBL_MAX;
-    const double scatteringTime = speed > 0.0
-        ? scatteringDistance / speed
-        : DBL_MAX;
+    const double effectiveAbsorptionOpacity = (1.0 - fleck) * absorptionOpacity;
+    const double eventOpacity = scatteringOpacity + effectiveAbsorptionOpacity;
+    const double distanceRandom = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
+    const double randomDistance = -Log1p(distanceRandom - 1.0);
+    const double scatteringDistance = (eventOpacity > 0.0)? randomDistance / (eventOpacity * dopplerShift) : DBL_MAX;
+    const double scatteringTime = (speed > 0.0)? scatteringDistance / speed : DBL_MAX;
 
     enum Event : std::uint8_t
     {
@@ -434,18 +308,13 @@ TransportResult AdvanceIMC(ParticleT &particle,
     }
 
     particle.timeLeft -= dt;
-    const double decayRate =
-        absorptionOpacity * fleck * views.speedOfLight;
-    const double materialExpFactor =
-        Expm1(-dt * decayRate);
-    const double weightExpFactor =
-        Expm1(-dt * decayRate * dopplerShift);
+    const double decayRate = absorptionOpacity * fleck * views.speedOfLight;
+    const double materialExpFactor = Expm1(-dt * decayRate);
+    const double weightExpFactor = Expm1(-dt * decayRate * dopplerShift);
     double integratedEnergy = particle.weight * dt;
     if(Abs(decayRate * dt) >= 1.0e-12)
     {
-        integratedEnergy =
-            particle.weight * materialExpFactor *
-            (-1.0 / decayRate);
+        integratedEnergy = particle.weight * materialExpFactor * (-1.0 / decayRate);
     }
 
     particle.location.x += particle.velocity.x * dt;
@@ -454,35 +323,22 @@ TransportResult AdvanceIMC(ParticleT &particle,
 
     if(views.depositMaterialEnergy)
     {
-        STORM_TRANSPORT_ACCUMULATE(
-            views.pendingMaterialEnergy[cellIndex],
-            -materialExpFactor * particle.weight);
+        STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], -materialExpFactor * particle.weight);
     }
-    const double inverseC2 =
-        1.0 / (views.speedOfLight * views.speedOfLight);
-    AddMomentum(
-        views, cellIndex,
-        -weightExpFactor * particle.weight *
-            particle.velocity.x * inverseC2,
-        -weightExpFactor * particle.weight *
-            particle.velocity.y * inverseC2,
-        -weightExpFactor * particle.weight *
-            particle.velocity.z * inverseC2);
-    STORM_TRANSPORT_ACCUMULATE(
-        views.pendingRadiationEnergy[cellIndex],
-        integratedEnergy);
-    opacity.TallyGroupRadiation(
-        particle, views, cellIndex, opacityState,
-        integratedEnergy);
+    const double inverseC2 = 1.0 / (views.speedOfLight * views.speedOfLight);
+    AddMomentum(views, cellIndex,
+            -weightExpFactor * particle.weight * particle.velocity.x * inverseC2,
+            -weightExpFactor * particle.weight * particle.velocity.y * inverseC2,
+            -weightExpFactor * particle.weight * particle.velocity.z * inverseC2);
+    STORM_TRANSPORT_ACCUMULATE(views.pendingRadiationEnergy[cellIndex], integratedEnergy);
+    opacity.TallyGroupRadiation(particle, views, cellIndex, opacityState, integratedEnergy);
 
     particle.weight *= 1.0 + weightExpFactor;
     if(Abs(particle.weight) < particle.initialWeight * 1.0e-3)
     {
         if(views.depositMaterialEnergy)
         {
-            STORM_TRANSPORT_ACCUMULATE(
-                views.pendingMaterialEnergy[cellIndex],
-                particle.weight);
+            STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], particle.weight);
         }
         result.step.change = ParticleStatus::REMOVE;
         return result;
@@ -491,27 +347,15 @@ TransportResult AdvanceIMC(ParticleT &particle,
     if(event == IntersectionEvent)
     {
         result.directedFace = intersection.directedFace;
-        const bool deviceReflect =
-            intersection.boundaryCrossing &&
-            views.grid.deviceBoundaryBehaviors != nullptr &&
-            views.grid.deviceBoundaryBehaviors[
-                intersection.directedFace] ==
-                static_cast<std::uint8_t>(
-                    DeviceBoundaryFaceBehavior::ReflectingRigid);
+        const bool deviceReflect = intersection.boundaryCrossing and views.grid.deviceBoundaryBehaviors != nullptr and
+                                    views.grid.deviceBoundaryBehaviors[intersection.directedFace] == static_cast<std::uint8_t>(DeviceBoundaryFaceBehavior::ReflectingRigid);
         if(deviceReflect)
         {
-            const auto &normal =
-                views.grid.normals[intersection.directedFace];
-            const double normalVelocity =
-                particle.velocity.x * normal.x +
-                particle.velocity.y * normal.y +
-                particle.velocity.z * normal.z;
-            particle.velocity.x -=
-                2.0 * normalVelocity * normal.x;
-            particle.velocity.y -=
-                2.0 * normalVelocity * normal.y;
-            particle.velocity.z -=
-                2.0 * normalVelocity * normal.z;
+            const auto &normal = views.grid.normals[intersection.directedFace];
+            const double normalVelocity = particle.velocity.x * normal.x + particle.velocity.y * normal.y + particle.velocity.z * normal.z;
+            particle.velocity.x -= 2.0 * normalVelocity * normal.x;
+            particle.velocity.y -= 2.0 * normalVelocity * normal.y;
+            particle.velocity.z -= 2.0 * normalVelocity * normal.z;
 
             // Preserve the established host CrookedPipe semantics: its
             // boundary applies one centre nudge and the manager applies a
@@ -520,63 +364,38 @@ TransportResult AdvanceIMC(ParticleT &particle,
             const auto &center = views.grid.cellCenters[cellIndex];
             for(std::uint8_t nudge = 0; nudge < 2; ++nudge)
             {
-                particle.location.x =
-                    (1.0 - epsilon) * particle.location.x +
-                    epsilon * center.x;
-                particle.location.y =
-                    (1.0 - epsilon) * particle.location.y +
-                    epsilon * center.y;
-                particle.location.z =
-                    (1.0 - epsilon) * particle.location.z +
-                    epsilon * center.z;
+                particle.location.x = (1.0 - epsilon) * particle.location.x + epsilon * center.x;
+                particle.location.y = (1.0 - epsilon) * particle.location.y + epsilon * center.y;
+                particle.location.z = (1.0 - epsilon) * particle.location.z + epsilon * center.z;
             }
             result.step.change = ParticleStatus::NO_CELL_MOVE;
             return result;
         }
         result.step.change = ParticleStatus::CELL_MOVE;
         result.step.nextCellIndex = intersection.nextCellIndex;
-        result.step.boundaryCrossing =
-            intersection.boundaryCrossing;
+        result.step.boundaryCrossing = intersection.boundaryCrossing;
     }
     else if(event == ScatteringEvent)
     {
         const double oldVelocityX = particle.velocity.x;
         const double oldVelocityY = particle.velocity.y;
         const double oldVelocityZ = particle.velocity.z;
-        const double eventRandom =
-            CounterRNG::unitOpen(
-                particle.rngKey, particle.rngCounter++) *
-            eventOpacity;
-        const bool effectiveScatter =
-            eventRandom >= scatteringOpacity;
-        opacity.Scatter(
-            particle, views, cellIndex, opacityState,
-            effectiveScatter, dopplerShift);
+        const double eventRandom = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) * eventOpacity;
+        const bool effectiveScatter = eventRandom >= scatteringOpacity;
+        opacity.Scatter(particle, views, cellIndex, opacityState, effectiveScatter, dopplerShift);
         if(views.comovingTransport)
         {
-            const double weightBeforeTransform =
-                particle.weight;
+            const double weightBeforeTransform = particle.weight;
             particle.weight *= dopplerShift;
-            if(!TransformToLab(
-                   particle,
-                   views.cellVelocities[cellIndex],
-                   views.speedOfLight))
+            if(not TransformToLab(particle, views.cellVelocities[cellIndex], views.speedOfLight))
             {
-                result.error =
-                    TransportError::InvalidDoppler;
+                result.error = TransportError::InvalidDoppler;
                 return result;
             }
-            AddMomentum(
-                views, cellIndex,
-                (weightBeforeTransform * oldVelocityX -
-                 particle.weight * particle.velocity.x) *
-                    inverseC2,
-                (weightBeforeTransform * oldVelocityY -
-                 particle.weight * particle.velocity.y) *
-                    inverseC2,
-                (weightBeforeTransform * oldVelocityZ -
-                 particle.weight * particle.velocity.z) *
-                    inverseC2);
+            AddMomentum(views, cellIndex,
+                    (weightBeforeTransform * oldVelocityX - particle.weight * particle.velocity.x) * inverseC2,
+                        (weightBeforeTransform * oldVelocityY - particle.weight * particle.velocity.y) * inverseC2,
+                        (weightBeforeTransform * oldVelocityZ - particle.weight * particle.velocity.z) * inverseC2);
         }
         result.step.change = ParticleStatus::NO_CELL_MOVE;
     }
@@ -590,16 +409,13 @@ TransportResult AdvanceIMC(ParticleT &particle,
 
 template<typename ParticleT, typename ViewsT>
 STORM_TRANSPORT_INLINE
-TransportResult AdvanceIMC(ParticleT &particle,
-                           const ViewsT &views)
+TransportResult AdvanceIMC(ParticleT &particle, const ViewsT &views)
 {
     if(views.spectralEnabled)
     {
-        return AdvanceIMC(
-            particle, views, SpectralTableOpacityPolicy{});
+        return AdvanceIMC(particle, views, SpectralTableOpacityPolicy{});
     }
-    return AdvanceIMC(
-        particle, views, GreyOpacityPolicy{});
+    return AdvanceIMC(particle, views, GreyOpacityPolicy{});
 }
 
 } // namespace transport

@@ -44,9 +44,7 @@ inline long double Lambda(long double x)
 inline long double H(long double x)
 {
     x = ClampOpenUnit(x);
-    return 1.0L + 1.5L * x
-         - 0.5L * x * (1.0L + 3.0L * x) * std::log1p(1.0L / x)
-         + x * (2.5L + 3.0L * x) / (2.0L * (1.0L + x));
+    return 1.0L + 1.5L * x - 0.5L * x * (1.0L + 3.0L * x) * std::log1p(1.0L / x) + x * (2.5L + 3.0L * x) / (2.0L * (1.0L + x));
 }
 
 inline long double N(long double x)
@@ -67,8 +65,7 @@ inline long double QDerivative(long double x)
 {
     x = ClampOpenUnit(x);
     long double const room = std::min(x, 1.0L - x);
-    long double const dx = std::max(1.0e-10L,
-        std::min(1.0e-5L, 1.0e-3L * room));
+    long double const dx = std::max(1.0e-10L, std::min(1.0e-5L, 1.0e-3L * room));
     long double const lo = ClampOpenUnit(x - dx);
     long double const hi = ClampOpenUnit(x + dx);
     return (Q(hi) - Q(lo)) / (hi - lo);
@@ -84,11 +81,9 @@ struct GaussLegendreRule
         std::size_t const half = (n + 1) / 2;
         for(std::size_t i = 0; i < half; ++i)
         {
-            long double z = std::cos(Pi *
-                (static_cast<long double>(i) + 0.75L) /
-                (static_cast<long double>(n) + 0.5L));
+            long double z = std::cos(Pi * (static_cast<long double>(i) + 0.75L) / (static_cast<long double>(n) + 0.5L));
             long double pp = 0.0L;
-            for(int iteration = 0; iteration < 64; ++iteration)
+            for(size_t iteration = 0; iteration < 64; ++iteration)
             {
                 long double p1 = 1.0L;
                 long double p2 = 0.0L;
@@ -112,8 +107,7 @@ struct GaussLegendreRule
             }
             long double const mappedLo = 0.5L * (1.0L - z);
             long double const mappedHi = 0.5L * (1.0L + z);
-            long double const weight = 1.0L /
-                ((1.0L - z * z) * pp * pp);
+            long double const weight = 1.0L / ((1.0L - z * z) * pp * pp);
             x[i] = mappedLo;
             x[n - 1 - i] = mappedHi;
             w[i] = weight;
@@ -122,8 +116,7 @@ struct GaussLegendreRule
     }
 };
 
-inline long double EvaluateKernel(long double mu,
-                                  GaussLegendreRule const &rule)
+inline long double EvaluateKernel(long double mu, GaussLegendreRule const &rule)
 {
     mu = ClampOpenUnit(mu);
     long double const qMu = Q(mu);
@@ -134,16 +127,19 @@ inline long double EvaluateKernel(long double mu,
         long double const dx = x - mu;
         long double dividedDifference;
         if(std::abs(dx) <= 1.0e-8L * std::max(1.0L, std::abs(mu)))
+        {
             dividedDifference = QDerivative(mu);
+        }
         else
+        {
             dividedDifference = (Q(x) - qMu) / dx;
+        }
         integral += rule.w[i] * dividedDifference;
     }
 
     long double const denominator = (2.0L + 3.0L * mu) * N(mu);
     long double const first = Lambda(mu) * H(mu) / denominator;
-    long double const logarithmic = 0.5L * mu * H(mu) / denominator *
-        std::log((1.0L - mu) / mu);
+    long double const logarithmic = 0.5L * mu * H(mu) / denominator * std::log((1.0L - mu) / mu);
     return first + 0.5L * integral + logarithmic;
 }
 
@@ -165,45 +161,50 @@ public:
         double const logHi = std::log(joinMu);
         for(std::size_t i = 0; i < lowCount; ++i)
         {
-            double const s = static_cast<double>(i) /
-                static_cast<double>(lowCount - 1);
+            double const s = static_cast<double>(i) / static_cast<double>(lowCount - 1);
             double const mu = std::exp(logLo + s * (logHi - logLo));
             mu_.push_back(mu);
-            scaledKernel_.push_back(mu *
-                static_cast<double>(EvaluateKernel(mu, rule)));
+            scaledKernel_.push_back(mu * static_cast<double>(EvaluateKernel(mu, rule)));
         }
         for(std::size_t i = 1; i < highCount; ++i)
         {
-            double const s = static_cast<double>(i) /
-                static_cast<double>(highCount - 1);
+            double const s = static_cast<double>(i) / static_cast<double>(highCount - 1);
             double const mu = joinMu + s * (MaximumTabulatedMu - joinMu);
             mu_.push_back(mu);
-            scaledKernel_.push_back(mu *
-                static_cast<double>(EvaluateKernel(mu, rule)));
+            scaledKernel_.push_back(mu * static_cast<double>(EvaluateKernel(mu, rule)));
         }
     }
 
     double operator()(double mu) const
     {
-        if(!std::isfinite(mu) || !(mu > 0.0) || mu > 1.0)
+        if(not std::isfinite(mu) or not (mu > 0.0) or mu > 1.0)
+        {
             return std::numeric_limits<double>::quiet_NaN();
+        }
         if(mu < MinimumTabulatedMu)
+        {
             return scaledKernel_.front() / mu;
+        }
         if(mu > MaximumTabulatedMu)
+        {
             return scaledKernel_.back() / mu;
+        }
 
         auto upper = std::lower_bound(mu_.begin(), mu_.end(), mu);
         if(upper == mu_.begin())
+        {
             return scaledKernel_.front() / mu;
+        }
         if(upper == mu_.end())
+        {
             return scaledKernel_.back() / mu;
+        }
         std::size_t const hi = static_cast<std::size_t>(upper - mu_.begin());
         std::size_t const lo = hi - 1;
         double fraction;
         if(mu_[hi] <= 1.0e-2)
         {
-            fraction = (std::log(mu) - std::log(mu_[lo])) /
-                       (std::log(mu_[hi]) - std::log(mu_[lo]));
+            fraction = (std::log(mu) - std::log(mu_[lo])) / (std::log(mu_[hi]) - std::log(mu_[lo]));
         }
         else
         {
@@ -230,8 +231,7 @@ private:
 
 } // namespace detail
 
-STORM_TRANSPORT_INLINE
-double Kernel(const WollaegerKernelView &table, const double mu)
+STORM_TRANSPORT_INLINE double Kernel(const WollaegerKernelView &table, const double mu)
 {
     if(!transport::IsFinite(mu) || !(mu > 0.0) || mu > 1.0 ||
        table.mu == nullptr || table.scaledKernel == nullptr ||
@@ -265,14 +265,11 @@ double Kernel(const WollaegerKernelView &table, const double mu)
     double fraction = 0.0;
     if(table.mu[upper] <= 1.0e-2)
     {
-        fraction = (transport::Log(mu) - transport::Log(table.mu[lower])) /
-                   (transport::Log(table.mu[upper]) -
-                    transport::Log(table.mu[lower]));
+        fraction = (transport::Log(mu) - transport::Log(table.mu[lower])) / (transport::Log(table.mu[upper]) - transport::Log(table.mu[lower]));
     }
     else
     {
-        fraction = (mu - table.mu[lower]) /
-                   (table.mu[upper] - table.mu[lower]);
+        fraction = (mu - table.mu[lower]) / (table.mu[upper] - table.mu[lower]);
     }
     const double scaled = table.scaledKernel[lower] + fraction *
         (table.scaledKernel[upper] - table.scaledKernel[lower]);
@@ -288,18 +285,13 @@ inline const detail::KernelTable &GetKernelTable()
 inline double Kernel(double mu)
 {
     const double value = Kernel(GetKernelTable().View(), mu);
-    return std::isfinite(value)
-        ? value : std::numeric_limits<double>::quiet_NaN();
+    return std::isfinite(value)? value : std::numeric_limits<double>::quiet_NaN();
 }
 
-STORM_TRANSPORT_INLINE
-double MovingFactor(const WollaegerKernelView &table,
-                    const double mu,
-                    const double normalVelocityOverC)
+STORM_TRANSPORT_INLINE double MovingFactor(const WollaegerKernelView &table, const double mu, const double normalVelocityOverC)
 {
     const double kernel = Kernel(table, mu);
-    if(!transport::IsFinite(kernel) ||
-       !transport::IsFinite(normalVelocityOverC))
+    if(not transport::IsFinite(kernel) or not transport::IsFinite(normalVelocityOverC))
     {
         return std::numeric_limits<double>::quiet_NaN();
     }
@@ -308,22 +300,16 @@ double MovingFactor(const WollaegerKernelView &table,
 
 inline double MovingFactor(double mu, double normalVelocityOverC)
 {
-    return MovingFactor(
-        GetKernelTable().View(), mu, normalVelocityOverC);
+    return MovingFactor(GetKernelTable().View(), mu, normalVelocityOverC);
 }
 
-STORM_TRANSPORT_INLINE
-double StaticAdmissionProbability(const double mu,
-                                  const double transportOpacity,
-                                  const double centerToFaceDistance)
+STORM_TRANSPORT_INLINE double StaticAdmissionProbability(const double mu, const double transportOpacity, const double centerToFaceDistance)
 {
-    if(!(mu > 0.0) || !(transportOpacity > 0.0) ||
-       !(centerToFaceDistance > 0.0))
+    if(not (mu > 0.0) or not (transportOpacity > 0.0) or not (centerToFaceDistance > 0.0))
     {
         return 0.0;
     }
-    const double denominator = 3.0 *
-        (transportOpacity * centerToFaceDistance + ExtrapolationLength);
+    const double denominator = 3.0 * (transportOpacity * centerToFaceDistance + ExtrapolationLength);
     const double value = 2.0 * (1.0 + 1.5 * mu) / denominator;
     return value < 0.0 ? 0.0 : (value > 1.0 ? 1.0 : value);
 }
@@ -336,31 +322,30 @@ inline double SampleAsymptoticMu(double random)
     // Detailed balance with the static admission law gives
     // p(mu) proportional to mu*(1 + 3*mu/2), whose normalized CDF is
     // mu^2*(1 + mu)/2.
-    for(int iteration = 0; iteration < 56; ++iteration)
+    for(size_t iteration = 0; iteration < 56; ++iteration)
     {
         double const mu = 0.5 * (lo + hi);
         double const cdf = 0.5 * mu * mu * (1.0 + mu);
         if(cdf < random)
+        {
             lo = mu;
+        }
         else
+        {
             hi = mu;
+        }
     }
     return 0.5 * (lo + hi);
 }
 
-inline double BoundaryLeakRate(double area,
-                               double volume,
-                               double transportOpacity,
-                               double centerToFaceDistance,
-                               double lightSpeed)
+inline double BoundaryLeakRate(double area, double volume, double transportOpacity, double centerToFaceDistance, double lightSpeed)
 {
-    if(!(area > 0.0) || !(volume > 0.0) || !(transportOpacity > 0.0) ||
-       !(centerToFaceDistance > 0.0) || !(lightSpeed > 0.0))
+    if(not (area > 0.0) or not (volume > 0.0) or not (transportOpacity > 0.0) or not (centerToFaceDistance > 0.0) or not (lightSpeed > 0.0))
+    {
         return 0.0;
-    double const opticalDenominator =
-        transportOpacity * centerToFaceDistance + ExtrapolationLength;
-    return lightSpeed * area /
-        (3.0 * volume * opticalDenominator);
+    }
+    double const opticalDenominator = transportOpacity * centerToFaceDistance + ExtrapolationLength;
+    return lightSpeed * area / (3.0 * volume * opticalDenominator);
 }
 
 } // namespace STORM::ddmc

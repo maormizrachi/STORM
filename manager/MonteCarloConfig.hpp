@@ -68,6 +68,16 @@ public:
     // default as gpuMinLaunchSize) or gpuHoldMaxSkips waves elapse. Census
     // (DONE) stays on device until Comb; REMOVE and HostOnly still copy back
     // every wave.
+    // Pre-reserve the resident device pool once per step using this headroom
+    // over the estimated peak active population on the rank. Mid-step
+    // Kokkos::resize bursts are avoided when GPU memory is plentiful. 0 keeps
+    // legacy incremental growth.
+    double gpuDevicePoolHeadroomFactor = 1.25;
+    // Optional floor on reserved device slots (0 = estimate only).
+    size_t gpuDevicePoolMinCapacity = 0;
+    // Pinned-host ingest staging capacity. 0 picks
+    // max(262144, localTransportBatchSize).
+    size_t gpuHostIngestCapacity = 0;
 #endif
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;
@@ -98,6 +108,11 @@ public:
         cfg.initialBufferSize = std::max<size_t>(100, particlesPerRank / numNeighbors);
         cfg.minimalBuffSize   = std::max<size_t>(10, cfg.initialBufferSize / 10);
         cfg.sendBufferMinSize = std::max<size_t>(sendBufferMinSizeMin, particlesPerRank / (numNeighbors * 4));
+#ifdef STORM_WITH_GPU
+        cfg.gpuDevicePoolMinCapacity = particlesPerRank;
+        cfg.gpuHostIngestCapacity =
+            std::max<size_t>(262144, particlesPerRank / 4);
+#endif
         return cfg;
     }
 

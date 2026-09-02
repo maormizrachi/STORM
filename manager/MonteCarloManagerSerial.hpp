@@ -40,7 +40,20 @@ public:
 
     virtual ~MonteCarloManagerSerial() = default;
 
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
+    /// Advances the owned particle census. References returned by
+    /// getParticles() are invalidated by this call.
+    void step(dt_t fullDt);
+
+    const std::vector<MCParticle> &getParticles(void) const
+    {
+        return this->ownedParticles;
+    }
+
+    std::vector<MCParticle> &getParticles(void)
+    {
+        this->particlesChanged = true;
+        return this->ownedParticles;
+    }
 
     inline const Tracker &getTracker(void)
     {
@@ -109,11 +122,15 @@ private:
     size_t initialParticleCount_ = 0;
     size_t preStepParticleCount_ = 0;
     std::vector<size_t> beginningParticleCount_;
+    std::vector<MCParticle> ownedParticles;
+    bool particlesChanged = false;
     ParticleQueue<MCParticle> particles;
     HostLocalTransportExecutor<MCParticle> localTransportExecutor;
     TransportCore transportCore;
 
     void HandleAll(MonteCarloStepFinalData &cache);
+    bool HaveParticlesChanged(void) const { return this->particlesChanged; }
+    void ClearParticlesChanged(void) { this->particlesChanged = false; }
     void PutSelfParticles(std::vector<MCParticle> &&particles);
     void PrepareForStep(void);
     void AddParticles(const std::vector<MCParticle> &particles);

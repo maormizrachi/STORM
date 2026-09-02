@@ -18,6 +18,7 @@ struct FlatGridView
 {
     const std::size_t *cellFaceOffsets = nullptr;
     const PointT *cellCenters = nullptr;
+    const cell_id_t *cellIDs = nullptr;
     const PointT *normals = nullptr;
     const double *facePlaneOffsets = nullptr;
     const cell_index_t *nextCellIndices = nullptr;

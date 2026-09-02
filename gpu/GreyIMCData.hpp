@@ -27,6 +27,7 @@ public:
     GreyIMCData()
         : cellFaceOffsets_("storm_cell_face_offsets", 0),
           cellCenters_("storm_cell_centers", 0),
+          cellIDs_("storm_cell_ids", 0),
           normals_("storm_face_normals", 0),
           facePlaneOffsets_("storm_face_plane_offsets", 0),
           nextCellIndices_("storm_next_cells", 0),
@@ -38,6 +39,9 @@ public:
           pendingRadiationEnergy_("storm_radiation_tally", 0),
           pendingMomentum_("storm_momentum_tally", 0),
           pendingGroupRadiationEnergy_("storm_group_radiation_tally", 0),
+          censusRadiationEnergy_("storm_census_radiation_energy", 0),
+          censusGroupRadiationEnergy_(
+              "storm_census_group_radiation_energy", 0),
           energyBoundaries_("storm_energy_boundaries", 0),
           spectralAbsorptionScale_("storm_spectral_absorption_scale", 0),
           thermalEmissionCdf_("storm_thermal_emission_cdf", 0),
@@ -94,18 +98,33 @@ public:
           ddmcInterfaceBypassCount_("storm_ddmc_interface_bypass_count"),
           ddmcInterfaceSplitPacketCount_("storm_ddmc_interface_split_packet_count"),
           ddmcHostFallbackCount_("storm_ddmc_host_fallback_count"),
+          ddmcExternalSourceThermalizationCount_(
+              "storm_ddmc_external_source_thermalization_count"),
+          ddmcExternalSourceStayDDMCCount_(
+              "storm_ddmc_external_source_stay_ddmc_count"),
+          ddmcExternalSourceToIMCCount_(
+              "storm_ddmc_external_source_to_imc_count"),
+          ddmcExternalSourceThermalizedEnergy_(
+              "storm_ddmc_external_source_thermalized_energy"),
+          ddmcExternalSourceToIMCEnergy_(
+              "storm_ddmc_external_source_to_imc_energy"),
           randomWalkEligible_("storm_rw_eligible", 0),
           randomWalkTotalOpacity_("storm_rw_total_opacity", 0),
           randomWalkPGRWCells_("storm_rw_pgrw_cells", 0),
           randomWalkTau_("storm_rw_tau", 0),
           randomWalkSurvival_("storm_rw_survival", 0),
           randomWalkRadius_("storm_rw_radius", 0),
-          randomWalkStepCounter_("storm_rw_step_counter")
+          randomWalkStepCounter_("storm_rw_step_counter"),
+          sourceTetOffsets_("storm_source_tet_offsets", 0),
+          sourceTetCumVolumes_("storm_source_tet_cum_volumes", 0),
+          sourceTetTris_("storm_source_tet_tris", 0),
+          sourceVertices_("storm_source_vertices", 0)
     {}
 
     template<typename PointT>
     void UploadGrid(const std::vector<std::size_t> &cellFaceOffsets,
                     const std::vector<PointT> &cellCenters,
+                    const std::vector<cell_id_t> &cellIDs,
                     const std::vector<PointT> &normals,
                     const std::vector<double> &facePlaneOffsets,
                     const std::vector<cell_index_t> &nextCellIndices,
@@ -113,13 +132,15 @@ public:
                     const std::vector<std::uint8_t> &deviceBoundaryBehaviors)
     {
         const std::size_t directedFaceCount = normals.size();
-        if(facePlaneOffsets.size() != directedFaceCount or nextCellIndices.size() != directedFaceCount or
+        if(cellIDs.size() != cellCenters.size() or
+           facePlaneOffsets.size() != directedFaceCount or nextCellIndices.size() != directedFaceCount or
            boundaryCrossings.size() != directedFaceCount or deviceBoundaryBehaviors.size() != directedFaceCount)
         {
             throw std::runtime_error("GreyIMCData::UploadGrid: directed-face table size mismatch");
         }
         Resize(this->cellFaceOffsets_, cellFaceOffsets.size());
         Resize(this->cellCenters_, cellCenters.size());
+        Resize(this->cellIDs_, cellIDs.size());
         Resize(this->normals_, normals.size());
         Resize(this->facePlaneOffsets_, facePlaneOffsets.size());
         Resize(this->nextCellIndices_, nextCellIndices.size());
@@ -133,6 +154,7 @@ public:
         for(std::size_t i = 0; i < cellCenters.size(); ++i)
         {
             this->cellCenters_.h_view(i) = DeviceVec3(cellCenters[i].x, cellCenters[i].y, cellCenters[i].z);
+            this->cellIDs_.h_view(i) = cellIDs[i];
         }
         for(std::size_t i = 0; i < normals.size(); ++i)
         {
@@ -145,12 +167,58 @@ public:
 
         SyncToDevice(this->cellFaceOffsets_);
         SyncToDevice(this->cellCenters_);
+        SyncToDevice(this->cellIDs_);
         SyncToDevice(this->normals_);
         SyncToDevice(this->facePlaneOffsets_);
         SyncToDevice(this->nextCellIndices_);
         SyncToDevice(this->boundaryCrossings_);
         SyncToDevice(this->deviceBoundaryBehaviors_);
         this->cellCount_ = cellFaceOffsets.empty() ? 0 : cellFaceOffsets.size() - 1;
+    }
+
+    template<typename PointT>
+    void UploadSourceTets(const std::vector<std::size_t> &tetOffsets,
+                          const std::vector<double> &tetCumVolumes,
+                          const std::vector<std::uint32_t> &tetTris,
+                          const std::vector<PointT> &vertices)
+    {
+        if(tetOffsets.size() != this->cellCount_ + 1)
+        {
+            throw std::runtime_error(
+                "GreyIMCData::UploadSourceTets: tet offset size mismatch");
+        }
+        if(tetTris.size() != tetCumVolumes.size() * 3)
+        {
+            throw std::runtime_error(
+                "GreyIMCData::UploadSourceTets: tet triangle size mismatch");
+        }
+        CopyToDevice(tetOffsets, this->sourceTetOffsets_);
+        CopyToDevice(tetCumVolumes, this->sourceTetCumVolumes_);
+        CopyToDevice(tetTris, this->sourceTetTris_);
+        Resize(this->sourceVertices_, vertices.size());
+        for(std::size_t i = 0; i < vertices.size(); ++i)
+        {
+            this->sourceVertices_.h_view(i) =
+                DeviceVec3(vertices[i].x, vertices[i].y, vertices[i].z);
+        }
+        SyncToDevice(this->sourceVertices_);
+    }
+
+    const std::size_t *SourceTetOffsets() const
+    {
+        return this->sourceTetOffsets_.d_view.data();
+    }
+    const double *SourceTetCumVolumes() const
+    {
+        return this->sourceTetCumVolumes_.d_view.data();
+    }
+    const std::uint32_t *SourceTetTris() const
+    {
+        return this->sourceTetTris_.d_view.data();
+    }
+    const DeviceVec3 *SourceVertices() const
+    {
+        return this->sourceVertices_.d_view.data();
     }
 
     template<typename PointT>
@@ -209,6 +277,55 @@ public:
         Resize(this->spectralAbsorptionScale_, 0);
         Resize(this->thermalEmissionCdf_, 0);
         Resize(this->pendingGroupRadiationEnergy_, 0);
+    }
+
+    void ResetCensusTallies()
+    {
+        Resize(this->censusRadiationEnergy_, this->cellCount_);
+        Resize(
+            this->censusGroupRadiationEnergy_,
+            this->spectralEnabled_
+                ? this->cellCount_ * this->groupCount_
+                : std::size_t(0));
+        Kokkos::deep_copy(
+            this->censusRadiationEnergy_.d_view, 0.0);
+        this->censusRadiationEnergy_.modify_device();
+        if(this->censusGroupRadiationEnergy_.extent(0) > 0)
+        {
+            Kokkos::deep_copy(
+                this->censusGroupRadiationEnergy_.d_view, 0.0);
+            this->censusGroupRadiationEnergy_.modify_device();
+        }
+    }
+
+    void CopyCensusTallies(
+        std::vector<double> &radiationEnergy,
+        std::vector<double> &groupRadiationEnergy)
+    {
+        this->censusRadiationEnergy_.sync_host();
+        if(this->censusRadiationEnergy_.extent(0) > 0)
+        {
+            radiationEnergy.assign(
+                this->censusRadiationEnergy_.h_view.data(),
+                this->censusRadiationEnergy_.h_view.data() +
+                    this->censusRadiationEnergy_.extent(0));
+        }
+        else
+        {
+            radiationEnergy.clear();
+        }
+        if(this->censusGroupRadiationEnergy_.extent(0) > 0)
+        {
+            this->censusGroupRadiationEnergy_.sync_host();
+            groupRadiationEnergy.assign(
+                this->censusGroupRadiationEnergy_.h_view.data(),
+                this->censusGroupRadiationEnergy_.h_view.data() +
+                    this->censusGroupRadiationEnergy_.extent(0));
+        }
+        else
+        {
+            groupRadiationEnergy.clear();
+        }
     }
 
     template<typename PointT>
@@ -389,6 +506,16 @@ public:
         Kokkos::deep_copy(this->ddmcInterfaceBypassCount_, std::size_t(0));
         Kokkos::deep_copy(this->ddmcInterfaceSplitPacketCount_, std::size_t(0));
         Kokkos::deep_copy(this->ddmcHostFallbackCount_, std::size_t(0));
+        Kokkos::deep_copy(
+            this->ddmcExternalSourceThermalizationCount_, std::size_t(0));
+        Kokkos::deep_copy(
+            this->ddmcExternalSourceStayDDMCCount_, std::size_t(0));
+        Kokkos::deep_copy(
+            this->ddmcExternalSourceToIMCCount_, std::size_t(0));
+        Kokkos::deep_copy(
+            this->ddmcExternalSourceThermalizedEnergy_, 0.0);
+        Kokkos::deep_copy(
+            this->ddmcExternalSourceToIMCEnergy_, 0.0);
         this->ddmcMinimumParticleOpticalDepth_ =
             snapshot.minimumParticleOpticalDepth;
         this->ddmcPgrwEnabled_ = snapshot.pgrwEnabled;
@@ -525,6 +652,7 @@ public:
         GreyIMCViews<DeviceVec3> result;
         result.grid.cellFaceOffsets = this->cellFaceOffsets_.d_view.data();
         result.grid.cellCenters = this->cellCenters_.d_view.data();
+        result.grid.cellIDs = this->cellIDs_.d_view.data();
         result.grid.normals = this->normals_.d_view.data();
         result.grid.facePlaneOffsets = this->facePlaneOffsets_.d_view.data();
         result.grid.nextCellIndices = this->nextCellIndices_.d_view.data();
@@ -620,6 +748,16 @@ public:
             this->ddmcInterfaceSplitPacketCount_.data();
         result.ddmc.hostFallbackCount =
             this->ddmcHostFallbackCount_.data();
+        result.ddmc.externalSourceThermalizationCount =
+            this->ddmcExternalSourceThermalizationCount_.data();
+        result.ddmc.externalSourceStayDDMCCount =
+            this->ddmcExternalSourceStayDDMCCount_.data();
+        result.ddmc.externalSourceToIMCCount =
+            this->ddmcExternalSourceToIMCCount_.data();
+        result.ddmc.externalSourceThermalizedEnergy =
+            this->ddmcExternalSourceThermalizedEnergy_.data();
+        result.ddmc.externalSourceToIMCEnergy =
+            this->ddmcExternalSourceToIMCEnergy_.data();
         result.ddmc.cellCount = this->cellCount_;
         result.ddmc.minimumParticleOpticalDepth =
             this->ddmcMinimumParticleOpticalDepth_;
@@ -649,6 +787,10 @@ public:
             this->thermalEmissionCdf_.d_view.data();
         result.pendingGroupRadiationEnergy =
             this->pendingGroupRadiationEnergy_.d_view.data();
+        result.censusRadiationEnergy =
+            this->censusRadiationEnergy_.d_view.data();
+        result.censusGroupRadiationEnergy =
+            this->censusGroupRadiationEnergy_.d_view.data();
         result.groupCount = this->groupCount_;
         result.randomWalk.cellEligible =
             this->randomWalkEligible_.d_view.data();
@@ -769,7 +911,12 @@ public:
                             std::size_t &interfaceGuFallback,
                             std::size_t &interfaceBypass,
                             std::size_t &interfaceSplitPackets,
-                            std::size_t &fallbackCount)
+                            std::size_t &fallbackCount,
+                            std::size_t &externalSourceThermalization,
+                            std::size_t &externalSourceStayDDMC,
+                            std::size_t &externalSourceToIMC,
+                            double &externalSourceThermalizedEnergy,
+                            double &externalSourceToIMCEnergy)
     {
         std::size_t count = 0;
         Kokkos::deep_copy(count, this->ddmcInterfaceIncidentCount_);
@@ -788,6 +935,22 @@ public:
         interfaceSplitPackets += count;
         Kokkos::deep_copy(count, this->ddmcHostFallbackCount_);
         fallbackCount += count;
+        Kokkos::deep_copy(
+            count, this->ddmcExternalSourceThermalizationCount_);
+        externalSourceThermalization += count;
+        Kokkos::deep_copy(
+            count, this->ddmcExternalSourceStayDDMCCount_);
+        externalSourceStayDDMC += count;
+        Kokkos::deep_copy(
+            count, this->ddmcExternalSourceToIMCCount_);
+        externalSourceToIMC += count;
+        double energy = 0.0;
+        Kokkos::deep_copy(
+            energy, this->ddmcExternalSourceThermalizedEnergy_);
+        externalSourceThermalizedEnergy += energy;
+        Kokkos::deep_copy(
+            energy, this->ddmcExternalSourceToIMCEnergy_);
+        externalSourceToIMCEnergy += energy;
     }
 
 private:
@@ -820,11 +983,16 @@ private:
 
     Kokkos::DualView<std::size_t*> cellFaceOffsets_;
     Kokkos::DualView<DeviceVec3*> cellCenters_;
+    Kokkos::DualView<cell_id_t*> cellIDs_;
     Kokkos::DualView<DeviceVec3*> normals_;
     Kokkos::DualView<double*> facePlaneOffsets_;
     Kokkos::DualView<cell_index_t*> nextCellIndices_;
     Kokkos::DualView<std::uint8_t*> boundaryCrossings_;
     Kokkos::DualView<std::uint8_t*> deviceBoundaryBehaviors_;
+    Kokkos::DualView<std::size_t*> sourceTetOffsets_;
+    Kokkos::DualView<double*> sourceTetCumVolumes_;
+    Kokkos::DualView<std::uint32_t*> sourceTetTris_;
+    Kokkos::DualView<DeviceVec3*> sourceVertices_;
     /// Packed [absorption | scattering | fleck], each of length cellCount_.
     Kokkos::DualView<double*> cellTables_;
     Kokkos::DualView<DeviceVec3*> cellVelocities_;
@@ -832,6 +1000,8 @@ private:
     Kokkos::DualView<double*> pendingRadiationEnergy_;
     Kokkos::DualView<DeviceVec3*> pendingMomentum_;
     Kokkos::DualView<double*> pendingGroupRadiationEnergy_;
+    Kokkos::DualView<double*> censusRadiationEnergy_;
+    Kokkos::DualView<double*> censusGroupRadiationEnergy_;
     Kokkos::DualView<double*> energyBoundaries_;
     Kokkos::DualView<double*> spectralAbsorptionScale_;
     Kokkos::DualView<double*> thermalEmissionCdf_;
@@ -879,6 +1049,11 @@ private:
     Kokkos::View<std::size_t> ddmcInterfaceBypassCount_;
     Kokkos::View<std::size_t> ddmcInterfaceSplitPacketCount_;
     Kokkos::View<std::size_t> ddmcHostFallbackCount_;
+    Kokkos::View<std::size_t> ddmcExternalSourceThermalizationCount_;
+    Kokkos::View<std::size_t> ddmcExternalSourceStayDDMCCount_;
+    Kokkos::View<std::size_t> ddmcExternalSourceToIMCCount_;
+    Kokkos::View<double> ddmcExternalSourceThermalizedEnergy_;
+    Kokkos::View<double> ddmcExternalSourceToIMCEnergy_;
     Kokkos::DualView<std::uint8_t*> randomWalkEligible_;
     Kokkos::DualView<double*> randomWalkTotalOpacity_;
     Kokkos::DualView<PGRWCellData*> randomWalkPGRWCells_;

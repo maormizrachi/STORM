@@ -55,12 +55,13 @@ void MonteCarloManagerSerial<T, Grid>::PutSelfParticles(std::vector<MCParticle> 
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloManagerSerial<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
+void MonteCarloManagerSerial<T, Grid>::step(dt_t fullDt)
 {
     this->PrepareForStep();
     this->physics->updateGridData();
     this->resetTracker();
-    this->PutSelfParticles(std::move(particleList));
+    this->PutSelfParticles(std::move(this->ownedParticles));
+    this->ClearParticlesChanged();
 
     MonteCarloParticleInitializer::InitializeStore(this->particles, fullDt);
 
@@ -120,11 +121,10 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
         throw;
     }
 
-    std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
-    this->endParticleCount_ = populationControlParticles.size();
-    this->physics->postStep(populationControlParticles, fullDt);
-
-    return populationControlParticles;
+    this->ownedParticles = this->populationControl->activate(data.remaining);
+    this->endParticleCount_ = this->ownedParticles.size();
+    this->physics->postStep(this->ownedParticles, fullDt);
+    this->ClearParticlesChanged();
 }
 
 #endif // STORM_SERIAL_MONTE_CARLO_LIFECYCLE_HPP

@@ -34,16 +34,58 @@ struct GreyIMCViews
     const double *spectralAbsorptionScale = nullptr;
     const double *thermalEmissionCdf = nullptr;
     double *pendingGroupRadiationEnergy = nullptr;
+    double *censusRadiationEnergy = nullptr;
+    double *censusGroupRadiationEnergy = nullptr;
     std::size_t groupCount = 0;
     double speedOfLight = 0.0;
     std::uint8_t depositMaterialEnergy = 1;
     std::uint8_t comovingTransport = 0;
     std::uint8_t depositMomentum = 0;
     std::uint8_t spectralEnabled = 0;
+    std::uint8_t ddmcOnlyTransport = 0;
 };
 
 using TransportError = transport::TransportError;
 using TransportResult = transport::TransportResult;
+
+STORM_GPU_INLINE_FUNCTION
+void AccumulateCensusValue(double *destination, double value)
+{
+#ifdef STORM_WITH_GPU
+    Kokkos::atomic_add(destination, value);
+#else
+    *destination += value;
+#endif
+}
+
+template<typename ParticleT, typename PointT>
+STORM_GPU_INLINE_FUNCTION
+void AccumulateCensusEnergy(
+    const ParticleT &particle,
+    const GreyIMCViews<PointT> &views)
+{
+    const std::size_t cellIndex =
+        static_cast<std::size_t>(particle.cellIndex);
+    if(cellIndex >= views.grid.cellCount ||
+       views.censusRadiationEnergy == nullptr)
+    {
+        return;
+    }
+    AccumulateCensusValue(
+        &views.censusRadiationEnergy[cellIndex], particle.weight);
+    if(views.spectralEnabled != 0 &&
+       views.censusGroupRadiationEnergy != nullptr &&
+       views.groupCount > 0)
+    {
+        const std::size_t group =
+            transport::SpectralTableOpacityPolicy{}.FindGroup(
+                views, particle.frequency);
+        AccumulateCensusValue(
+            &views.censusGroupRadiationEnergy[
+                cellIndex * views.groupCount + group],
+            particle.weight);
+    }
+}
 
 template<typename ParticleT, typename PointT>
 STORM_GPU_INLINE_FUNCTION
@@ -83,9 +125,10 @@ void ApplyDeviceReflect(ParticleT &particle,
 // transporting. DONE is a timestep terminal: it leaves the active wave but
 // stays on device until host Comb. REMOVE, HostOnly boundaries, and MPI rank
 // hops still leave the GCD during the loop.
-template<typename ParticleT, typename PointT>
+template<typename ParticleT, typename ColdParticleT, typename PointT>
 STORM_GPU_INLINE_FUNCTION
 bool TryKeepPacketOnDevice(ParticleT &particle,
+                           ColdParticleT &cold,
                            TransportResult &result,
                            const GreyIMCViews<PointT> &views)
 {
@@ -106,6 +149,12 @@ bool TryKeepPacketOnDevice(ParticleT &particle,
     if(nextCell < views.grid.cellCount)
     {
         particle.cellIndex = nextCell;
+        if(views.grid.cellIDs != nullptr)
+        {
+            cold.cellID =
+                views.grid.cellIDs[
+                    static_cast<std::size_t>(nextCell)];
+        }
         NudgeTowardCellCenter(particle, views, static_cast<std::size_t>(nextCell));
         result.step.change = ParticleStatus::NO_CELL_MOVE;
         return true;
@@ -231,9 +280,15 @@ STORM_GPU_INLINE_FUNCTION
 TransportResult AdvanceOne(ParticleT &particle, ColdT &cold,
                            const GreyIMCViews<PointT> &views)
 {
-    std::uint8_t &radiationFlags = ddmc::RadiationFlags(particle);
+    const std::uint8_t radiationFlags = ddmc::RadiationFlags(particle);
     const bool packetInDDMC =
         (radiationFlags & RadiationTransportState<PointT>::DDMCMode) != 0;
+    if(views.ddmcOnlyTransport && !packetInDDMC)
+    {
+        TransportResult result;
+        result.error = TransportError::HostFallback;
+        return result;
+    }
     if(!packetInDDMC && views.randomWalk.enabled)
     {
         const transport::RandomWalkResult randomWalk =
@@ -267,6 +322,12 @@ TransportResult AdvanceOne(ParticleT &particle, ColdT &cold,
     {
         TransportResult result{ddmcResult.step, TransportError::None};
         result.ddmcExtraSplits = ddmcResult.extraSplitCount;
+        if(views.ddmcOnlyTransport &&
+           (ddmc::RadiationFlags(particle) &
+            RadiationTransportState<PointT>::DDMCMode) == 0)
+        {
+            result.error = TransportError::HostFallback;
+        }
         return result;
     }
     TransportResult result = transport::AdvanceIMC(particle, views);

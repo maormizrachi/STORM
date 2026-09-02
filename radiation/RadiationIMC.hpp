@@ -50,6 +50,7 @@
 #include "radiation/Polarization.hpp"
 #include "radiation/RandomWalk.hpp"
 #include "radiation/ddmc/DDMCGeometry.hpp"
+#include "radiation/ddmc/DDMCCoreCheck.hpp"
 #include "radiation/ddmc/DDMCSampling.hpp"
 #include "radiation/ddmc/DDMCTypes.hpp"
 #include "radiation/ddmc/DDMCWollaegerInterface.hpp"
@@ -60,12 +61,14 @@
 #include <planck_integral/planck_integral.hpp>
 #include "../utils/LinearInterpolation.hpp"
 #include "../utils/CounterRNG.hpp"
+#include "radiation/source/SourceCore.hpp"
 #include "../mesh_movement/MeshMovement.hpp"
 #include "../gpu/GreyIMCKernel.hpp"
 
 #ifdef STORM_WITH_GPU
     #include "../gpu/GreyIMCData.hpp"
     #include "../gpu/KokkosRuntime.hpp"
+    #include "../gpu/DeviceSourceContext.hpp"
 #endif
 
 namespace STORM {
@@ -86,20 +89,14 @@ struct CellCenterPositionSampler
 {
     using Decomposition = CellVolumeDecomposition;
 
-    void BuildDecomposition(const GridT &grid,
-                            std::size_t cellIndex,
-                            Decomposition &out) const
+    void BuildDecomposition(const GridT &grid, std::size_t cellIndex, Decomposition &out) const
     {
         (void) grid;
         (void) cellIndex;
         out.clear();
     }
 
-    PointT Sample(const GridT &grid,
-                  std::size_t cellIndex,
-                  const Decomposition &decomp,
-                  std::mt19937_64 &rng,
-                  std::uniform_real_distribution<double> &dist) const
+    PointT Sample(const GridT &grid, std::size_t cellIndex, const Decomposition &decomp, std::mt19937_64 &rng, std::uniform_real_distribution<double> &dist) const
     {
         (void) decomp;
         (void) rng;
@@ -107,13 +104,18 @@ struct CellCenterPositionSampler
         return grid.GetMeshPoint(cellIndex);
     }
 
-    PointT operator()(const GridT &grid,
-                      std::size_t cellIndex,
-                      std::mt19937_64 &rng,
-                      std::uniform_real_distribution<double> &dist) const
+    PointT operator()(const GridT &grid, std::size_t cellIndex, std::mt19937_64 &rng, std::uniform_real_distribution<double> &dist) const
     {
         (void) rng;
         (void) dist;
+        return grid.GetMeshPoint(cellIndex);
+    }
+
+    PointT Sample(const GridT &grid, std::size_t cellIndex, const Decomposition &decomp, std::uint64_t rngKey, std::uint64_t &rngCounter) const
+    {
+        (void) decomp;
+        (void) rngKey;
+        (void) rngCounter;
         return grid.GetMeshPoint(cellIndex);
     }
 };
@@ -153,32 +155,19 @@ public:
     using PositionSamplerType = PositionSamplerT;
     static constexpr std::size_t kNumGroups = NumGroups;
     static_assert(NumGroups > 0, "RadiationIMC requires at least one frequency group");
-    static_assert(radiation_imc_detail::has_opacity_calc_planck<OpacityT, CellT>::value,
-        "OpacityT must provide CalcPlanckOpacity(const CellT &)");
-    static_assert(radiation_imc_detail::has_opacity_calc_absorption<OpacityT, CellT>::value,
-        "OpacityT must provide CalcAbsorptionOpacity(const CellT &, double)");
-    static_assert(radiation_imc_detail::has_opacity_calc_scattering<OpacityT, CellT>::value,
-        "OpacityT must provide CalcScatteringOpacity(const CellT &)");
-    static_assert(radiation_imc_detail::has_opacity_calc_scattering_frequency<OpacityT, CellT>::value,
-        "OpacityT must provide CalcScatteringOpacity(const CellT &, double)");
-    static_assert(radiation_imc_detail::has_opacity_random_velocity<OpacityT, PointT, CellT>::value,
-        "OpacityT must provide getRandomVelocity(const CellT &, double, double)");
-    static_assert(radiation_imc_detail::has_opacity_scatter_velocity<OpacityT, PointT, CellT>::value,
-        "OpacityT must provide getNewScatterVelocity(const CellT &, const PointT &, double, double, double)");
-    static_assert(radiation_imc_detail::has_opacity_find_group<OpacityT, NumGroups>::value,
-        "OpacityT must provide findGroup(double, const GroupBoundaries &)");
-    static_assert(radiation_imc_detail::has_opacity_thermal_energy<OpacityT, CellT, NumGroups>::value,
-        "OpacityT must provide GetThermalEnergy(const CellT &, double, const GroupBoundaries &)");
-    static_assert(radiation_imc_detail::has_opacity_sample_thermal_in_group<OpacityT, CellT, NumGroups>::value,
-        "OpacityT must provide SampleThermalEnergyInGroup(const CellT &, size_t, double, const GroupBoundaries &)");
-    static_assert(radiation_imc_detail::has_opacity_thermal_group_pdf<OpacityT, CellT, NumGroups>::value,
-        "OpacityT must provide GetThermalGroupPdf(const CellT &, const GroupBoundaries &)");
-    static_assert(radiation_imc_detail::has_opacity_cumulative_opacity<OpacityT, CellT, NumGroups>::value,
-        "OpacityT must provide GetCumulativeOpacity(const CellT &, const GroupBoundaries &)");
-    static_assert(radiation_imc_detail::has_opacity_energy_centers<OpacityT, NumGroups>::value,
-        "OpacityT must provide getEnergyCenters(const GroupBoundaries &)");
-    static_assert(radiation_imc_detail::has_opacity_reseed<OpacityT>::value,
-        "OpacityT must provide reseed(uint64_t)");
+    static_assert(radiation_imc_detail::has_opacity_calc_planck<OpacityT, CellT>::value, "OpacityT must provide CalcPlanckOpacity(const CellT &)");
+    static_assert(radiation_imc_detail::has_opacity_calc_absorption<OpacityT, CellT>::value, "OpacityT must provide CalcAbsorptionOpacity(const CellT &, double)");
+    static_assert(radiation_imc_detail::has_opacity_calc_scattering<OpacityT, CellT>::value, "OpacityT must provide CalcScatteringOpacity(const CellT &)");
+    static_assert(radiation_imc_detail::has_opacity_calc_scattering_frequency<OpacityT, CellT>::value, "OpacityT must provide CalcScatteringOpacity(const CellT &, double)");
+    static_assert(radiation_imc_detail::has_opacity_random_velocity<OpacityT, PointT, CellT>::value, "OpacityT must provide getRandomVelocity(const CellT &, double, double)");
+    static_assert(radiation_imc_detail::has_opacity_scatter_velocity<OpacityT, PointT, CellT>::value, "OpacityT must provide getNewScatterVelocity(const CellT &, const PointT &, double, double, double)");
+    static_assert(radiation_imc_detail::has_opacity_find_group<OpacityT, NumGroups>::value, "OpacityT must provide findGroup(double, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_thermal_energy<OpacityT, CellT, NumGroups>::value, "OpacityT must provide GetThermalEnergy(const CellT &, double, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_sample_thermal_in_group<OpacityT, CellT, NumGroups>::value, "OpacityT must provide SampleThermalEnergyInGroup(const CellT &, size_t, double, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_thermal_group_pdf<OpacityT, CellT, NumGroups>::value, "OpacityT must provide GetThermalGroupPdf(const CellT &, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_cumulative_opacity<OpacityT, CellT, NumGroups>::value, "OpacityT must provide GetCumulativeOpacity(const CellT &, const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_energy_centers<OpacityT, NumGroups>::value, "OpacityT must provide getEnergyCenters(const GroupBoundaries &)");
+    static_assert(radiation_imc_detail::has_opacity_reseed<OpacityT>::value, "OpacityT must provide reseed(uint64_t)");
 
     using Base = MonteCarloPhysics<PointT, GridT>;
     using MCParticle = Particle<PointT>;
@@ -188,10 +177,8 @@ public:
     using OpacityModel = OpacityT;
     using Traits = TraitsT;
     using PositionSampler = PositionSamplerT;
-    using PositionDecomposition =
-        typename radiation_imc_detail::sampler_decomposition<PositionSamplerT>::type;
-    static constexpr bool kSamplerHasDecomposition =
-        radiation_imc_detail::sampler_decomposition<PositionSamplerT>::supported;
+    using PositionDecomposition = typename radiation_imc_detail::sampler_decomposition<PositionSamplerT>::type;
+    static constexpr bool kSamplerHasDecomposition = radiation_imc_detail::sampler_decomposition<PositionSamplerT>::supported;
     using GroupArray = std::array<double, NumGroups>;
     using GroupBoundaries = std::array<double, NumGroups + 1>;
     using GroupCdf = std::array<double, NumGroups + 1>;
@@ -299,19 +286,18 @@ public:
                  std::uint64_t seed = 42);
 
     std::vector<MCParticle> preStep(double fullDt) override;
+    void updateGridData(void) override;
     Functionality step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) override;
     Functionality stepImpl(MCParticle &particle, std::vector<MCParticle> &particlesToAdd);
     void postStep(const std::vector<MCParticle> &particles, double fullDt) override;
-    void onBoundaryResult(const MCParticle &particle,
-                          ParticleStatus status,
-                          bool escaped) override;
+    void onBoundaryResult(const MCParticle &particle, ParticleStatus status, bool escaped) override;
 
     MCParticle generateSingleParticle(std::size_t cellIndex, const CellT &cell);
     /// `decomposition` may be null, in which case the sampler rebuilds it internally.
-    MCParticle generateSingleParticle(std::size_t cellIndex, const CellT &cell,
-                                      const PositionDecomposition *decomposition);
+    MCParticle generateSingleParticle(std::size_t cellIndex, const CellT &cell, const PositionDecomposition *decomposition);
     std::vector<MCParticle> generateInitialParticles(std::size_t particlesPerCell);
     void adjustExistingParticles(std::vector<MCParticle> &particles, double fullDt);
+    bool requiresHostParticleAdjustment() const override;
 
     const std::vector<double> &getFactorFleck() const
     {
@@ -356,6 +342,12 @@ public:
 #ifdef STORM_WITH_GPU
     bool UsesDeviceTransport() const;
     gpu::GreyIMCViews<gpu::DeviceVec3> GetDeviceTransportViews() const;
+    bool SupportsDeviceCensusPostStep() const;
+    void postStepWithDeviceCensus(
+        const std::vector<MCParticle> &hostParticles,
+        double fullDt);
+    bool SupportsDeviceSourceGeneration() const;
+    std::vector<MCParticle> preStepOnDevice(gpu::DeviceSourceContext &context);
 #endif
     const GroupBoundaries &getEnergyBoundaries() const
     {
@@ -507,6 +499,7 @@ public:
     bool GreyKernelEligible() const;
     bool SharedRandomWalkKernelEligible() const;
     bool SharedDDMCKernelEligible() const;
+    bool SharedDDMCEventKernelEligible() const;
     gpu::GreyIMCViews<PointT> GetHostTransportViews();
 
     // Set while the differential harness replays a step through the legacy
@@ -663,6 +656,7 @@ private:
     std::shared_ptr<EOST> eos_;
     std::shared_ptr<OpacityModel> opacity_;
     std::vector<std::size_t> lastSourcePhotonsPerCell_;
+    source::Plan lastSourcePlan_;
     SourceAllocationSummary lastSourceAllocationSummary_;
     GroupSamplingDiagnostics lastGroupSamplingDiagnostics_;
     bool postProcessExternalSourceMode_ = false;

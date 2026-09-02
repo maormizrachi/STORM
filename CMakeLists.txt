@@ -79,6 +79,11 @@ option(STORM_WITH_HDF5   "Build with HDF5 support" OFF)
 option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
 option(STORM_WITH_COMPTON "Build internal CMMC Compton support" ON)
 option(STORM_WITH_GPU     "Build Kokkos GPU transport support" OFF)
+option(STORM_GPU_PROFILING "Compile Kokkos profiling regions (requires STORM_WITH_GPU)" OFF)
+
+if(STORM_GPU_PROFILING AND NOT STORM_WITH_GPU)
+  message(FATAL_ERROR "STORM_GPU_PROFILING requires STORM_WITH_GPU=ON")
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -281,6 +286,9 @@ if(STORM_WITH_GPU)
     set(_storm_gpu_scope PUBLIC)
   endif()
   target_compile_definitions(storm ${_storm_gpu_scope} STORM_WITH_GPU)
+  if(STORM_GPU_PROFILING)
+    target_compile_definitions(storm ${_storm_gpu_scope} STORM_GPU_PROFILING)
+  endif()
   target_link_libraries(storm ${_storm_gpu_scope} Kokkos::kokkos)
 endif()
 

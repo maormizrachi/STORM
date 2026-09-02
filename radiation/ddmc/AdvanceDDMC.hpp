@@ -95,6 +95,11 @@ struct DeviceView
     std::size_t *interfaceBypassCount = nullptr;
     std::size_t *interfaceSplitPacketCount = nullptr;
     std::size_t *hostFallbackCount = nullptr;
+    std::size_t *externalSourceThermalizationCount = nullptr;
+    std::size_t *externalSourceStayDDMCCount = nullptr;
+    std::size_t *externalSourceToIMCCount = nullptr;
+    double *externalSourceThermalizedEnergy = nullptr;
+    double *externalSourceToIMCEnergy = nullptr;
     std::size_t cellCount = 0;
     double minimumParticleOpticalDepth = 0.0;
     double maximumInterfaceVelocityOverC = 0.0;
@@ -211,7 +216,10 @@ struct HostSnapshot
                     face.targetDDMCEligible ? 1u : 0u);
                 this->targetGroupCutoff.push_back(face.targetGroupCutoff);
                 this->outwardNormals.push_back(face.outwardNormal);
-                this->faceCenters.push_back(grid.FaceCM(face.faceIndex));
+                this->faceCenters.push_back(
+                    face.kind == FaceKind::ThermalizingBoundary
+                        ? face.thermalizingLocation
+                        : grid.FaceCM(face.faceIndex));
                 ++leak;
             }
         }
@@ -510,6 +518,34 @@ STORM_TRANSPORT_INLINE
 void SampleRandomVelocity(ParticleT &particle, const double speed)
 {
     SampleIsotropicDirection<ParticleT, int>(particle, speed);
+}
+
+template<typename ParticleT, typename PointT>
+STORM_TRANSPORT_INLINE
+PointT SampleCosineDirection(ParticleT &particle, const PointT &normal)
+{
+    PointT helper;
+    if(transport::Abs(normal.z) < 0.9)
+    {
+        helper.z = 1.0;
+    }
+    else
+    {
+        helper.y = 1.0;
+    }
+    const PointT tangent1 = Normalize(
+        Add(helper, Scale(normal, -Dot(helper, normal))));
+    const PointT tangent2 = Normalize(Cross(normal, tangent1));
+    const double mu = transport::Sqrt(
+        CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++));
+    const double sinTheta = transport::Sqrt(
+        (1.0 - mu * mu) > 0.0 ? 1.0 - mu * mu : 0.0);
+    const double phi = 6.28318530717958647692 *
+        CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
+    return Add(
+        Scale(normal, mu),
+        Add(Scale(tangent1, sinTheta * transport::Cos(phi)),
+            Scale(tangent2, sinTheta * transport::Sin(phi))));
 }
 
 STORM_TRANSPORT_INLINE
@@ -1005,7 +1041,9 @@ template<typename ParticleT>
 STORM_TRANSPORT_INLINE
 void SamplePlanckBandFrequency(ParticleT &particle,
                                const double *boundaries,
+                               const double *thermalEmissionCdf,
                                const std::size_t groupCount,
+                               const std::size_t cellIndex,
                                const double kT,
                                const std::size_t beginGroup,
                                const std::size_t endGroup)
@@ -1043,11 +1081,59 @@ void SamplePlanckBandFrequency(ParticleT &particle,
                 localRandom = CounterRNG::unitOpen(
                     particle.rngKey, particle.rngCounter++);
             }
-            particle.frequency = SampleFrequencyInGroup(boundaries, groupCount, group, localRandom);
+            particle.frequency = SampleFrequencyInGroupFromCellCdf(
+                boundaries, thermalEmissionCdf, groupCount,
+                cellIndex, group, localRandom);
             return;
         }
         remaining -= groupMass;
     }
+}
+
+template<typename ParticleT>
+STORM_TRANSPORT_INLINE
+void SamplePlanckFrequency(ParticleT &particle,
+                           const double *boundaries,
+                           const std::size_t groupCount,
+                           const double kT)
+{
+    if(boundaries == nullptr || groupCount == 0)
+    {
+        return;
+    }
+    const double totalMass = PlanckBandMass(
+        boundaries, kT, 0, groupCount);
+    std::size_t group = groupCount - 1;
+    if(totalMass > 0.0)
+    {
+        double remaining =
+            CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) *
+            totalMass;
+        for(std::size_t candidate = 0; candidate < groupCount; ++candidate)
+        {
+            const double groupMass = PlanckBandMass(
+                boundaries, kT, candidate, candidate + 1);
+            if(remaining <= groupMass || candidate + 1 == groupCount)
+            {
+                group = candidate;
+                break;
+            }
+            remaining -= groupMass;
+        }
+    }
+    else
+    {
+        const double peakEnergy = 2.8214393721220789 * kT;
+        group = 0;
+        while(group + 1 < groupCount &&
+              peakEnergy >= boundaries[group + 1])
+        {
+            ++group;
+        }
+    }
+    particle.frequency = SamplePlanckFrequencyInGroup(
+        boundaries, groupCount, group, kT,
+        CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++));
 }
 
 template<typename ParticleT, typename ViewsT>
@@ -1158,6 +1244,11 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         ddmc.groupCutoff != nullptr ? ddmc.groupCutoff[cellIndex] : 0;
     const bool pgrw = ddmc.pgrwEnabled && views.energyBoundaries != nullptr &&
         views.groupCount > 0;
+    if(pgrw && views.thermalEmissionCdf == nullptr)
+    {
+        result.error = AdvanceError::InvalidData;
+        return result;
+    }
 
     if(not packetInDDMC)
     {
@@ -1400,8 +1491,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         {
             const double kT = boltzmannConstant * ddmc.cellTemperature[cellIndex];
             SamplePlanckBandFrequency(
-                particle, views.energyBoundaries, views.groupCount, kT,
-                0, groupCutoff);
+                particle, views.energyBoundaries, views.thermalEmissionCdf,
+                views.groupCount, cellIndex, kT, 0, groupCutoff);
             const double upperBand = views.energyBoundaries[groupCutoff];
             if(particle.frequency > NextUp(upperBand) ||
                particle.frequency >= upperBand)
@@ -1453,7 +1544,10 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             return result;
         }
         const double kT = (ddmc.cellTemperature != nullptr)? boltzmannConstant * ddmc.cellTemperature[cellIndex] : 0.0;
-        SamplePlanckBandFrequency(particle, views.energyBoundaries, views.groupCount, kT, groupCutoff, views.groupCount);
+        SamplePlanckBandFrequency(
+            particle, views.energyBoundaries, views.thermalEmissionCdf,
+            views.groupCount, cellIndex, kT, groupCutoff,
+            views.groupCount);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
         SampleRandomVelocity(particle, views.speedOfLight);
         LorentzToLab(particle, views, cellIndex);
@@ -1479,10 +1573,73 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
 
     if(ddmc.faceKinds != nullptr and ddmc.faceKinds[chosen] == static_cast<std::uint8_t>(FaceKind::ThermalizingBoundary))
     {
-        result.error = AdvanceError::HostFallback;
-        result.hostFallbackReason = HostFallbackReason::ThermalizingLeak;
-        result.pendingLeakFace = chosen;
-        AccumulateCounter(ddmc.hostFallbackCount);
+        const PointT normal = Normalize(ddmc.outwardNormals[chosen]);
+        if(!(Dot(normal, normal) > 0.0))
+        {
+            result.error = AdvanceError::InvalidNormal;
+            return result;
+        }
+        const double eventEnergy = transport::Abs(particle.weight);
+        AccumulateCounter(ddmc.externalSourceThermalizationCount);
+        if(ddmc.externalSourceThermalizedEnergy != nullptr)
+        {
+            STORM_TRANSPORT_ACCUMULATE(
+                *ddmc.externalSourceThermalizedEnergy, eventEnergy);
+        }
+        if(views.spectralEnabled && views.groupCount > 0)
+        {
+            const double kT = ddmc.cellTemperature != nullptr
+                ? boltzmannConstant * ddmc.cellTemperature[cellIndex]
+                : 0.0;
+            SamplePlanckFrequency(
+                particle, views.energyBoundaries, views.groupCount, kT);
+            particle.frequency = ClampFrequency(
+                views.energyBoundaries, views.groupCount,
+                particle.frequency);
+        }
+        const bool leaveDDMCBand =
+            pgrw && groupCutoff < views.groupCount &&
+            particle.frequency >= views.energyBoundaries[groupCutoff];
+        if(leaveDDMCBand)
+        {
+            const PointT direction =
+                SampleCosineDirection<ParticleT, PointT>(particle, normal);
+            particle.velocity = Scale(direction, views.speedOfLight);
+            const PointT &sourceLocation = ddmc.faceCenters[chosen];
+            const PointT &cellCenter = views.grid.cellCenters[cellIndex];
+            constexpr double nudge = 1.0e-8;
+            particle.location = Add(
+                Scale(sourceLocation, 1.0 - nudge),
+                Scale(cellCenter, nudge));
+            LorentzToLab(particle, views, cellIndex);
+            particle.frequency = ClampFrequency(
+                views.energyBoundaries, views.groupCount,
+                particle.frequency);
+            particle.initialWeight = eventEnergy;
+            radiationFlags = static_cast<std::uint8_t>(
+                radiationFlags & ~(ddmcFlags | pending));
+            cold.pendingFlux = PointT{};
+            result.event = AdvanceEvent::IMCLeak;
+            AccumulateCounter(ddmc.externalSourceToIMCCount);
+            if(ddmc.externalSourceToIMCEnergy != nullptr)
+            {
+                STORM_TRANSPORT_ACCUMULATE(
+                    *ddmc.externalSourceToIMCEnergy, eventEnergy);
+            }
+            AccumulateCounter(ddmc.transportLeakCount);
+        }
+        else
+        {
+            particle.location = views.grid.cellCenters[cellIndex];
+            SampleRandomVelocity(particle, views.speedOfLight);
+            radiationFlags = static_cast<std::uint8_t>(
+                radiationFlags | ddmcFlags);
+            result.event = AdvanceEvent::DDMCLeak;
+            AccumulateCounter(ddmc.externalSourceStayDDMCCount);
+            AccumulateCounter(ddmc.residentLeakCount);
+        }
+        AccumulateCounter(ddmc.leakCount);
+        result.step.change = ParticleStatus::NO_CELL_MOVE;
         return result;
     }
 
@@ -1533,8 +1690,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             ? boltzmannConstant * ddmc.cellTemperature[cellIndex]
             : 0.0;
         SamplePlanckBandFrequency(
-            particle, views.energyBoundaries, views.groupCount, kT,
-            beginGroup, groupCutoff);
+            particle, views.energyBoundaries, views.thermalEmissionCdf,
+            views.groupCount, cellIndex, kT, beginGroup, groupCutoff);
         particle.frequency = ClampFrequency(
             views.energyBoundaries, views.groupCount, particle.frequency);
     }

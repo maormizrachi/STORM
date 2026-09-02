@@ -8,6 +8,7 @@
 #include <numeric>
 #include <filesystem>
 #include <chrono>
+#include <utility>
 #include <mpi.h>
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>
@@ -502,7 +503,7 @@ int main(int argc, char *argv[])
     STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
         grid, physics, popControl, boundary);
 
-    std::vector<STORM::Particle<Vector3D>> particles;
+    manager.getParticles().clear();
 
     double dt = 1e-11;
     const double t_final = 3e-9;
@@ -530,14 +531,15 @@ int main(int argc, char *argv[])
     {
         if(step > 0 and (step % rebalanceInterval == 0 or step <= 2))
         {
-            if(Rebalance(grid, manager, cells, extensives, materialFlags, particles, rank))
+            if(Rebalance(grid, manager, cells, extensives, materialFlags,
+                         manager.getParticles(), rank))
             {
                 Ncells = grid.GetPointNo();
             }
         }
 
         auto stepStart = std::chrono::high_resolution_clock::now();
-        particles = manager.step(std::move(particles), dt);
+        manager.step(dt);
         double computeSec = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - stepStart).count();
         computeTotal += computeSec;
 
@@ -563,7 +565,8 @@ int main(int argc, char *argv[])
             }
             double globalMaxT = 0;
             double globalSumT = 0;
-            size_t localParticles = particles.size();
+            size_t localParticles =
+                std::as_const(manager).getParticles().size();
             size_t globalParticles = 0;
             MPI_Reduce(&localMaxT, &globalMaxT, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
             MPI_Reduce(&localSumT, &globalSumT, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);

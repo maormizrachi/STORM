@@ -49,6 +49,7 @@ struct DeviceParticle
 struct DeviceParticleCold
 {
     particle_id_t id = 0;
+    rank_t rank = 0;
     cell_id_t cellID = 0;
     cell_id_t sourceCellID = 0;
     DeviceVec3 pendingFlux{};
@@ -62,6 +63,61 @@ struct DeviceParticleCold
 #endif
     std::uint8_t onTrack = 0;
 };
+
+// Whole-struct assignment lowers to a 32-byte memcpy covering pendingFlux and
+// its neighbouring field. In IMC-only kernels nothing reads those members, so
+// SROA cannot split the slice and leaves it in memory; the backend then
+// promotes it to LDS and caps occupancy. Copying member by member keeps the
+// whole struct in registers.
+STORM_GPU_INLINE_FUNCTION
+void AssignCold(DeviceParticleCold &destination, const DeviceParticleCold &source)
+{
+    destination.id = source.id;
+    destination.rank = source.rank;
+    destination.cellID = source.cellID;
+    destination.sourceCellID = source.sourceCellID;
+    destination.pendingFlux.x = source.pendingFlux.x;
+    destination.pendingFlux.y = source.pendingFlux.y;
+    destination.pendingFlux.z = source.pendingFlux.z;
+    destination.bypassCellID = source.bypassCellID;
+#ifdef MONTECARLO_POLARIZATION
+    destination.pendingMeanScatterings = source.pendingMeanScatterings;
+    destination.stokesQ = source.stokesQ;
+    destination.stokesU = source.stokesU;
+    destination.polarizationBasis.x = source.polarizationBasis.x;
+    destination.polarizationBasis.y = source.polarizationBasis.y;
+    destination.polarizationBasis.z = source.polarizationBasis.z;
+    destination.polarizationInitialized = source.polarizationInitialized;
+#endif
+    destination.onTrack = source.onTrack;
+}
+
+namespace detail
+{
+// Mirrors DeviceParticleCold. Adding a member there without adding it here (and
+// to AssignCold) changes the size and trips the assertion below.
+struct DeviceParticleColdLayout
+{
+    particle_id_t id;
+    rank_t rank;
+    cell_id_t cellID;
+    cell_id_t sourceCellID;
+    DeviceVec3 pendingFlux;
+    cell_id_t bypassCellID;
+#ifdef MONTECARLO_POLARIZATION
+    double pendingMeanScatterings;
+    double stokesQ;
+    double stokesU;
+    DeviceVec3 polarizationBasis;
+    std::uint8_t polarizationInitialized;
+#endif
+    std::uint8_t onTrack;
+};
+} // namespace detail
+
+static_assert(sizeof(DeviceParticleCold) == sizeof(detail::DeviceParticleColdLayout),
+              "DeviceParticleCold gained a member; add it to AssignCold and to "
+              "detail::DeviceParticleColdLayout");
 
 static_assert(std::is_trivially_copyable<DeviceVec3>::value, "DeviceVec3 must be trivially copyable");
 static_assert(std::is_trivially_copyable<DeviceParticle>::value, "DeviceParticle must be trivially copyable");
@@ -124,6 +180,34 @@ void UnpackParticle(const DeviceParticle &particle, const DeviceParticleCold &co
 #endif
     destination.steps = particle.steps;
     destination.on_track = cold.onTrack;
+}
+
+template<typename PointT>
+void PackParticle(
+    const Particle<PointT> &source,
+    DeviceParticle &particle,
+    DeviceParticleCold &cold)
+{
+    PackParticle(
+        static_cast<const ParticleTransportData<PointT> &>(source),
+        particle, cold);
+#ifdef STORM_WITH_MPI
+    cold.rank = source.rank;
+#endif
+}
+
+template<typename PointT>
+void UnpackParticle(
+    const DeviceParticle &particle,
+    const DeviceParticleCold &cold,
+    Particle<PointT> &destination)
+{
+    UnpackParticle(
+        particle, cold,
+        static_cast<ParticleTransportData<PointT> &>(destination));
+#ifdef STORM_WITH_MPI
+    destination.rank = cold.rank;
+#endif
 }
 
 } // namespace gpu

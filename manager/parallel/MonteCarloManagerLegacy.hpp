@@ -119,7 +119,20 @@ public:
 
     inline size_t GetHandlerMemoryBytes(void) const {return this->handlerMemoryBytes;}
 
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
+    /// Advances the owned particle census. References returned by
+    /// getParticles() are invalidated by this call.
+    void step(dt_t fullDt);
+
+    const std::vector<MCParticle> &getParticles(void) const
+    {
+        return this->ownedParticles;
+    }
+
+    std::vector<MCParticle> &getParticles(void)
+    {
+        this->particlesChanged = true;
+        return this->ownedParticles;
+    }
 
     class Tracker
     {
@@ -179,6 +192,8 @@ private:
     size_t initialParticleCount = 0;
     std::vector<size_t> beginningParticleCount;
     size_t handlerMemoryBytes = 0;
+    std::vector<MCParticle> ownedParticles;
+    bool particlesChanged = false;
 
     std::vector<std::vector<MCParticle>> sendBuffers;
     std::vector<rank_t> sendBufferActiveRanks;
@@ -196,6 +211,10 @@ private:
     size_t activeRankScanRemaining;
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
+
+    bool HaveParticlesChanged(void) const { return this->particlesChanged; }
+
+    void ClearParticlesChanged(void) { this->particlesChanged = false; }
 
     void PutSelfParticles(std::vector<MCParticle> &&particles);
 
@@ -2113,7 +2132,7 @@ void MonteCarloManagerLegacy<T, Grid>::PrepareHandlers(void)
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloManagerLegacy<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
+void MonteCarloManagerLegacy<T, Grid>::step(dt_t fullDt)
 {
     // if(this->Ncells != this->grid.GetPointNo())
     // {
@@ -2140,11 +2159,12 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
     }
     this->lastBuildGeneration = this->grid.GetBuildGeneration();
 
-    size_t initialParticlesNum = particleList.size();
+    size_t initialParticlesNum = this->ownedParticles.size();
     this->initialParticleCount = initialParticlesNum;
     this->cellsParticleCounters.assign(this->Ncells, 0);
-    for(const auto &p : particleList) this->cellsParticleCounters[p.cellIndex]++;
-    this->PutSelfParticles(std::move(particleList));
+    for(const MCParticle &p : this->ownedParticles) this->cellsParticleCounters[p.cellIndex]++;
+    this->PutSelfParticles(std::move(this->ownedParticles));
+    this->ClearParticlesChanged();
     this->physics->updateGridData();
 
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
@@ -2293,10 +2313,10 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
     }
 
 
-    data.remaining = this->populationControl->activate(data.remaining);
-    this->physics->postStep(data.remaining, fullDt);
+    this->ownedParticles = this->populationControl->activate(data.remaining);
+    this->physics->postStep(this->ownedParticles, fullDt);
 
-    size_t newParticlesNum = data.remaining.size();
+    size_t newParticlesNum = this->ownedParticles.size();
     this->endParticleCount = newParticlesNum;
 
     for(const RankHandler_t *handler : this->rankHandlers)
@@ -2324,7 +2344,7 @@ std::vector<typename MonteCarloManagerLegacy<T, Grid>::MCParticle> MonteCarloMan
     }
 
 
-    return data.remaining;
+    this->ClearParticlesChanged();
 }
 
 } // namespace STORM

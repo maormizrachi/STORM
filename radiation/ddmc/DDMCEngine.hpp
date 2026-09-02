@@ -415,6 +415,7 @@ public:
                         faceLeak.targetDDMCEligible = true;
                         faceLeak.targetGroupCutoff = data.groupCutoff;
                         faceLeak.outwardNormal = sourceNormal;
+                        faceLeak.thermalizingLocation = source.location;
                         data.faceLeaks.push_back(faceLeak);
                         data.totalLeakRate += boundaryRate;
                         data.faceAreaSum += area;

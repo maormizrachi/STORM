@@ -20,8 +20,8 @@
  * Supports both serial and MPI-parallel execution.
  *
  * Usage:
- *   Serial:       ./densmore2012 [Nx] [new_per_cell] [boundary_per_cell]
- *   MPI parallel: mpirun -np N ./densmore2012 [Nx] [new_per_cell] [boundary_per_cell]
+ *   Serial:       ./densmore2012 [Nx] [new_per_cell] [boundary_per_cell] [comb|none] [iterations] [dt_scale] [opacity_scale] [materialize_each_step]
+ *   MPI parallel: mpirun -np N ./densmore2012 [Nx] [new_per_cell] [boundary_per_cell] [comb|none] [iterations] [dt_scale] [opacity_scale] [materialize_each_step]
  */
 
 #include <iostream>
@@ -44,6 +44,7 @@
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
+#include "population/NoPopulationControl.hpp"
 #ifdef STORM_WITH_MPI
 #include "manager/MonteCarloManagerFactory.hpp"
 #else
@@ -127,6 +128,14 @@ int main(int argc, char *argv[])
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 512;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 16;
     size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
+    const bool noPopulationControl =
+        argc >= 5 && std::string(argv[4]) == "none";
+    const double dtScale =
+        argc >= 7 ? std::stod(argv[6]) : 1.0;
+    const double opacityScale =
+        argc >= 8 ? std::stod(argv[7]) : 1.0;
+    const bool materializeEachStep =
+        argc >= 9 && std::stoul(argv[8]) != 0;
 
 #ifdef STORM_WITH_MPI
     {
@@ -142,8 +151,13 @@ int main(int argc, char *argv[])
     double density = 1.0;
     double cvPerVolume = 1e15 / keV_K;
     double tf = 1e-9;
-    double dt = 5e-12;
+    double dt = 5e-12 * dtScale;
     size_t iterations = static_cast<size_t>(tf / dt);
+    if(argc >= 6)
+    {
+        iterations = std::stoul(argv[5]);
+        tf = iterations * dt;
+    }
 
     double Emin = units::kev * 1e-4;
     double Emax = units::kev * 1e2;
@@ -180,6 +194,12 @@ int main(int argc, char *argv[])
 #endif
         std::cout << "Nx=" << Nx << ", domain=[0, " << domainLength << "] cm" << std::endl;
         std::cout << "new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << std::endl;
+        std::cout << "population_control="
+                  << (noPopulationControl ? "none" : "comb")
+                  << ", opacity_scale=" << opacityScale
+                  << ", materialize_each_step="
+                  << materializeEachStep
+                  << std::endl;
         std::cout << "dt=" << dt << " s, t_final=" << tf << " s, iterations=" << iterations << std::endl;
     }
 #ifdef STORM_WITH_MPI
@@ -213,14 +233,27 @@ int main(int argc, char *argv[])
 
     std::shared_ptr<DensmoreEOS> eos = std::make_shared<DensmoreEOS>(cvPerVolume, density);
     std::shared_ptr<STORM::examples::DensmoreOpacity<Vector3D, Grid>> opacityModel =
-        std::make_shared<STORM::examples::DensmoreOpacity<Vector3D, Grid>>(regionFlags, cells);
+        std::make_shared<STORM::examples::DensmoreOpacity<Vector3D, Grid>>(
+            regionFlags, cells, opacityScale);
     opacityModel->setGroupBoundaries(energyBoundaries);
     std::shared_ptr<STORM::examples::DensmoreBoundary<Vector3D, Grid>> boundary =
         std::make_shared<STORM::examples::DensmoreBoundary<Vector3D, Grid>>(grid, T_boundary, boundaryPhotonsPerCell, energyBoundaries);
     std::shared_ptr<IMC> physics =
         std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
-    std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl =
-        std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, 200, 5.0);
+    std::shared_ptr<STORM::PopulationControl<Vector3D, Grid>> popControl;
+    if(noPopulationControl)
+    {
+        popControl =
+            std::make_shared<
+                STORM::NoPopulationControl<Vector3D, Grid>>(grid);
+    }
+    else
+    {
+        popControl =
+            std::make_shared<
+                STORM::CombPopulationControl<Vector3D, Grid>>(
+                    grid, 200, 5.0);
+    }
 
 #ifdef STORM_WITH_MPI
     STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
@@ -228,11 +261,15 @@ int main(int argc, char *argv[])
 #else
     STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 #endif
-    std::vector<STORM::Particle<Vector3D>> particles;
+    manager.getParticles().clear();
 
     for(size_t step = 0; step < iterations; step++)
     {
-        particles = manager.step(std::move(particles), dt);
+        manager.step(dt);
+        if(materializeEachStep)
+        {
+            (void) manager.getParticles();
+        }
 
         if(rank == 0 && (step % 20 == 0 || step + 1 == iterations))
         {
@@ -245,7 +282,8 @@ int main(int argc, char *argv[])
             int pct = static_cast<int>(fraction * 100);
             std::cout << "Step " << step + 1 << "/" << iterations
                       << " (" << pct << "%)"
-                      << "  particles=" << particles.size()
+                      << "  particles="
+                      << manager.GetEndParticleCount()
                       << "  maxT=" << maxT / keV_K << " keV" << std::endl;
         }
     }

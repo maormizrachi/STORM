@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
     MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 #endif
 
-    std::vector<ParticleT> particles;
+    manager.getParticles().clear();
 
     double dt = params.initialDt;
     double maxDt = 5e-13;
@@ -223,7 +223,7 @@ int main(int argc, char *argv[])
                       << "  maxT=" << maxT_keV << " keV  T_bath=" << T_bath / keV_K << " keV" << std::endl;
         }
 
-        particles = manager.step(std::move(particles), dt);
+        manager.step(dt);
 
         simTime += dt;
         cycle++;

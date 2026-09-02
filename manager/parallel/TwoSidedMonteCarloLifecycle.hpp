@@ -77,7 +77,7 @@ void TwoSidedMonteCarloManager<T, Grid>::RemoveParticles(const std::vector<size_
 }
 
 template<typename T, typename Grid>
-std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
+void TwoSidedMonteCarloManager<T, Grid>::step(dt_t fullDt)
 {
     try
     {
@@ -86,13 +86,14 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
         this->particles.clear();
 
-        size_t initialParticlesNum = particleList.size();
+        size_t initialParticlesNum = this->ownedParticles.size();
         this->initialParticleCount_ = initialParticlesNum;
-        this->PutSelfParticles(particleList.data(), particleList.size());
+        this->PutSelfParticles(this->ownedParticles.data(), this->ownedParticles.size());
         {
             std::vector<MCParticle> empty;
-            particleList.swap(empty);
+            this->ownedParticles.swap(empty);
         }
+        this->ClearParticlesChanged();
         this->resetTracker();
         this->currentStep++;
         this->iteration = 0;
@@ -225,8 +226,8 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 
         auto end = std::chrono::high_resolution_clock::now();
 
-        std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
-        this->physics->postStep(populationControlParticles, fullDt);
+        this->ownedParticles = this->populationControl->activate(data.remaining);
+        this->physics->postStep(this->ownedParticles, fullDt);
 
         double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
         // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
@@ -246,7 +247,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
             std::cout << "Loop time: " << seconds << " seconds, max steps: " << maxStepsDouble << ", avg steps: " << avgSteps << std::endl;
         }
 
-        size_t newParticlesNum = populationControlParticles.size();
+        size_t newParticlesNum = this->ownedParticles.size();
         this->endParticleCount_ = newParticlesNum;
         size_t leavingNumber = data.leavingCount;
 
@@ -311,10 +312,10 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 
         this->handlerMemoryBytes_ = this->buffersManager->GetTotalMemoryBytes();
         this->buffersManager = nullptr; // TODO: good?
+        this->ClearParticlesChanged();
         // if(this->rank_world == 0)
         // std::cout << "====================================" << std::endl;
         // MPI_Barrier(this->comm_world);
-        return populationControlParticles;
     }
     catch(const STORMError &eo)
     {

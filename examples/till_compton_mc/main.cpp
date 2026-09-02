@@ -31,6 +31,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "examples/Vector3D.hpp"
@@ -475,7 +476,7 @@ int main(int argc, char **argv)
         std::vector<double> energy{totalEnergy(extensives.front())};
         const double initialEnergy = energy.front();
 
-        std::vector<STORM::Particle<Vector3D>> particles =
+        manager.getParticles() =
             physics->generateInitialParticles(options.initialPhotonsPerCell);
         const double initialDt = 1e-13;
         const double maxDt = 1e-10;
@@ -484,14 +485,14 @@ int main(int argc, char **argv)
         {
             const double stepDt = std::min(timestep, options.tf - time.back());
             if(!(stepDt > 0.0)) break;
-            particles = manager.step(std::move(particles), stepDt);
+            manager.step(stepDt);
             time.push_back(time.back() + stepDt);
             gasTemperature.push_back(cells.front().temperature);
             radiationTemperatureValues.push_back(radiationTemperature(cells.front()));
             energy.push_back(totalEnergy(extensives.front()));
             std::cout << "time = " << std::scientific << time.back()
                       << ", dt = " << stepDt
-                      << ", particles = " << particles.size()
+                      << ", particles = " << std::as_const(manager).getParticles().size()
                       << ", Tgas = " << gasTemperature.back() / units::kev_kelvin
                       << " keV\n";
             timestep = options.forcedDt.value_or(std::min(timestep * 1.1, maxDt));

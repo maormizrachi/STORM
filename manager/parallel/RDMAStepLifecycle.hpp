@@ -2,8 +2,9 @@
 #define STORM_RDMA_STEP_LIFECYCLE_HPP
 
 template<typename T, typename Grid, typename Physics>
-std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMonteCarloManager<T, Grid, Physics>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
+void RDMAMonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
 {
+    STORM_PROFILE_REGION("storm/step");
     // if(this->Ncells != this->grid.GetPointNo())
     // {
     //     std::cout << "Changed grid for rank " << this->rank_world << ": " << this->Ncells << " -> " << this->grid.GetPointNo() <<  std::endl;
@@ -22,7 +23,13 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     this->nextActiveRanks.clear();
     this->activeRankScanCursor = 0;
     this->activeRankScanRemaining = 0;
+    bool reuseDeviceCensus = false;
 #ifdef STORM_WITH_GPU
+    reuseDeviceCensus = this->deviceCensusValid and not this->HaveParticlesChanged() and this->gpuTransportExecutor;
+    if(this->deviceCensusValid and not reuseDeviceCensus)
+    {
+        this->MaterializeDeviceCensus();
+    }
     this->gpuPackSeconds = 0.0;
     this->gpuDeviceSeconds = 0.0;
     this->gpuCopyBackSeconds = 0.0;
@@ -37,7 +44,14 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     this->gpuHoldSkips = 0;
     if(this->gpuTransportExecutor)
     {
-        this->gpuTransportExecutor->Reset();
+        if(reuseDeviceCensus)
+        {
+            this->gpuTransportExecutor->ResetStepMetrics();
+        }
+        else
+        {
+            this->gpuTransportExecutor->Reset();
+        }
     }
 #endif
     this->loopRmaSeconds = 0.0;
@@ -54,41 +68,112 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     }
     this->lastBuildGeneration = this->grid.GetBuildGeneration();
 
-    size_t initialParticlesNum = particleList.size();
+    size_t initialParticlesNum = reuseDeviceCensus
+#ifdef STORM_WITH_GPU
+        ? this->gpuTransportExecutor->PendingCensusCount()
+#else
+        ? 0
+#endif
+        : this->ownedParticles.size();
     this->initialParticleCount = initialParticlesNum;
     this->cellsParticleCounters.assign(this->Ncells, 0);
-    for(const auto &p : particleList)
+    if(reuseDeviceCensus)
     {
-        this->cellsParticleCounters[p.cellIndex]++;
+#ifdef STORM_WITH_GPU
+        this->gpuTransportExecutor->CopyPendingCensusCellCounts(this->Ncells, this->cellsParticleCounters);
+#endif
+    }
+    else
+    {
+        for(const MCParticle &p : this->ownedParticles)
+        {
+            this->cellsParticleCounters[p.cellIndex]++;
+        }
     }
 #ifdef STORM_WITH_GPU
-    if constexpr(gpu::HasDeviceTransport<Physics>::value)
+    if(reuseDeviceCensus)
+    {
+        this->gpuTransportExecutor->PromotePendingCensus(fullDt);
+        this->deviceCensusValid = false;
+        this->ownedParticles.clear();
+        this->hostParticlesValid = false;
+    }
+    else if constexpr(gpu::HasDeviceTransport<Physics>::value)
     {
         if(this->physics->UsesDeviceTransport())
         {
-            this->StageLocalParticlesForDevice(std::move(particleList), false);
+            this->StageLocalParticlesForDevice(std::move(this->ownedParticles), false);
         }
         else
         {
-            this->PutSelfParticles(std::move(particleList));
+            this->PutSelfParticles(std::move(this->ownedParticles));
         }
     }
     else
     {
-        this->PutSelfParticles(std::move(particleList));
+        this->PutSelfParticles(std::move(this->ownedParticles));
     }
 #else
-    this->PutSelfParticles(std::move(particleList));
+    this->PutSelfParticles(std::move(this->ownedParticles));
 #endif
+    this->hostParticlesValid = false;
+    this->ClearParticlesChanged();
     this->physics->updateGridData();
 
     auto generationStart = std::chrono::high_resolution_clock::now();
-    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
+    std::vector<MCParticle> newParticles1;
+    std::size_t deviceEmitted = 0;
+    {
+        STORM_PROFILE_REGION("storm/generation");
+#ifdef STORM_WITH_GPU
+        if constexpr(gpu::HasDeviceSourceGeneration<Physics>::value)
+        {
+            if(this->physics->SupportsDeviceSourceGeneration())
+            {
+                gpu::DeviceSourceContext context;
+                context.executor = this->gpuTransportExecutor.get();
+                context.executorStorage = &this->gpuTransportExecutor;
+                context.gpuMaxInnerSteps = this->config.gpuMaxInnerSteps;
+                context.firstParticleId =
+                    static_cast<particle_id_t>(this->myIDCounter);
+                context.rank = this->rank_world;
+                context.fullDt = fullDt;
+                newParticles1 = this->physics->preStepOnDevice(context);
+                deviceEmitted = context.emittedCount;
+                this->myIDCounter += deviceEmitted;
+            }
+            else
+            {
+                newParticles1 = this->physics->preStep(fullDt);
+            }
+        }
+        else
+        {
+            newParticles1 = this->physics->preStep(fullDt);
+        }
+#else
+        newParticles1 = this->physics->preStep(fullDt);
+#endif
+    }
     double generationSeconds = std::chrono::duration<double>(
         std::chrono::high_resolution_clock::now() - generationStart).count();
 
-    size_t preStepParticlesNum = newParticles1.size();
+    size_t preStepParticlesNum = deviceEmitted + newParticles1.size();
     this->preStepParticleCount = preStepParticlesNum;
+#ifdef STORM_WITH_GPU
+    if constexpr(gpu::HasDeviceSourceGeneration<Physics>::value)
+    {
+        if(deviceEmitted > 0)
+        {
+            const std::vector<std::size_t> &nPhotons = this->physics->getLastSourcePhotonsPerCell();
+            const std::size_t n = (nPhotons.size() < this->cellsParticleCounters.size())? nPhotons.size() : this->cellsParticleCounters.size();
+            for(std::size_t i = 0; i < n; ++i)
+            {
+                this->cellsParticleCounters[i] += nPhotons[i];
+            }
+        }
+    }
+#endif
     for(const auto &p : newParticles1)
     {
         this->cellsParticleCounters[p.cellIndex]++;
@@ -157,6 +242,22 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
 #ifdef STORM_WITH_GPU
         if constexpr(gpu::HasDeviceTransport<Physics>::value)
         {
+            if(this->physics->UsesDeviceTransport() and this->config.gpuDevicePoolHeadroomFactor > 0.0)
+            {
+                if(!this->gpuTransportExecutor)
+                {
+                    this->gpuTransportExecutor = std::make_unique<gpu::KokkosLocalTransportExecutor>(this->config.gpuMaxInnerSteps);
+                }
+                const std::size_t peakEstimate = std::max(this->startParticleCount, this->gpuLastStepMaxActive_);
+                const std::size_t activeTarget = std::max(this->config.gpuDevicePoolMinCapacity,
+                                                            static_cast<std::size_t>(std::ceil(static_cast<double>(peakEstimate) * this->config.gpuDevicePoolHeadroomFactor)));
+                std::size_t hostIngestTarget = this->config.gpuHostIngestCapacity;
+                if(hostIngestTarget == 0)
+                {
+                    hostIngestTarget = std::max<std::size_t>(262144, this->config.localTransportBatchSize);
+                }
+                this->gpuTransportExecutor->ReservePoolCapacity(activeTarget, hostIngestTarget);
+            }
             if(this->physics->UsesDeviceTransport())
             {
                 this->StageLocalParticlesForDevice(std::move(newParticles1), true);
@@ -209,12 +310,9 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
 
     const size_t amountProgressMinCycles = std::max<size_t>(1, this->config.amountProgressMinCycles);
     const bool usesAsyncReallocation = this->UsesAsyncReallocation();
-    const size_t reallocationProgressMinCycles = usesAsyncReallocation
-        ? std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles)
-        : 1;
+    const size_t reallocationProgressMinCycles = usesAsyncReallocation? std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles) : 1;
     auto loopStart = std::chrono::high_resolution_clock::now();
-    double setupSeconds = std::chrono::duration<double>(loopStart - stepStart).count()
-        - generationSeconds;
+    double setupSeconds = std::chrono::duration<double>(loopStart - stepStart).count() - generationSeconds;
     this->progressStartTime_ = loopStart;
     this->lastProgressPrintTime_ = 0.0;
     int64_t globalInitialForProgress = amountManager.GetValue();
@@ -239,10 +337,12 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         return counters;
     };
 
-    try
     {
-        while(not done)
+        STORM_PROFILE_REGION("storm/loop");
+        try
         {
+            while(not done)
+            {
             ++this->loopRounds;
             auto phaseStart = std::chrono::steady_clock::now();
 
@@ -372,13 +472,14 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
                 amountManager.Verify(ok);
             }
 
-            this->iteration++;
+                this->iteration++;
+            }
         }
-    }
-    catch(const STORMError &eo)
-    {
-        reportError(eo);
-        throw;
+        catch(const STORMError &eo)
+        {
+            reportError(eo);
+            throw;
+        }
     }
 
 #ifdef STORM_WITH_MPI
@@ -391,14 +492,49 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     auto loopEnd = std::chrono::high_resolution_clock::now();
     double loopTime = std::chrono::duration_cast<std::chrono::duration<double>>(loopEnd - loopStart).count();
     double deviceCensusDrainSeconds = 0.0;
+    bool usedDeviceCensusPostStep = false;
+    bool usedDevicePopulationControl = false;
+    bool retainDeviceCensus = false;
 #ifdef STORM_WITH_GPU
     {
+        STORM_PROFILE_REGION("storm/census/device_post_step");
         const auto deviceCensusStart =
             std::chrono::high_resolution_clock::now();
-        this->DrainDeviceCensus(data);
-        deviceCensusDrainSeconds = std::chrono::duration<double>(
-            std::chrono::high_resolution_clock::now() -
-            deviceCensusStart).count();
+        if constexpr(gpu::HasDeviceCensusPostStep<Physics>::value)
+        {
+            const bool canUseDevicePostStep =
+                this->physics->SupportsDeviceCensusPostStep() &&
+                data.remaining.empty();
+            if(canUseDevicePostStep)
+            {
+                if(this->populationControl->SupportsDeviceActivation())
+                {
+                    gpu::DevicePopulationContext context;
+                    context.executor = this->gpuTransportExecutor.get();
+                    context.cellCount = this->Ncells;
+                    context.activationEpoch =
+                        this->populationActivationEpoch_;
+                    context.rank = this->rank_world;
+                    context.communicator = this->comm_world;
+                    this->populationControl->activateDevice(context);
+                    ++this->populationActivationEpoch_;
+                    usedDevicePopulationControl = true;
+                }
+                if(this->populationControl->IsIdentity() ||
+                   usedDevicePopulationControl)
+                {
+                    this->physics->postStepWithDeviceCensus(
+                        data.remaining, fullDt);
+                    usedDeviceCensusPostStep = true;
+                }
+            }
+        }
+        retainDeviceCensus = usedDeviceCensusPostStep and data.remaining.empty();
+        if(not retainDeviceCensus and not usedDevicePopulationControl)
+        {
+            this->DrainDeviceCensus(data);
+        }
+        deviceCensusDrainSeconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - deviceCensusStart).count();
     }
 #endif
     double localStepCount = 0;
@@ -433,6 +569,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     if(this->gpuTransportExecutor)
     {
         executorMetrics = this->gpuTransportExecutor->Metrics();
+        this->gpuLastStepMaxActive_ = executorMetrics.maxActiveCount;
     }
     unsigned long long localGpuCounts[15] = {
         this->gpuLaunchCount,
@@ -440,9 +577,8 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         this->gpuIngestCount,
         this->gpuHoldCount,
         static_cast<unsigned long long>(executorMetrics.h2dBytes),
-        static_cast<unsigned long long>(executorMetrics.d2hBytes),
-        static_cast<unsigned long long>(
-            executorMetrics.eliminatedHostCopyBytes),
+        static_cast<unsigned long long>(executorMetrics.d2hBytes + this->gpuDeferredD2HBytes),
+        static_cast<unsigned long long>(executorMetrics.eliminatedHostCopyBytes),
         static_cast<unsigned long long>(executorMetrics.reallocationCount),
         static_cast<unsigned long long>(executorMetrics.synchronizationCount),
         static_cast<unsigned long long>(executorMetrics.terminalCount),
@@ -453,22 +589,16 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         this->gpuElidedRemovalCount
     };
     unsigned long long globalGpuCounts[15] = {};
-    MPI_Reduce(localGpuCounts, globalGpuCounts, 15,
-               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce(localGpuCounts, globalGpuCounts, 15, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    this->gpuDeferredD2HBytes = 0;
     const unsigned long long globalGpuLaunches = globalGpuCounts[0];
     const unsigned long long globalGpuParticles = globalGpuCounts[1];
     const unsigned long long globalGpuIngest = globalGpuCounts[2];
     const unsigned long long globalGpuHolds = globalGpuCounts[3];
     if(this->rank_world == 0 && globalGpuParticles > 0)
     {
-        const double particlesPerLaunch =
-            static_cast<double>(globalGpuParticles) /
-            static_cast<double>(globalGpuLaunches);
-        const double packPerLaunch =
-            globalGpuLaunches > 0
-                ? static_cast<double>(globalGpuIngest) /
-                  static_cast<double>(globalGpuLaunches)
-                : 0.0;
+        const double particlesPerLaunch = static_cast<double>(globalGpuParticles) / static_cast<double>(globalGpuLaunches);
+        const double packPerLaunch = (globalGpuLaunches > 0)? static_cast<double>(globalGpuIngest) / static_cast<double>(globalGpuLaunches) : 0.0;
         std::cout << "GPU transport max-rank time: pack=" << maximumGpuTimes[0]
                   << " s, device+compact=" << maximumGpuTimes[1]
                   << " s, compact-copy=" << maximumGpuTimes[2]
@@ -486,8 +616,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         static_cast<unsigned long long>(executorMetrics.maxActiveCount)
     };
     unsigned long long globalStagingMaxima[2] = {};
-    MPI_Reduce(localStagingMaxima, globalStagingMaxima, 2,
-               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+    MPI_Reduce(localStagingMaxima, globalStagingMaxima, 2, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
     if(this->rank_world == 0 && globalGpuParticles > 0)
     {
         std::cout << "GPU staging totals: h2d_bytes="
@@ -502,8 +631,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
                   << " remotes=" << globalGpuCounts[11]
                   << " census=" << globalGpuCounts[12]
                   << " splits_created=" << globalGpuCounts[13]
-                  << " removal_unpacks_elided="
-                  << globalGpuCounts[14]
+                  << " removal_unpacks_elided=" << globalGpuCounts[14]
                   << " max_ingest=" << globalStagingMaxima[0]
                   << " max_active=" << globalStagingMaxima[1]
                   << std::endl;
@@ -543,8 +671,36 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
     }
 
     auto censusStart = std::chrono::high_resolution_clock::now();
-    data.remaining = this->populationControl->activate(data.remaining);
-    this->physics->postStep(data.remaining, fullDt);
+    {
+        STORM_PROFILE_REGION("storm/census");
+        if(retainDeviceCensus)
+        {
+        this->ownedParticles.clear();
+        this->hostParticlesValid = false;
+        this->deviceCensusValid = true;
+#ifdef STORM_WITH_GPU
+        const std::size_t assigned = this->gpuTransportExecutor->AssignPendingCensusIdentities(this->rank_world, static_cast<particle_id_t>(this->myIDCounter));
+        this->myIDCounter += assigned;
+#endif
+        }
+        else
+        {
+        if(usedDeviceCensusPostStep and (this->populationControl->IsIdentity() or usedDevicePopulationControl))
+        {
+            this->ownedParticles = std::move(data.remaining);
+        }
+        else
+        {
+            this->ownedParticles = this->populationControl->activate(data.remaining);
+        }
+        this->hostParticlesValid = true;
+        this->deviceCensusValid = false;
+        if(not usedDeviceCensusPostStep)
+        {
+            this->physics->postStep(this->ownedParticles, fullDt);
+        }
+        }
+    }
     double censusSeconds = deviceCensusDrainSeconds +
         std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - censusStart).count();
@@ -561,7 +717,13 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
                   << " s" << std::endl;
     }
 
-    size_t newParticlesNum = data.remaining.size();
+    size_t newParticlesNum = this->ownedParticles.size();
+#ifdef STORM_WITH_GPU
+    if(retainDeviceCensus and this->gpuTransportExecutor)
+    {
+        newParticlesNum += this->gpuTransportExecutor->PendingCensusCount();
+    }
+#endif
     this->endParticleCount = newParticlesNum;
 
     for(const RankHandler_t *handler : this->rankHandlers)
@@ -597,7 +759,8 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
 #ifdef STORM_WITH_GPU
     if(this->gpuTransportExecutor and
        (this->gpuTransportExecutor->DeviceBusy() or
-        this->gpuTransportExecutor->PendingCensusCount() > 0))
+        (this->gpuTransportExecutor->PendingCensusCount() > 0 &&
+         !this->deviceCensusValid)))
     {
         STORMError eo("End of RDMAMonteCarloManager::step: device particle pool is not empty");
         eo.addEntry("Rank", this->rank_world);
@@ -616,7 +779,7 @@ std::vector<typename RDMAMonteCarloManager<T, Grid, Physics>::MCParticle> RDMAMo
         }
     }
 
-    return data.remaining;
+    this->ClearParticlesChanged();
 }
 
 #endif // STORM_RDMA_STEP_LIFECYCLE_HPP

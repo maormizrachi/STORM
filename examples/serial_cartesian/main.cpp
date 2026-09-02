@@ -1,5 +1,6 @@
 #include <iostream>
 #include <memory>
+#include <utility>
 #include "examples/Vector3D.hpp"
 #include "MadCart/CartesianMesh3D.hpp"
 #include "particle/Particle.hpp"
@@ -23,24 +24,29 @@ int main()
 
     STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 
-    std::vector<STORM::Particle<Vector3D>> particles;
-    for(size_t i = 0; i < 100; i++)
     {
-        STORM::Particle<Vector3D> p;
-        p.location = Vector3D(0.55, 0.55, 0.55);
-        double theta = 2 * M_PI * i / 100.0;
-        double phi = M_PI * (i % 50) / 50.0;
-        p.velocity = Vector3D(std::sin(phi) * std::cos(theta), std::sin(phi) * std::sin(theta), std::cos(phi));
-        p.weight = 1.0;
-        p.cellIndex = grid.GetContainingCell(p.location);
-        particles.push_back(p);
+        std::vector<STORM::Particle<Vector3D>> &particles =
+            manager.getParticles();
+        for(size_t i = 0; i < 100; i++)
+        {
+            STORM::Particle<Vector3D> p;
+            p.location = Vector3D(0.55, 0.55, 0.55);
+            double theta = 2 * M_PI * i / 100.0;
+            double phi = M_PI * (i % 50) / 50.0;
+            p.velocity = Vector3D(std::sin(phi) * std::cos(theta), std::sin(phi) * std::sin(theta), std::cos(phi));
+            p.weight = 1.0;
+            p.cellIndex = grid.GetContainingCell(p.location);
+            particles.push_back(p);
+        }
     }
 
     double dt = 1e-3;
     for(int step = 0; step < 10; step++)
     {
-        particles = manager.step(std::move(particles), dt);
-        std::cout << "Step " << step << ": " << particles.size() << " particles remaining" << std::endl;
+        manager.step(dt);
+        std::cout << "Step " << step << ": "
+                  << std::as_const(manager).getParticles().size()
+                  << " particles remaining" << std::endl;
     }
 
     std::cout << "Done." << std::endl;

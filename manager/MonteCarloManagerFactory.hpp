@@ -44,11 +44,14 @@ class MonteCarloManager
     struct Concept
     {
         virtual ~Concept() = default;
-        virtual std::vector<MCParticle> step(std::vector<MCParticle> &&particles, dt_t fullDt) = 0;
+        virtual void step(dt_t fullDt) = 0;
+        virtual std::vector<MCParticle> &getParticles() = 0;
+        virtual const std::vector<MCParticle> &getParticles() const = 0;
         virtual std::vector<size_t> &GetCellsStepsCounters() = 0;
         virtual const std::vector<size_t> &GetCellsStepsCounters() const = 0;
         virtual std::vector<size_t> &GetBeginningParticleCount() = 0;
         virtual const std::vector<size_t> &GetBeginningParticleCount() const = 0;
+        virtual size_t GetEndParticleCount() const = 0;
     };
 
     template<typename Impl>
@@ -59,14 +62,17 @@ class MonteCarloManager
         template<typename... Args>
         explicit Model(Args &&...args) : impl(std::forward<Args>(args)...) {}
 
-        std::vector<MCParticle> step(std::vector<MCParticle> &&particles, dt_t fullDt) override
+        void step(dt_t fullDt) override
         {
-            return impl.step(std::move(particles), fullDt);
+            impl.step(fullDt);
         }
+        std::vector<MCParticle> &getParticles() override { return impl.getParticles(); }
+        const std::vector<MCParticle> &getParticles() const override { return impl.getParticles(); }
         std::vector<size_t> &GetCellsStepsCounters() override { return impl.GetCellsStepsCounters(); }
         const std::vector<size_t> &GetCellsStepsCounters() const override { return impl.GetCellsStepsCounters(); }
         std::vector<size_t> &GetBeginningParticleCount() override { return impl.GetBeginningParticleCount(); }
         const std::vector<size_t> &GetBeginningParticleCount() const override { return impl.GetBeginningParticleCount(); }
+        size_t GetEndParticleCount() const override { return impl.GetEndParticleCount(); }
     };
 
     std::unique_ptr<Concept> impl_;
@@ -84,15 +90,24 @@ public:
         return mgr;
     }
 
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particles, dt_t fullDt)
+    /// Advances the owned particle census. References returned by
+    /// getParticles() are invalidated by this call.
+    void step(dt_t fullDt)
     {
-        return impl_->step(std::move(particles), fullDt);
+        impl_->step(fullDt);
+    }
+
+    std::vector<MCParticle> &getParticles() { return impl_->getParticles(); }
+    const std::vector<MCParticle> &getParticles() const
+    {
+        return static_cast<const Concept &>(*impl_).getParticles();
     }
 
     std::vector<size_t> &GetCellsStepsCounters() { return impl_->GetCellsStepsCounters(); }
     const std::vector<size_t> &GetCellsStepsCounters() const { return impl_->GetCellsStepsCounters(); }
     std::vector<size_t> &GetBeginningParticleCount() { return impl_->GetBeginningParticleCount(); }
     const std::vector<size_t> &GetBeginningParticleCount() const { return impl_->GetBeginningParticleCount(); }
+    size_t GetEndParticleCount() const { return impl_->GetEndParticleCount(); }
 };
 
 inline RDMA_Type ToRDMAType(RDMAEngine engine)

@@ -136,6 +136,87 @@ double SampleFrequencyInGroup(const double *boundaries,
 }
 
 STORM_TRANSPORT_INLINE
+double SampleFrequencyInGroupFromCellCdf(const double *boundaries,
+                                         const double *cdf,
+                                         const std::size_t groupCount,
+                                         const std::size_t cellIndex,
+                                         const std::size_t group,
+                                         double random)
+{
+    if(boundaries == nullptr || cdf == nullptr || group >= groupCount)
+    {
+        return 0.0;
+    }
+    if(random < 0.0)
+    {
+        random = 0.0;
+    }
+    else if(random > 1.0)
+    {
+        random = 1.0;
+    }
+    const double *cellCdf = cdf + cellIndex * (groupCount + 1);
+    const double lower = cellCdf[group];
+    const double upper = cellCdf[group + 1];
+    if(!(upper > lower) || !transport::IsFinite(upper - lower))
+    {
+        return 0.5 * (boundaries[group] + boundaries[group + 1]);
+    }
+    const double target = lower + random * (upper - lower);
+    const double fraction = (target - lower) / (upper - lower);
+    return SampleFrequencyInGroup(boundaries, groupCount, group, fraction);
+}
+
+STORM_TRANSPORT_INLINE
+double SamplePlanckFrequencyInGroup(const double *boundaries,
+                                    const std::size_t groupCount,
+                                    const std::size_t group,
+                                    const double kT,
+                                    double random)
+{
+    if(boundaries == nullptr || group >= groupCount)
+    {
+        return 0.0;
+    }
+    const double left = boundaries[group];
+    const double right = boundaries[group + 1];
+    if(!(kT > 0.0) || !transport::IsFinite(kT) || !(left < right))
+    {
+        return 0.5 * (left + right);
+    }
+    if(random < 0.0)
+    {
+        random = 0.0;
+    }
+    else if(random > 1.0)
+    {
+        random = 1.0;
+    }
+    const double groupMass = PlanckIntegral(left / kT, right / kT);
+    if(!(groupMass > 0.0) || !transport::IsFinite(groupMass))
+    {
+        return 0.5 * (left + right);
+    }
+    const double target = random * groupMass;
+    double lo = left;
+    double hi = right;
+    for(int iteration = 0; iteration < 56; ++iteration)
+    {
+        const double mid = 0.5 * (lo + hi);
+        const double mass = PlanckIntegral(left / kT, mid / kT);
+        if(mass < target)
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    return 0.5 * (lo + hi);
+}
+
+STORM_TRANSPORT_INLINE
 double SampleFrequencyFromCellCdf(const double *boundaries,
                                   const double *cdf,
                                   const std::size_t groupCount,
@@ -162,7 +243,8 @@ double SampleFrequencyFromCellCdf(const double *boundaries,
     const double upper = cellCdf[group + 1];
     const double width = upper - lower;
     const double fraction = width > 0.0 ? (target - lower) / width : 0.5;
-    return SampleFrequencyInGroup(boundaries, groupCount, group, fraction);
+    return SampleFrequencyInGroupFromCellCdf(
+        boundaries, cdf, groupCount, cellIndex, group, fraction);
 }
 
 } // namespace STORM::ddmc

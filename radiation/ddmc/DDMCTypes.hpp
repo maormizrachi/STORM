@@ -49,6 +49,7 @@ struct FaceLeak
     std::size_t targetGroupCutoff = 0;
     bool targetDDMCEligible = false;
     PointT outwardNormal{};
+    PointT thermalizingLocation{};
 };
 
 template<typename PointT>

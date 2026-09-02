@@ -7,6 +7,9 @@
 #include <random>
 #include <vector>
 
+#include "../radiation/source/SourceCore.hpp"
+#include "CounterRNG.hpp"
+
 /// Volume-weighted tetrahedral decomposition of one cell, reusable across every
 /// particle emitted from that cell. Depends only on the grid geometry.
 struct CellVolumeDecomposition
@@ -87,13 +90,44 @@ struct RandomInCellPositionSampler
             idx = decomp.tris.size() - 1;
         }
 
-        double s = dist(rng), t = dist(rng), u = dist(rng);
-        if(s > t) std::swap(s, t);
-        if(t > u) std::swap(t, u);
-        if(s > t) std::swap(s, t);
-
+        const double s = dist(rng);
+        const double t = dist(rng);
+        const double u = dist(rng);
         const auto &tv = decomp.tris[idx];
-        return s * verts[tv[0]] + (t - s) * verts[tv[1]] + (u - t) * verts[tv[2]] + (1 - u) * center;
+        return STORM::source::SampleTetrahedronPosition(
+            center, verts[tv[0]], verts[tv[1]], verts[tv[2]], s, t, u);
+    }
+
+    /// CounterRNG variant used by IMC host/device emission.
+    PointT Sample(const GridT &grid,
+                  std::size_t cellIndex,
+                  const Decomposition &decomp,
+                  std::uint64_t rngKey,
+                  std::uint64_t &rngCounter) const
+    {
+        PointT center = grid.GetMeshPoint(cellIndex);
+        if(decomp.tris.empty())
+        {
+            return center;
+        }
+
+        const auto &verts = grid.GetFacePoints();
+        const double target =
+            STORM::CounterRNG::unitOpen(rngKey, rngCounter++) *
+            decomp.cumVolumes.back();
+        std::size_t idx = static_cast<std::size_t>(
+            std::lower_bound(decomp.cumVolumes.begin(), decomp.cumVolumes.end(), target) -
+            decomp.cumVolumes.begin());
+        if(idx >= decomp.tris.size())
+        {
+            idx = decomp.tris.size() - 1;
+        }
+        const double s = STORM::CounterRNG::unitOpen(rngKey, rngCounter++);
+        const double t = STORM::CounterRNG::unitOpen(rngKey, rngCounter++);
+        const double u = STORM::CounterRNG::unitOpen(rngKey, rngCounter++);
+        const auto &tv = decomp.tris[idx];
+        return STORM::source::SampleTetrahedronPosition(
+            center, verts[tv[0]], verts[tv[1]], verts[tv[2]], s, t, u);
     }
 
     PointT operator()(const GridT &grid,

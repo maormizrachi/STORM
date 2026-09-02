@@ -26,11 +26,16 @@ public:
     using GroupBoundaries = typename Base::GroupBoundaries;
     using GroupCdf = std::array<double, N_DENSMORE_GROUPS + 1>;
 
-    DensmoreOpacity(const std::vector<int> &regionFlags, const std::vector<RadiationCell> &cells)
+    DensmoreOpacity(
+        const std::vector<int> &regionFlags,
+        const std::vector<RadiationCell> &cells,
+        const double opacityScale = 1.0)
         : regionFlags_(regionFlags), cells_(&cells)
     {
-        sigma0_left_ = 10.0 * std::pow(units::kev, 3.5);
-        sigma0_right_ = 1000.0 * std::pow(units::kev, 3.5);
+        sigma0_left_ =
+            opacityScale * 10.0 * std::pow(units::kev, 3.5);
+        sigma0_right_ =
+            opacityScale * 1000.0 * std::pow(units::kev, 3.5);
     }
 
     double CalcPlanckOpacity(const RadiationCell &cell) override
