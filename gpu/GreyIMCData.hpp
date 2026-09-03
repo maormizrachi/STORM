@@ -67,6 +67,8 @@ public:
               "storm_ddmc_interface_target_eligible", 0),
           ddmcInterfaceTargetSigmaDiffusion_(
               "storm_ddmc_interface_target_sigma", 0),
+          ddmcInterfaceTargetSingleScatterAlbedo_(
+              "storm_ddmc_interface_target_albedo", 0),
           ddmcInterfaceTargetDistance_(
               "storm_ddmc_interface_target_distance", 0),
           ddmcInterfaceTargetGroupCutoff_(
@@ -361,6 +363,8 @@ public:
             snapshot.interfaceTargetEligible.size();
         Resize(this->ddmcInterfaceTargetEligible_, interfaceFaceCount);
         Resize(this->ddmcInterfaceTargetSigmaDiffusion_, interfaceFaceCount);
+        Resize(this->ddmcInterfaceTargetSingleScatterAlbedo_,
+               interfaceFaceCount);
         Resize(this->ddmcInterfaceTargetDistance_, interfaceFaceCount);
         Resize(this->ddmcInterfaceTargetGroupCutoff_, interfaceFaceCount);
         Resize(this->ddmcInterfaceTargetCellID_, interfaceFaceCount);
@@ -430,6 +434,8 @@ public:
                 snapshot.interfaceTargetEligible[face];
             this->ddmcInterfaceTargetSigmaDiffusion_.h_view(face) =
                 snapshot.interfaceTargetSigmaDiffusion[face];
+            this->ddmcInterfaceTargetSingleScatterAlbedo_.h_view(face) =
+                snapshot.interfaceTargetSingleScatterAlbedo[face];
             this->ddmcInterfaceTargetDistance_.h_view(face) =
                 snapshot.interfaceTargetDistance[face];
             this->ddmcInterfaceTargetGroupCutoff_.h_view(face) =
@@ -480,6 +486,7 @@ public:
         SyncToDevice(this->ddmcFaceCenters_);
         SyncToDevice(this->ddmcInterfaceTargetEligible_);
         SyncToDevice(this->ddmcInterfaceTargetSigmaDiffusion_);
+        SyncToDevice(this->ddmcInterfaceTargetSingleScatterAlbedo_);
         SyncToDevice(this->ddmcInterfaceTargetDistance_);
         SyncToDevice(this->ddmcInterfaceTargetGroupCutoff_);
         SyncToDevice(this->ddmcInterfaceTargetCellID_);
@@ -708,6 +715,8 @@ public:
             this->ddmcInterfaceTargetEligible_.d_view.data();
         result.ddmc.interfaceTargetSigmaDiffusion =
             this->ddmcInterfaceTargetSigmaDiffusion_.d_view.data();
+        result.ddmc.interfaceTargetSingleScatterAlbedo =
+            this->ddmcInterfaceTargetSingleScatterAlbedo_.d_view.data();
         result.ddmc.interfaceTargetDistance =
             this->ddmcInterfaceTargetDistance_.d_view.data();
         result.ddmc.interfaceTargetGroupCutoff =
@@ -1025,6 +1034,7 @@ private:
     Kokkos::DualView<DeviceVec3*> ddmcFaceCenters_;
     Kokkos::DualView<std::uint8_t*> ddmcInterfaceTargetEligible_;
     Kokkos::DualView<double*> ddmcInterfaceTargetSigmaDiffusion_;
+    Kokkos::DualView<double*> ddmcInterfaceTargetSingleScatterAlbedo_;
     Kokkos::DualView<double*> ddmcInterfaceTargetDistance_;
     Kokkos::DualView<std::size_t*> ddmcInterfaceTargetGroupCutoff_;
     Kokkos::DualView<cell_id_t*> ddmcInterfaceTargetCellID_;

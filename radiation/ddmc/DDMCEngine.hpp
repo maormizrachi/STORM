@@ -84,6 +84,8 @@ public:
             owner_.ddmcPointEligible_.assign(pointCount, 0);
             owner_.ddmcPointDiffusionCoefficient_.assign(pointCount, 0.0);
             owner_.ddmcPointSigmaDiffusion_.assign(pointCount, 0.0);
+            owner_.ddmcPointSingleScatterAlbedo_.assign(
+                pointCount, std::numeric_limits<double>::quiet_NaN());
             owner_.ddmcPointSigmaParticleGate_.assign(pointCount, 0.0);
             owner_.ddmcPointGroupCutoff_.assign(pointCount, 0);
             owner_.ddmcPointVelocity_.assign(pointCount, PointT{});
@@ -189,6 +191,16 @@ public:
                     data.eligible = (data.sigmaParticleGate * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth and data.diffusionCoefficient > 0.0);
                 }
 
+                if(data.sigmaDiffusion > 0.0)
+                {
+                    const double effectiveAbsorptionOpacity =
+                        owner_.factorFleck_[i] * data.sigmaEnergyAbs;
+                    data.singleScatterAlbedo =
+                        ddmc::Densmore2006SingleScatterAlbedo(
+                            data.sigmaDiffusion,
+                            effectiveAbsorptionOpacity);
+                }
+
                 if(!data.eligible)
                 {
                     data.eligibilityReason = (data.diffusionCoefficient > 0.0)? ddmc::EligibilityReason::OpticallyThin : ddmc::EligibilityReason::NoDiffusionCoefficient;
@@ -230,6 +242,8 @@ public:
                 owner_.ddmcPointEligible_[i] = data.eligible ? 1 : 0;
                 owner_.ddmcPointDiffusionCoefficient_[i] = data.diffusionCoefficient;
                 owner_.ddmcPointSigmaDiffusion_[i] = data.sigmaDiffusion;
+                owner_.ddmcPointSingleScatterAlbedo_[i] =
+                    data.singleScatterAlbedo;
                 owner_.ddmcPointSigmaParticleGate_[i] = data.sigmaParticleGate;
                 owner_.ddmcPointGroupCutoff_[i] = data.groupCutoff;
                 owner_.ddmcPointCellID_[i] = radiation_imc_detail::ddmcStableCellID(owner_.componentGrid(), i, cell);
@@ -294,6 +308,7 @@ public:
             STORM::MPI_exchange_data(owner_.componentGrid(), owner_.ddmcPointEligible_, true);
             STORM::MPI_exchange_data(owner_.componentGrid(), owner_.ddmcPointDiffusionCoefficient_, true);
             STORM::MPI_exchange_data(owner_.componentGrid(), owner_.ddmcPointSigmaDiffusion_, true);
+            STORM::MPI_exchange_data(owner_.componentGrid(), owner_.ddmcPointSingleScatterAlbedo_, true);
             STORM::MPI_exchange_data(owner_.componentGrid(), owner_.ddmcPointSigmaParticleGate_, true);
             STORM::MPI_exchange_data(owner_.componentGrid(), owner_.ddmcPointGroupCutoff_, true);
             STORM::MPI_exchange_data(owner_.componentGrid(), owner_.ddmcPointVelocity_, true);
@@ -522,6 +537,27 @@ public:
                                     0, targetCutoff) / sourceBandMass,
                                 0.0, 1.0);
                         }
+                    }
+
+                    const bool multigroupPGRW =
+                        owner_.parameters_.ddmcUseMultigroupPGRW &&
+                        owner_.parameters_.withMultigroupOpacity;
+                    if(ddmcFraction < 1.0 && !multigroupPGRW)
+                    {
+                        const ddmc::Densmore2006InterfaceCoefficients coefficients =
+                            ddmc::Densmore2006CellCoefficients(
+                                data.sigmaDiffusion,
+                                data.singleScatterAlbedo,
+                                sourceDistance);
+                        if(coefficients.valid)
+                        {
+                            boundaryRate =
+                                ddmc::Densmore2006BoundaryLeakRate(
+                                    area, volume, units::clight,
+                                    coefficients);
+                        }
+                        // Outside Eq. (59)'s probabilistic range, retain the
+                        // paired legacy boundary coefficient initialized above.
                     }
 
                     double const ddmcRate = ddmcFraction * internalRate;
@@ -1898,7 +1934,30 @@ public:
 
             double const targetOpacity = owner_.ddmcPointSigmaDiffusion_[targetCellIndex];
             double const targetDistance = std::abs(ScalarProd(targetCenter - owner_.componentGrid().FaceCM(faceIndex), normal));
-            double const admission = ddmc::StaticAdmissionProbability(mu, targetOpacity, targetDistance);
+            double admission = ddmc::StaticAdmissionProbability(
+                mu, targetOpacity, targetDistance);
+            const bool multigroupPGRW =
+                owner_.parameters_.ddmcUseMultigroupPGRW &&
+                owner_.parameters_.withMultigroupOpacity;
+            if(!multigroupPGRW &&
+               targetCellIndex <
+                   owner_.ddmcPointSingleScatterAlbedo_.size())
+            {
+                const ddmc::Densmore2006InterfaceCoefficients coefficients =
+                    ddmc::Densmore2006CellCoefficients(
+                        targetOpacity,
+                        owner_.ddmcPointSingleScatterAlbedo_[
+                            targetCellIndex],
+                        targetDistance);
+                if(coefficients.valid)
+                {
+                    admission =
+                        ddmc::Densmore2006AdmissionProbability(
+                            mu, coefficients);
+                }
+                // Outside Eq. (59)'s probabilistic range, retain the paired
+                // legacy admission probability initialized above.
+            }
             owner_.recordDDMCDiagnosticEvent(
                 DDMCDiagnosticEventKind::IMCIncident, sourceCellIndex,
                 targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,

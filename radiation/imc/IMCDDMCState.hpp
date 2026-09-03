@@ -17,6 +17,7 @@ struct IMCDDMCState
     std::vector<int> ddmcPointEligible_;
     std::vector<double> ddmcPointDiffusionCoefficient_;
     std::vector<double> ddmcPointSigmaDiffusion_;
+    std::vector<double> ddmcPointSingleScatterAlbedo_;
     std::vector<double> ddmcPointSigmaParticleGate_;
     std::vector<std::size_t> ddmcPointGroupCutoff_;
     std::vector<PointT> ddmcPointVelocity_;

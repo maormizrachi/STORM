@@ -73,6 +73,7 @@ struct DeviceView
     const PointT *faceCenters = nullptr;
     const std::uint8_t *interfaceTargetEligible = nullptr;
     const double *interfaceTargetSigmaDiffusion = nullptr;
+    const double *interfaceTargetSingleScatterAlbedo = nullptr;
     const double *interfaceTargetDistance = nullptr;
     const std::size_t *interfaceTargetGroupCutoff = nullptr;
     const cell_id_t *interfaceTargetCellID = nullptr;
@@ -135,6 +136,7 @@ struct HostSnapshot
     std::vector<PointT> faceCenters;
     std::vector<std::uint8_t> interfaceTargetEligible;
     std::vector<double> interfaceTargetSigmaDiffusion;
+    std::vector<double> interfaceTargetSingleScatterAlbedo;
     std::vector<double> interfaceTargetDistance;
     std::vector<std::size_t> interfaceTargetGroupCutoff;
     std::vector<cell_id_t> interfaceTargetCellID;
@@ -240,6 +242,7 @@ struct HostSnapshot
         const std::vector<PointT> &sourceVelocities,
         const std::vector<int> &pointEligible,
         const std::vector<double> &pointSigmaDiffusion,
+        const std::vector<double> &pointSingleScatterAlbedo,
         const std::vector<std::size_t> &pointGroupCutoff,
         const std::vector<PointT> &pointVelocities,
         const std::vector<std::size_t> &pointCellIDs,
@@ -252,6 +255,8 @@ struct HostSnapshot
         const std::size_t directedFaceCount = nextCellIndices.size();
         this->interfaceTargetEligible.assign(directedFaceCount, 0);
         this->interfaceTargetSigmaDiffusion.assign(directedFaceCount, 0.0);
+        this->interfaceTargetSingleScatterAlbedo.assign(
+            directedFaceCount, std::numeric_limits<double>::quiet_NaN());
         this->interfaceTargetDistance.assign(directedFaceCount, 0.0);
         this->interfaceTargetGroupCutoff.assign(directedFaceCount, 0);
         this->interfaceTargetCellID.assign(
@@ -284,6 +289,7 @@ struct HostSnapshot
                     faceCenters[directedFace];
                 if(targetCell >= pointEligible.size() ||
                    targetCell >= pointSigmaDiffusion.size() ||
+                   targetCell >= pointSingleScatterAlbedo.size() ||
                    targetCell >= pointGroupCutoff.size() ||
                    targetCell >= pointVelocities.size() ||
                    targetCell >= pointCellIDs.size())
@@ -330,6 +336,8 @@ struct HostSnapshot
                     pointEligible[targetCell] != 0 ? 1u : 0u;
                 this->interfaceTargetSigmaDiffusion[directedFace] =
                     pointSigmaDiffusion[targetCell];
+                this->interfaceTargetSingleScatterAlbedo[directedFace] =
+                    pointSingleScatterAlbedo[targetCell];
                 this->interfaceTargetDistance[directedFace] = targetDistance;
                 this->interfaceTargetGroupCutoff[directedFace] =
                     pointGroupCutoff[targetCell];
@@ -374,6 +382,8 @@ struct HostSnapshot
             this->interfaceTargetEligible.data();
         result.interfaceTargetSigmaDiffusion =
             this->interfaceTargetSigmaDiffusion.data();
+        result.interfaceTargetSingleScatterAlbedo =
+            this->interfaceTargetSingleScatterAlbedo.data();
         result.interfaceTargetDistance =
             this->interfaceTargetDistance.data();
         result.interfaceTargetGroupCutoff =
@@ -757,6 +767,7 @@ InterfaceResult TryIMCToDDMCInterface(
        ddmc.interfaceTargetEligible == nullptr ||
        !ddmc.interfaceTargetEligible[directedFace] ||
        ddmc.interfaceTargetSigmaDiffusion == nullptr ||
+       ddmc.interfaceTargetSingleScatterAlbedo == nullptr ||
        ddmc.interfaceTargetDistance == nullptr ||
        ddmc.interfaceTargetCellID == nullptr ||
        ddmc.interfaceNormals == nullptr ||
@@ -898,9 +909,24 @@ InterfaceResult TryIMCToDDMCInterface(
         return result;
     }
 
-    const double admission = StaticAdmissionProbability(
+    double admission = StaticAdmissionProbability(
         mu, ddmc.interfaceTargetSigmaDiffusion[directedFace],
         ddmc.interfaceTargetDistance[directedFace]);
+    if(!ddmc.pgrwEnabled)
+    {
+        const Densmore2006InterfaceCoefficients coefficients =
+            Densmore2006CellCoefficients(
+                ddmc.interfaceTargetSigmaDiffusion[directedFace],
+                ddmc.interfaceTargetSingleScatterAlbedo[directedFace],
+                ddmc.interfaceTargetDistance[directedFace]);
+        if(coefficients.valid)
+        {
+            admission =
+                Densmore2006AdmissionProbability(mu, coefficients);
+        }
+        // Outside Eq. (59)'s probabilistic range, retain the paired legacy
+        // admission probability initialized above.
+    }
     if(CounterRNG::unitOpen(
            particle.rngKey, particle.rngCounter++) > admission)
     {

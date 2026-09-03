@@ -59,6 +59,7 @@ public:
                 owner_.transportCellVelocities_,
                 owner_.ddmcPointEligible_,
                 owner_.ddmcPointSigmaDiffusion_,
+                owner_.ddmcPointSingleScatterAlbedo_,
                 owner_.ddmcPointGroupCutoff_,
                 owner_.ddmcPointVelocity_,
                 owner_.ddmcPointCellID_,

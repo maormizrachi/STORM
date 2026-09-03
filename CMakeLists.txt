@@ -35,6 +35,8 @@ project(STORM
   DESCRIPTION "Scalable Three-dimensional Optimized RDMA Monte Carlo"
 )
 
+include(CTest)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "^(Intel|IntelLLVM)$")
   add_compile_options(-fp-model precise)
 endif()
@@ -371,6 +373,12 @@ endif()
 
 if(STORM_BUILD_EXAMPLES)
   add_subdirectory(examples)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(storm_ddmc_interface_test tests/ddmc_interface_test.cpp)
+  target_link_libraries(storm_ddmc_interface_test PRIVATE storm)
+  add_test(NAME storm_ddmc_interface_test COMMAND storm_ddmc_interface_test)
 endif()
 
 # ---------- Install & export (skip when embedded) ----------
