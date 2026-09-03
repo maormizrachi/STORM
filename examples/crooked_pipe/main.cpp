@@ -482,7 +482,7 @@ void ReportMeshQuality(const Grid &grid, const std::vector<int> &materialFlags, 
 
 bool Rebalance(Grid &grid, STORM::MonteCarloManager<Vector3D, Grid> &manager,
                std::vector<STORM::RadiationCell> &cells, std::vector<STORM::SimpleExtensives> &extensives,
-               std::vector<int> &materialFlags, std::vector<Particle> &particles)
+               std::vector<int> &materialFlags)
 {
     std::size_t cellCount = grid.GetPointNo();
     std::vector<double> weights(cellCount, 50.0);
@@ -510,7 +510,7 @@ bool Rebalance(Grid &grid, STORM::MonteCarloManager<Vector3D, Grid> &manager,
     STORM::MPI_exchange_data(grid, materialFlags, false);
     STORM::MPI_exchange_data(grid, manager.GetCellsStepsCounters(), false);
     STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
-    STORM::UpdateNewCellsAfterExchange<Vector3D>(grid, particles);
+    STORM::UpdateNewCellsAfterExchange<Vector3D>(grid, manager.getParticles());
 
     std::size_t newCellCount = grid.GetPointNo();
     cells.resize(newCellCount);
@@ -609,7 +609,6 @@ int main(int argc, char *argv[])
                 std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, options.minPhotonsPerCell, 4.0);
             STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
                 grid, physics, populationControl, boundary, options.managerType, options.rdmaEngine);
-            std::vector<Particle> particles;
 
             if(!options.outputProbes.empty() and rank == 0)
             {
@@ -640,7 +639,7 @@ int main(int argc, char *argv[])
             {
                 if(step > 0 and (step <= 2 or step % 10 == 0))
                 {
-                    if(Rebalance(grid, manager, cells, extensives, materialFlags, particles) and rank == 0)
+                    if(Rebalance(grid, manager, cells, extensives, materialFlags) and rank == 0)
                     {
                         std::cout << "Rebalanced at cycle " << step << std::endl;
                     }
@@ -648,7 +647,7 @@ int main(int argc, char *argv[])
 
                 double stepDt = std::min(dt, options.finalTime - time);
                 std::chrono::high_resolution_clock::time_point stepStart = std::chrono::high_resolution_clock::now();
-                particles = manager.step(std::move(particles), stepDt);
+                manager.step(stepDt);
                 double stepSeconds = std::chrono::duration<double>(
                     std::chrono::high_resolution_clock::now() - stepStart).count();
                 time += stepDt;
@@ -662,7 +661,8 @@ int main(int argc, char *argv[])
                 if(rank == 0)
                 {
                     std::cout << "Cycle " << step << ", t=" << time << " s, dt=" << stepDt
-                              << " s, particles=" << particles.size() << ", wall=" << stepSeconds << " s" << std::endl;
+                              << " s, particles=" << std::as_const(manager).getParticles().size()
+                              << ", wall=" << stepSeconds << " s" << std::endl;
                 }
             }
 

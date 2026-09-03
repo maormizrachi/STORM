@@ -162,7 +162,6 @@ int main(int argc, char *argv[])
         STORM::MonteCarloManager<Vector3D, Grid> manager =
             STORM::CreateMonteCarloManager<Vector3D, Grid>(
                 grid, physics, population, boundary);
-        std::vector<Particle> particles;
 
         if(rank == 0)
         {
@@ -181,7 +180,7 @@ int main(int argc, char *argv[])
 
         for(size_t step = 0; step < iterations; ++step)
         {
-            particles = manager.step(std::move(particles), dt);
+            manager.step(dt);
             if(rank == 0 && (step % 10 == 0 || step + 1 == iterations))
             {
                 std::cout << "Cycle " << step + 1 << "/" << iterations

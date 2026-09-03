@@ -371,7 +371,6 @@ void Remesh(
     double previousTime, double currentTime,
     std::vector<MovingSlabCell> &cells,
     std::vector<MovingSlabExtensives> &extensives,
-    std::vector<Particle> &particles,
     STORM::MonteCarloManager<Vector3D, Grid> &manager)
 {
     double oldFront = slabLength + slabVelocity * previousTime;
@@ -412,6 +411,7 @@ void Remesh(
     }
 
     std::pair<Vector3D, Vector3D> newBox = grid.GetBoxCoordinates();
+    std::vector<Particle> &particles = manager.getParticles();
     particles.erase(
         std::remove_if(particles.begin(), particles.end(),
             [&newBox](const Particle &particle)
@@ -425,8 +425,7 @@ void Remesh(
 bool Rebalance(
     Grid &grid, STORM::MonteCarloManager<Vector3D, Grid> &manager,
     std::vector<MovingSlabCell> &cells,
-    std::vector<MovingSlabExtensives> &extensives,
-    std::vector<Particle> &particles, int rank)
+    std::vector<MovingSlabExtensives> &extensives, int rank)
 {
     size_t n = grid.GetPointNo();
     std::vector<double> weights(n, 1.0);
@@ -468,7 +467,7 @@ bool Rebalance(
     }
     grid.Rebalance(weights);
     ExchangeCellData(grid, cells, extensives, manager);
-    STORM::UpdateNewCellsAfterExchange<Vector3D>(grid, particles);
+    STORM::UpdateNewCellsAfterExchange<Vector3D>(grid, manager.getParticles());
     size_t newN = grid.GetPointNo();
     cells.resize(newN);
     extensives.resize(newN);
@@ -606,7 +605,6 @@ int main(int argc, char *argv[])
         STORM::MonteCarloManager<Vector3D, Grid> manager =
             STORM::CreateMonteCarloManager<Vector3D, Grid>(
                 grid, physics, population, boundary);
-        std::vector<Particle> particles;
 
         if(rank == 0)
         {
@@ -650,7 +648,7 @@ int main(int argc, char *argv[])
                     ExchangeCellData(grid, cells, extensives, manager);
                 }
                 Remesh(grid, slabVelocity, slabLength, symmetryPoint,
-                       previousTime, simTime, cells, extensives, particles, manager);
+                       previousTime, simTime, cells, extensives, manager);
                 if(nprocs > 1)
                 {
                     remeshLB = grid.GetLoadBalancer();
@@ -664,10 +662,10 @@ int main(int argc, char *argv[])
                     cellIDs[i] = cells[i].ID;
                 }
                 STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(
-                    grid, particles, cellIDs);
+                    grid, manager.getParticles(), cellIDs);
                 if(nprocs > 1 && (stepCount < 4 || stepCount % 5 == 0))
                 {
-                    if(Rebalance(grid, manager, cells, extensives, particles, rank))
+                    if(Rebalance(grid, manager, cells, extensives, rank))
                     {
                         nCells = grid.GetPointNo();
                     }
@@ -681,10 +679,10 @@ int main(int argc, char *argv[])
                 cellIDs[i] = cells[i].ID;
             }
             STORM::MeshMovement<Vector3D, Grid>::UpdateNewCells(
-                grid, particles, cellIDs);
+                grid, manager.getParticles(), cellIDs);
             previousTime = simTime;
-            particles = manager.step(std::move(particles), thisDt);
-            SyncParticleCellIDs(cells, particles);
+            manager.step(thisDt);
+            SyncParticleCellIDs(cells, manager.getParticles());
             simTime += thisDt;
             ++stepCount;
             dt = std::min(dt * dtRamp, dtMax);

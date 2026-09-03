@@ -13,6 +13,8 @@ examples/marshak_wave_3/marshak_wave_3
 examples/marshak_wave_4/marshak_wave_4
 examples/densmore2012/densmore2012
 examples/moving_slab/moving_slab
+examples/moving_slab_mc_32/moving_slab_mc_32
+examples/crooked_pipe/crooked_pipe
 examples/till_compton_mc/till_compton_mc
 examples/*/output
 *.out

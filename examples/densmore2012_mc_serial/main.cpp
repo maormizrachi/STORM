@@ -131,7 +131,6 @@ int main()
                 grid, maxPhotonsPerCell, 5.0);
         STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(
             grid, physics, population, boundary);
-        std::vector<Particle> particles;
 
         std::cout << "Densmore 2012 heterogeneous step-opacity"
                   << " (serial MC regression)"
@@ -143,7 +142,7 @@ int main()
 
         for(size_t step = 0; step < iterations; ++step)
         {
-            particles = manager.step(std::move(particles), dt);
+            manager.step(dt);
             if(step % 10 == 0 || step + 1 == iterations)
             {
                 std::cout << "Cycle " << step + 1 << "/" << iterations
