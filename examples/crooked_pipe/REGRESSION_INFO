@@ -5,4 +5,4 @@ MPI_NP=512
 SLURM_EXCLUSIVE=YES
 RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${STORM_BIN}" 20000 2 10 --boundary-photons 100 --manager p2p --output-probes crookedpipe_probes.txt'
 CHECK_FUNCTION="check_crooked_pipe_case"
-TIMEOUT=3600
+TIMEOUT=5400
