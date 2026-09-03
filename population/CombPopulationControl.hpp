@@ -191,8 +191,6 @@ inline void SortParticleIndices(
 #ifdef STORM_WITH_MPI
             return comb::LessParticleKey(particles[left]->rank, particles[left]->id, particles[right]->rank, particles[right]->id);
 #else
-            (void)particles[left]->rank;
-            (void)particles[right]->rank;
             return comb::LessParticleKey(0, particles[left]->id, 0, particles[right]->id);
 #endif
         });
