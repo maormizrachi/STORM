@@ -43,6 +43,58 @@ public:
     explicit DDMCEngine(Owner &owner) : Base(owner)
     {}
 
+    double computeDDMCFaceDiffusionCoefficient(
+        const CellT &cell, double faceTemperature,
+        std::size_t groupCutoff) const
+    {
+        if(!(faceTemperature > 0.0) || !std::isfinite(faceTemperature))
+        {
+            return 0.0;
+        }
+        if constexpr(NumGroups == 1)
+        {
+            const double sigmaTotal =
+                owner_.opacity_->CalcPlanckOpacityAtTemperature(
+                    cell, faceTemperature) +
+                owner_.opacity_->CalcScatteringOpacityAtTemperature(
+                    cell, faceTemperature);
+            return sigmaTotal > 0.0 && std::isfinite(sigmaTotal)
+                ? owner_.lightSpeed() / (3.0 * sigmaTotal) : 0.0;
+        }
+        else
+        {
+            const GroupArray energyCenters =
+                owner_.opacity_->getEnergyCenters(owner_.energyBoundaries_);
+            const std::size_t cutoff = std::min(groupCutoff, NumGroups);
+            const double kT = units::k_boltz * faceTemperature;
+            double totalBandMass = 0.0;
+            double weightedInverseOpacity = 0.0;
+            for(std::size_t group = 0; group < cutoff; ++group)
+            {
+                const double absorption =
+                    owner_.opacity_->CalcAbsorptionOpacityAtTemperature(
+                        cell, energyCenters[group], faceTemperature);
+                const double scattering =
+                    owner_.opacity_->CalcScatteringOpacityAtTemperature(
+                        cell, energyCenters[group], faceTemperature);
+                const double sigmaTotal = absorption + scattering;
+                const double bandMass = ddmc::PlanckBandMass(
+                    owner_.energyBoundaries_, kT, group, group + 1);
+                if(!(sigmaTotal > 0.0) || !std::isfinite(sigmaTotal) ||
+                   !(bandMass >= 0.0) || !std::isfinite(bandMass))
+                {
+                    return 0.0;
+                }
+                totalBandMass += bandMass;
+                weightedInverseOpacity += bandMass / sigmaTotal;
+            }
+            return totalBandMass > 0.0 && weightedInverseOpacity > 0.0
+                ? (owner_.lightSpeed() / 3.0) *
+                    weightedInverseOpacity / totalBandMass
+                : 0.0;
+        }
+    }
+
     void precomputeDDMCData()
     {
 
@@ -208,6 +260,19 @@ public:
                 if(!data.eligible)
                 {
                     data.eligibilityReason = (data.diffusionCoefficient > 0.0)? ddmc::EligibilityReason::OpticallyThin : ddmc::EligibilityReason::NoDiffusionCoefficient;
+                }
+
+                // Densmore 2006 only derives an IMC-DDMC conversion for
+                // effectively scattering cells.  If its coefficient is not a
+                // probability, this cell must remain in transport.
+                if(data.eligible &&
+                   !std::isfinite(ddmc::Densmore2006CellCoefficient(
+                       data.sigmaDiffusion, data.singleScatterAlbedo,
+                       0.5 * meanChordLength)))
+                {
+                    data.eligible = false;
+                    data.eligibilityReason =
+                        ddmc::EligibilityReason::ConversionNotProbabilistic;
                 }
 
                 // External-face exclusions are local properties and must be applied
@@ -582,10 +647,38 @@ public:
                     double conductance = 0.0;
                     if(targetEligible && targetDistance > 0.0)
                     {
+                        double sourceDiffusion = data.diffusionCoefficient;
+                        double targetDiffusion =
+                            owner_.ddmcPointDiffusionCoefficient_[nextCellIndex];
+                        if(nextCellIndex < owner_.cells_.size() &&
+                           nextCellIndex <
+                               owner_.ddmcPointGroupCutoff_.size())
+                        {
+                            const double faceTemperature =
+                                ddmc::RadiationTemperatureAverage(
+                                    owner_.cells_[i].temperature,
+                                    owner_.cells_[nextCellIndex].temperature);
+                            const double sourceFaceDiffusion =
+                                this->computeDDMCFaceDiffusionCoefficient(
+                                    owner_.cells_[i], faceTemperature,
+                                    data.groupCutoff);
+                            const double targetFaceDiffusion =
+                                this->computeDDMCFaceDiffusionCoefficient(
+                                    owner_.cells_[nextCellIndex],
+                                    faceTemperature,
+                                    owner_.ddmcPointGroupCutoff_[
+                                        nextCellIndex]);
+                            if(sourceFaceDiffusion > 0.0 &&
+                               targetFaceDiffusion > 0.0)
+                            {
+                                sourceDiffusion = sourceFaceDiffusion;
+                                targetDiffusion = targetFaceDiffusion;
+                            }
+                        }
                         conductance = ddmc::TwoSidedConductance(
                             area, sourceDistance,
-                            data.diffusionCoefficient, targetDistance,
-                            owner_.ddmcPointDiffusionCoefficient_[nextCellIndex]);
+                            sourceDiffusion, targetDistance,
+                            targetDiffusion);
                         internalRate = conductance / volume;
                     }
 
@@ -1028,15 +1121,6 @@ public:
                 }
             }
 
-            double Ro = owner_.computeMinDistanceToFaces(cellIndex, particle.location);
-            if(!particle.radiationState.isResident() &&
-               Ro * data.sigmaParticleGate <
-                   owner_.parameters_.ddmcMinParticleOpticalDepth)
-            {
-                ++owner_.ddmcFallbackCount_;
-                return false;
-            }
-
             if(owner_.parameters_.withMultigroupDDMC && owner_.parameters_.withMultigroupOpacity)
             {
                 if(data.groupCutoff == 0 || data.groupCutoff > NumGroups)
@@ -1317,7 +1401,15 @@ public:
                 // Census is a representation boundary.  Reconstruct a valid IMC
                 // packet before returning it to the manager; the next time step must
                 // not carry a stale DDMC direction or frame.
-                particle.location = owner_.componentGrid().GetMeshPoint(cellIndex);
+                particle.location = owner_.positionSampler_(
+                    owner_.componentGrid(), cellIndex,
+                    owner_.rng_, owner_.dist_);
+                if(owner_.componentGrid().IsPointOutsideBox(
+                       particle.location))
+                {
+                    particle.location =
+                        owner_.componentGrid().GetMeshPoint(cellIndex);
+                }
                 if(owner_.parameters_.withMultigroupOpacity)
                 {
                     bool sampledResidentBand = false;

@@ -44,7 +44,6 @@ public:
             }
             ddmcSnapshot_.Build(
                 owner_.ddmcCellData_, owner_.componentGrid(),
-                owner_.parameters_.ddmcMinParticleOpticalDepth,
                 temperatures,
                 owner_.ddmcPointCellID_,
                 owner_.parameters_.withMultigroupDDMC &&
@@ -377,6 +376,10 @@ public:
         result.pendingRadiationEnergy = owner_.pendingRadiationEnergy_.data();
         result.pendingMomentum = owner_.pendingMomentum_.data();
         result.ddmc = ddmcSnapshot_.View();
+        result.ddmc.cellTetOffsets = gridData.tetOffsets.data();
+        result.ddmc.cellTetCumVolumes = gridData.tetCumVolumes.data();
+        result.ddmc.cellTetTris = gridData.tetTris.data();
+        result.ddmc.cellVertices = gridData.vertices.data();
         result.ddmc.fluxRhs = owner_.ddmcFluxRhsIntegrated_.data();
         result.ddmc.interfaceIncidentCount = &owner_.ddmcInterfaceIncidentCount_;
         result.ddmc.interfaceAdmittedCount = &owner_.ddmcInterfaceAdmittedCount_;

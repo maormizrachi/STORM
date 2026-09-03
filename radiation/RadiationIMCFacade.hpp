@@ -25,6 +25,10 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
     eos_(std::move(eos)),
     opacity_(std::move(opacity))
 {
+    if(this->parameters_.withDDMC)
+    {
+        this->parameters_.withRandomWalk = false;
+    }
     lifecycleProcess_ = std::make_unique<
         radiation_imc_detail::IMCLifecycleProcess<RadiationIMC>>(*this);
     transportProcess_ = std::make_unique<

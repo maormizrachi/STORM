@@ -47,7 +47,6 @@ public:
           thermalEmissionCdf_("storm_thermal_emission_cdf", 0),
           ddmcCellEligible_("storm_ddmc_cell_eligible", 0),
           ddmcSigmaEnergyAbs_("storm_ddmc_sigma_energy_abs", 0),
-          ddmcSigmaParticleGate_("storm_ddmc_sigma_particle_gate", 0),
           ddmcTotalLeakRate_("storm_ddmc_total_leak_rate", 0),
           ddmcGamma_("storm_ddmc_gamma", 0),
           ddmcVelocityDivergence_("storm_ddmc_velocity_div", 0),
@@ -343,7 +342,6 @@ public:
 
         Resize(this->ddmcCellEligible_, snapshot.cellEligible.size());
         Resize(this->ddmcSigmaEnergyAbs_, snapshot.sigmaEnergyAbs.size());
-        Resize(this->ddmcSigmaParticleGate_, snapshot.sigmaParticleGate.size());
         Resize(this->ddmcTotalLeakRate_, snapshot.totalLeakRate.size());
         Resize(this->ddmcGamma_, snapshot.gamma.size());
         Resize(this->ddmcVelocityDivergence_, snapshot.velocityDivergence.size());
@@ -388,8 +386,6 @@ public:
                 snapshot.cellEligible[cellIndex];
             this->ddmcSigmaEnergyAbs_.h_view(cellIndex) =
                 snapshot.sigmaEnergyAbs[cellIndex];
-            this->ddmcSigmaParticleGate_.h_view(cellIndex) =
-                snapshot.sigmaParticleGate[cellIndex];
             this->ddmcTotalLeakRate_.h_view(cellIndex) =
                 snapshot.totalLeakRate[cellIndex];
             this->ddmcGamma_.h_view(cellIndex) = snapshot.gamma[cellIndex];
@@ -468,7 +464,6 @@ public:
 
         SyncToDevice(this->ddmcCellEligible_);
         SyncToDevice(this->ddmcSigmaEnergyAbs_);
-        SyncToDevice(this->ddmcSigmaParticleGate_);
         SyncToDevice(this->ddmcTotalLeakRate_);
         SyncToDevice(this->ddmcGamma_);
         SyncToDevice(this->ddmcVelocityDivergence_);
@@ -523,8 +518,6 @@ public:
             this->ddmcExternalSourceThermalizedEnergy_, 0.0);
         Kokkos::deep_copy(
             this->ddmcExternalSourceToIMCEnergy_, 0.0);
-        this->ddmcMinimumParticleOpticalDepth_ =
-            snapshot.minimumParticleOpticalDepth;
         this->ddmcPgrwEnabled_ = snapshot.pgrwEnabled;
         this->ddmcMovingInterfaceCorrection_ =
             snapshot.movingInterfaceCorrection;
@@ -683,8 +676,6 @@ public:
             this->ddmcCellEligible_.d_view.data();
         result.ddmc.sigmaEnergyAbs =
             this->ddmcSigmaEnergyAbs_.d_view.data();
-        result.ddmc.sigmaParticleGate =
-            this->ddmcSigmaParticleGate_.d_view.data();
         result.ddmc.totalLeakRate =
             this->ddmcTotalLeakRate_.d_view.data();
         result.ddmc.gamma = this->ddmcGamma_.d_view.data();
@@ -712,6 +703,14 @@ public:
             this->ddmcOutwardNormals_.d_view.data();
         result.ddmc.faceCenters =
             this->ddmcFaceCenters_.d_view.data();
+        result.ddmc.cellTetOffsets =
+            this->sourceTetOffsets_.d_view.data();
+        result.ddmc.cellTetCumVolumes =
+            this->sourceTetCumVolumes_.d_view.data();
+        result.ddmc.cellTetTris =
+            this->sourceTetTris_.d_view.data();
+        result.ddmc.cellVertices =
+            this->sourceVertices_.d_view.data();
         result.ddmc.interfaceTargetEligible =
             this->ddmcInterfaceTargetEligible_.d_view.data();
         result.ddmc.interfaceTargetSigmaDiffusion =
@@ -769,8 +768,6 @@ public:
         result.ddmc.externalSourceToIMCEnergy =
             this->ddmcExternalSourceToIMCEnergy_.data();
         result.ddmc.cellCount = this->cellCount_;
-        result.ddmc.minimumParticleOpticalDepth =
-            this->ddmcMinimumParticleOpticalDepth_;
         result.ddmc.maximumInterfaceVelocityOverC =
             this->ddmcMaximumInterfaceVelocityOverC_;
         result.ddmc.interfaceTargetWeightRatio =
@@ -1018,7 +1015,6 @@ private:
     Kokkos::DualView<double*> thermalEmissionCdf_;
     Kokkos::DualView<std::uint8_t*> ddmcCellEligible_;
     Kokkos::DualView<double*> ddmcSigmaEnergyAbs_;
-    Kokkos::DualView<double*> ddmcSigmaParticleGate_;
     Kokkos::DualView<double*> ddmcTotalLeakRate_;
     Kokkos::DualView<double*> ddmcGamma_;
     Kokkos::DualView<double*> ddmcVelocityDivergence_;
@@ -1082,7 +1078,6 @@ private:
     bool ddmcEnabled_ = false;
     bool ddmcPgrwEnabled_ = false;
     bool ddmcMovingInterfaceCorrection_ = false;
-    double ddmcMinimumParticleOpticalDepth_ = 0.0;
     double ddmcMaximumInterfaceVelocityOverC_ = 0.0;
     double ddmcInterfaceTargetWeightRatio_ = 0.0;
     double ddmcMaximumMovingInterfaceWeightCorrection_ = 0.0;

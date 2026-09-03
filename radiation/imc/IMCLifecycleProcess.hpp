@@ -146,14 +146,6 @@ public:
                 throw eo;
             }
             if(owner_.parameters_.withDDMC &&
-               (!std::isfinite(owner_.parameters_.ddmcMinParticleOpticalDepth) ||
-                owner_.parameters_.ddmcMinParticleOpticalDepth <= 0.0))
-            {
-                StormError eo("RadiationIMC DDMC particle optical-depth threshold must be finite and positive");
-                eo.addEntry("ddmcMinParticleOpticalDepth", owner_.parameters_.ddmcMinParticleOpticalDepth);
-                throw eo;
-            }
-            if(owner_.parameters_.withDDMC &&
                (!std::isfinite(
                     owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth) ||
                 owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth <= 0.0))

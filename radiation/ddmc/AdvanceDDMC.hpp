@@ -55,7 +55,6 @@ struct DeviceView
 {
     const std::uint8_t *cellEligible = nullptr;
     const double *sigmaEnergyAbs = nullptr;
-    const double *sigmaParticleGate = nullptr;
     const double *totalLeakRate = nullptr;
     const double *gamma = nullptr;
     const double *velocityDivergence = nullptr;
@@ -71,6 +70,10 @@ struct DeviceView
     const std::size_t *targetGroupCutoff = nullptr;
     const PointT *outwardNormals = nullptr;
     const PointT *faceCenters = nullptr;
+    const std::size_t *cellTetOffsets = nullptr;
+    const double *cellTetCumVolumes = nullptr;
+    const std::uint32_t *cellTetTris = nullptr;
+    const PointT *cellVertices = nullptr;
     const std::uint8_t *interfaceTargetEligible = nullptr;
     const double *interfaceTargetSigmaDiffusion = nullptr;
     const double *interfaceTargetSingleScatterAlbedo = nullptr;
@@ -102,7 +105,6 @@ struct DeviceView
     double *externalSourceThermalizedEnergy = nullptr;
     double *externalSourceToIMCEnergy = nullptr;
     std::size_t cellCount = 0;
-    double minimumParticleOpticalDepth = 0.0;
     double maximumInterfaceVelocityOverC = 0.0;
     double interfaceTargetWeightRatio = 0.0;
     double maximumMovingInterfaceWeightCorrection = 0.0;
@@ -118,7 +120,6 @@ struct HostSnapshot
 {
     std::vector<std::uint8_t> cellEligible;
     std::vector<double> sigmaEnergyAbs;
-    std::vector<double> sigmaParticleGate;
     std::vector<double> totalLeakRate;
     std::vector<double> gamma;
     std::vector<double> velocityDivergence;
@@ -145,7 +146,6 @@ struct HostSnapshot
     std::vector<PointT> interfaceFaceVelocities;
     std::vector<PointT> interfaceTargetVelocities;
     std::vector<PointT> fluxRhs;
-    double minimumParticleOpticalDepth = 0.0;
     double maximumInterfaceVelocityOverC = 0.0;
     double interfaceTargetWeightRatio = 0.0;
     double maximumMovingInterfaceWeightCorrection = 0.0;
@@ -157,14 +157,12 @@ struct HostSnapshot
     template<typename GridT>
     void Build(const std::vector<CellData<PointT>> &cells,
                const GridT &grid,
-               const double minimumOpticalDepth,
                const std::vector<double> &temperatures,
                const std::vector<std::size_t> &stableCellIDs,
                const bool useMultigroupPGRW)
     {
         this->cellEligible.resize(cells.size());
         this->sigmaEnergyAbs.resize(cells.size());
-        this->sigmaParticleGate.resize(cells.size());
         this->totalLeakRate.resize(cells.size());
         this->gamma.resize(cells.size());
         this->velocityDivergence.resize(cells.size());
@@ -187,7 +185,6 @@ struct HostSnapshot
             const CellData<PointT> &cell = cells[cellIndex];
             this->cellEligible[cellIndex] = cell.eligible ? 1u : 0u;
             this->sigmaEnergyAbs[cellIndex] = cell.sigmaEnergyAbs;
-            this->sigmaParticleGate[cellIndex] = cell.sigmaParticleGate;
             this->totalLeakRate[cellIndex] = cell.totalLeakRate;
             this->gamma[cellIndex] = cell.gamma;
             this->velocityDivergence[cellIndex] = cell.velocityDivergence;
@@ -227,7 +224,6 @@ struct HostSnapshot
         }
         this->leakOffsets[cells.size()] = leak;
         this->fluxRhs.assign(cells.size(), PointT{});
-        this->minimumParticleOpticalDepth = minimumOpticalDepth;
         this->pgrwEnabled = useMultigroupPGRW;
         this->enabled = true;
     }
@@ -362,7 +358,6 @@ struct HostSnapshot
         DeviceView<PointT> result;
         result.cellEligible = this->cellEligible.data();
         result.sigmaEnergyAbs = this->sigmaEnergyAbs.data();
-        result.sigmaParticleGate = this->sigmaParticleGate.data();
         result.totalLeakRate = this->totalLeakRate.data();
         result.gamma = this->gamma.data();
         result.velocityDivergence = this->velocityDivergence.data();
@@ -399,7 +394,6 @@ struct HostSnapshot
             this->interfaceTargetVelocities.data();
         result.fluxRhs = this->fluxRhs.data();
         result.cellCount = this->cellEligible.size();
-        result.minimumParticleOpticalDepth = this->minimumParticleOpticalDepth;
         result.maximumInterfaceVelocityOverC =
             this->maximumInterfaceVelocityOverC;
         result.interfaceTargetWeightRatio =
@@ -1160,6 +1154,78 @@ void SamplePlanckFrequency(ParticleT &particle,
 
 template<typename ParticleT, typename ViewsT>
 STORM_TRANSPORT_INLINE
+typename ViewsT::point_type SampleCellPosition(
+    ParticleT &particle, const ViewsT &views, const std::size_t cellIndex)
+{
+    using PointT = typename ViewsT::point_type;
+    const DeviceView<PointT> &ddmc = views.ddmc;
+    const PointT &center = views.grid.cellCenters[cellIndex];
+    if(ddmc.cellTetOffsets == nullptr ||
+       ddmc.cellTetCumVolumes == nullptr ||
+       ddmc.cellTetTris == nullptr ||
+       ddmc.cellVertices == nullptr)
+    {
+        return center;
+    }
+    const std::size_t begin = ddmc.cellTetOffsets[cellIndex];
+    const std::size_t end = ddmc.cellTetOffsets[cellIndex + 1];
+    if(begin >= end)
+    {
+        return center;
+    }
+    const double totalVolume = ddmc.cellTetCumVolumes[end - 1];
+    if(!(totalVolume > 0.0) || !transport::IsFinite(totalVolume))
+    {
+        return center;
+    }
+    const double target =
+        CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) *
+        totalVolume;
+    std::size_t tet = begin;
+    while(tet + 1 < end && ddmc.cellTetCumVolumes[tet] < target)
+    {
+        ++tet;
+    }
+    const std::size_t tri = 3 * tet;
+    const PointT &a = ddmc.cellVertices[ddmc.cellTetTris[tri]];
+    const PointT &b = ddmc.cellVertices[ddmc.cellTetTris[tri + 1]];
+    const PointT &c = ddmc.cellVertices[ddmc.cellTetTris[tri + 2]];
+    double s = CounterRNG::unitOpen(
+        particle.rngKey, particle.rngCounter++);
+    double t = CounterRNG::unitOpen(
+        particle.rngKey, particle.rngCounter++);
+    double u = CounterRNG::unitOpen(
+        particle.rngKey, particle.rngCounter++);
+    if(s > t)
+    {
+        const double tmp = s;
+        s = t;
+        t = tmp;
+    }
+    if(t > u)
+    {
+        const double tmp = t;
+        t = u;
+        u = tmp;
+    }
+    if(s > t)
+    {
+        const double tmp = s;
+        s = t;
+        t = tmp;
+    }
+    PointT result;
+    result.x = s * a.x + (t - s) * b.x + (u - t) * c.x +
+        (1.0 - u) * center.x;
+    result.y = s * a.y + (t - s) * b.y + (u - t) * c.y +
+        (1.0 - u) * center.y;
+    result.z = s * a.z + (t - s) * b.z + (u - t) * c.z +
+        (1.0 - u) * center.z;
+    return result;
+}
+
+template<typename ParticleT, typename ViewsT>
+STORM_TRANSPORT_INLINE
 void ExitDDMCToTransport(ParticleT &particle,
                          std::uint8_t &radiationFlags,
                          const ViewsT &views,
@@ -1233,7 +1299,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         return result;
     }
     if(ddmc.totalLeakRate == nullptr || ddmc.sigmaEnergyAbs == nullptr ||
-       ddmc.sigmaParticleGate == nullptr || ddmc.leakOffsets == nullptr ||
+       ddmc.leakOffsets == nullptr ||
        ddmc.leakRates == nullptr || ddmc.ddmcLeakRates == nullptr ||
        ddmc.nextCellIndices == nullptr || ddmc.targetDDMCEligible == nullptr ||
        ddmc.outwardNormals == nullptr || ddmc.faceCenters == nullptr)
@@ -1270,26 +1336,6 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
     {
         result.error = AdvanceError::InvalidData;
         return result;
-    }
-
-    if(not packetInDDMC)
-    {
-        double minimumDistance = DBL_MAX;
-        const std::size_t faceBegin = views.grid.cellFaceOffsets[cellIndex];
-        const std::size_t faceEnd = views.grid.cellFaceOffsets[cellIndex + 1];
-        for(std::size_t face = faceBegin; face < faceEnd; ++face)
-        {
-            const PointT &normal = views.grid.normals[face];
-            const double distance = Dot(particle.location, normal) - views.grid.facePlaneOffsets[face];
-            if(distance < minimumDistance)
-            {
-                minimumDistance = distance;
-            }
-        }
-        if(not (minimumDistance > 0.0) or minimumDistance * ddmc.sigmaParticleGate[cellIndex] < ddmc.minimumParticleOpticalDepth)
-        {
-            return result;
-        }
     }
 
     if(pgrw)
@@ -1509,7 +1555,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
 
     if(censusEvent)
     {
-        particle.location = views.grid.cellCenters[cellIndex];
+        particle.location =
+            SampleCellPosition(particle, views, cellIndex);
         if(pgrw && groupCutoff > 0 && groupCutoff <= views.groupCount &&
            ddmc.cellTemperature != nullptr)
         {
