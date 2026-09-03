@@ -830,6 +830,9 @@ private:
     double computeCellSurfaceArea(std::size_t cellIndex) const;
 
     void precomputeDDMCData();
+    double computeDDMCFaceDiffusionCoefficient(
+        const CellT &cell, double faceTemperature,
+        std::size_t groupCutoff) const;
     bool tryDDMCStep(MCParticle &particle, Functionality &functionality);
     void addDDMCFluxContribution(std::size_t cellIndex,
                                  const PointT &contribution);
@@ -973,6 +976,7 @@ private:
     std::vector<int> ddmcPointEligible_;
     std::vector<double> ddmcPointDiffusionCoefficient_;
     std::vector<double> ddmcPointSigmaDiffusion_;
+    std::vector<double> ddmcPointSingleScatterAlbedo_;
     std::vector<double> ddmcPointSigmaParticleGate_;
     std::vector<std::size_t> ddmcPointGroupCutoff_;
     std::vector<PointT> ddmcPointVelocity_;
@@ -1071,6 +1075,10 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, Positi
     rng_(seed),
     dist_(0.0, 1.0)
 {
+    if(this->parameters_.withDDMC)
+    {
+        this->parameters_.withRandomWalk = false;
+    }
     if(this->parameters_.newPhotonsPerCell == 0)
     {
         StormError eo("RadiationIMC requires newPhotonsPerCell > 0");
@@ -1229,14 +1237,6 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     {
         StormError eo("RadiationIMC DDMC cell optical-depth threshold must be finite and positive");
         eo.addEntry("ddmcMinCellOpticalDepth", this->parameters_.ddmcMinCellOpticalDepth);
-        throw eo;
-    }
-    if(this->parameters_.withDDMC &&
-       (!std::isfinite(this->parameters_.ddmcMinParticleOpticalDepth) ||
-        this->parameters_.ddmcMinParticleOpticalDepth <= 0.0))
-    {
-        StormError eo("RadiationIMC DDMC particle optical-depth threshold must be finite and positive");
-        eo.addEntry("ddmcMinParticleOpticalDepth", this->parameters_.ddmcMinParticleOpticalDepth);
         throw eo;
     }
     if(this->parameters_.withDDMC &&
@@ -2167,6 +2167,58 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
 // ============================================================
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::computeDDMCFaceDiffusionCoefficient(
+    const CellT &cell, double faceTemperature, std::size_t groupCutoff) const
+{
+    if(!(faceTemperature > 0.0) || !std::isfinite(faceTemperature))
+    {
+        return 0.0;
+    }
+    if constexpr(NumGroups == 1)
+    {
+        double sigmaTotal =
+            this->opacity_->CalcPlanckOpacityAtTemperature(
+                cell, faceTemperature) +
+            this->opacity_->CalcScatteringOpacityAtTemperature(
+                cell, faceTemperature);
+        return sigmaTotal > 0.0 && std::isfinite(sigmaTotal)
+            ? this->lightSpeed() / (3.0 * sigmaTotal) : 0.0;
+    }
+    else
+    {
+        GroupArray energyCenters =
+            this->opacity_->getEnergyCenters(this->energyBoundaries_);
+        std::size_t cutoff = std::min(groupCutoff, NumGroups);
+        double kT = units::k_boltz * faceTemperature;
+        double totalBandMass = 0.0;
+        double weightedInverseOpacity = 0.0;
+        for(std::size_t group = 0; group < cutoff; ++group)
+        {
+            double absorption =
+                this->opacity_->CalcAbsorptionOpacityAtTemperature(
+                    cell, energyCenters[group], faceTemperature);
+            double scattering =
+                this->opacity_->CalcScatteringOpacityAtTemperature(
+                    cell, energyCenters[group], faceTemperature);
+            double sigmaTotal = absorption + scattering;
+            double bandMass = ddmc::PlanckBandMass(
+                this->energyBoundaries_, kT, group, group + 1);
+            if(!(sigmaTotal > 0.0) || !std::isfinite(sigmaTotal) ||
+               !(bandMass >= 0.0) || !std::isfinite(bandMass))
+            {
+                return 0.0;
+            }
+            totalBandMass += bandMass;
+            weightedInverseOpacity += bandMass / sigmaTotal;
+        }
+        return totalBandMass > 0.0 && weightedInverseOpacity > 0.0
+            ? (this->lightSpeed() / 3.0) *
+                weightedInverseOpacity / totalBandMass
+            : 0.0;
+    }
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT, typename EOST, std::size_t NumGroups, typename TraitsT, typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, PositionSamplerT>::precomputeDDMCData()
 {
     const std::size_t Ncells = this->grid.GetPointNo();
@@ -2209,6 +2261,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
     this->ddmcPointEligible_.assign(pointCount, 0);
     this->ddmcPointDiffusionCoefficient_.assign(pointCount, 0.0);
     this->ddmcPointSigmaDiffusion_.assign(pointCount, 0.0);
+    this->ddmcPointSingleScatterAlbedo_.assign(
+        pointCount, std::numeric_limits<double>::quiet_NaN());
     this->ddmcPointSigmaParticleGate_.assign(pointCount, 0.0);
     this->ddmcPointGroupCutoff_.assign(pointCount, 0);
     this->ddmcPointVelocity_.assign(pointCount, PointT{});
@@ -2330,11 +2384,29 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                              && data.diffusionCoefficient > 0.0);
         }
 
+        // Densmore writes the conversion coefficient in terms of the
+        // Fleck-effective albedo, so the true absorption left inside the step
+        // is f*sigma_a and everything else acts as scattering.
+        data.singleScatterAlbedo = ddmc::Densmore2006SingleScatterAlbedo(data.sigmaDiffusion, this->factorFleck_[i] * data.sigmaA);
+
         if(!data.eligible)
         {
             data.eligibilityReason = data.diffusionCoefficient > 0.0
                 ? ddmc::EligibilityReason::OpticallyThin
                 : ddmc::EligibilityReason::NoDiffusionCoefficient;
+        }
+
+        // Densmore 2006 only derives an IMC-DDMC conversion for effectively
+        // scattering cells.  Once the Fleck-effective albedo is too low the
+        // coefficient stops being a probability, so the cell has no valid
+        // interface law and has to stay in transport.
+        if(data.eligible && !std::isfinite(ddmc::Densmore2006CellCoefficient(
+               data.sigmaDiffusion, data.singleScatterAlbedo,
+               0.5 * meanChordLength)))
+        {
+            data.eligible = false;
+            data.eligibilityReason =
+                ddmc::EligibilityReason::ConversionNotProbabilistic;
         }
 
         // External-face exclusions are local properties and must be applied
@@ -2378,6 +2450,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         this->ddmcPointEligible_[i] = data.eligible ? 1 : 0;
         this->ddmcPointDiffusionCoefficient_[i] = data.diffusionCoefficient;
         this->ddmcPointSigmaDiffusion_[i] = data.sigmaDiffusion;
+        this->ddmcPointSingleScatterAlbedo_[i] =
+            data.singleScatterAlbedo;
         this->ddmcPointSigmaParticleGate_[i] = data.sigmaParticleGate;
         this->ddmcPointGroupCutoff_[i] = data.groupCutoff;
         this->ddmcPointCellID_[i] = radiation_imc_detail::ddmcStableCellID(
@@ -2466,6 +2540,8 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         ddmc::ExchangePointMetadata(
             this->grid, this->ddmcPointDiffusionCoefficient_);
         ddmc::ExchangePointMetadata(this->grid, this->ddmcPointSigmaDiffusion_);
+        ddmc::ExchangePointMetadata(
+            this->grid, this->ddmcPointSingleScatterAlbedo_);
         ddmc::ExchangePointMetadata(
             this->grid, this->ddmcPointSigmaParticleGate_);
         ddmc::ExchangePointMetadata(this->grid, this->ddmcPointGroupCutoff_);
@@ -2654,10 +2730,35 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
             double conductance = 0.0;
             if(targetEligible && targetDistance > 0.0)
             {
+                double sourceDiffusion = data.diffusionCoefficient;
+                double targetDiffusion =
+                    this->ddmcPointDiffusionCoefficient_[nextCellIndex];
+                if(nextCellIndex < this->cells_.size() &&
+                   nextCellIndex < this->ddmcPointGroupCutoff_.size())
+                {
+                    double const faceTemperature =
+                        ddmc::RadiationTemperatureAverage(
+                            this->cells_[i].temperature,
+                            this->cells_[nextCellIndex].temperature);
+                    double const sourceFaceDiffusion =
+                        this->computeDDMCFaceDiffusionCoefficient(
+                            this->cells_[i], faceTemperature,
+                            data.groupCutoff);
+                    double const targetFaceDiffusion =
+                        this->computeDDMCFaceDiffusionCoefficient(
+                            this->cells_[nextCellIndex],
+                            faceTemperature,
+                            this->ddmcPointGroupCutoff_[nextCellIndex]);
+                    if(sourceFaceDiffusion > 0.0 &&
+                       targetFaceDiffusion > 0.0)
+                    {
+                        sourceDiffusion = sourceFaceDiffusion;
+                        targetDiffusion = targetFaceDiffusion;
+                    }
+                }
                 conductance = ddmc::TwoSidedConductance(
                     area, sourceDistance,
-                    data.diffusionCoefficient, targetDistance,
-                    this->ddmcPointDiffusionCoefficient_[nextCellIndex]);
+                    sourceDiffusion, targetDistance, targetDiffusion);
                 internalRate = conductance / volume;
             }
 
@@ -2684,6 +2785,20 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
                             units::k_boltz * this->cells_[i].temperature,
                             0, targetCutoff) / sourceBandMass,
                         0.0, 1.0);
+                }
+            }
+
+            if(ddmcFraction < 1.0)
+            {
+                double const coefficient =
+                    ddmc::Densmore2006CellCoefficient(
+                        data.sigmaDiffusion,
+                        data.singleScatterAlbedo,
+                        sourceDistance);
+                if(std::isfinite(coefficient))
+                {
+                    boundaryRate = ddmc::Densmore2006BoundaryLeakRate(
+                        area, volume, this->lightSpeed(), coefficient);
                 }
             }
 
@@ -3063,15 +3178,6 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         }
     }
 
-    double Ro = this->computeMinDistanceToFaces(cellIndex, particle.location);
-    if(!particle.radiationState.isResident() &&
-       Ro * data.sigmaParticleGate <
-           this->parameters_.ddmcMinParticleOpticalDepth)
-    {
-        ++this->ddmcFallbackCount_;
-        return false;
-    }
-
     if(this->parameters_.withMultigroupDDMC && this->parameters_.withMultigroupOpacity)
     {
         if(data.groupCutoff == 0 || data.groupCutoff > NumGroups)
@@ -3347,7 +3453,12 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         // Census is a representation boundary.  Reconstruct a valid IMC
         // packet before returning it to the manager; the next time step must
         // not carry a stale DDMC direction or frame.
-        particle.location = this->grid.GetMeshPoint(cellIndex);
+        particle.location = this->positionSampler_(
+            this->grid, cellIndex, this->rng_, this->dist_);
+        if(this->grid.IsPointOutsideBox(particle.location))
+        {
+            particle.location = this->grid.GetMeshPoint(cellIndex);
+        }
         if(this->parameters_.withMultigroupOpacity)
         {
             bool sampledResidentBand = false;
@@ -4050,8 +4161,22 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, TraitsT, P
         this->ddmcPointSigmaDiffusion_[targetCellIndex];
     double const targetDistance = std::abs(ScalarProd(
         targetCenter - this->grid.FaceCM(faceIndex), normal));
-    double const admission = ddmc::StaticAdmissionProbability(
+    double admission = ddmc::StaticAdmissionProbability(
         mu, targetOpacity, targetDistance);
+    if(targetCellIndex <
+       this->ddmcPointSingleScatterAlbedo_.size())
+    {
+        double const coefficient =
+            ddmc::Densmore2006CellCoefficient(
+                targetOpacity,
+                this->ddmcPointSingleScatterAlbedo_[targetCellIndex],
+                targetDistance);
+        if(std::isfinite(coefficient))
+        {
+            admission = ddmc::Densmore2006AdmissionProbability(
+                mu, coefficient);
+        }
+    }
     this->recordDDMCDiagnosticEvent(
         DDMCDiagnosticEventKind::IMCIncident, sourceCellIndex,
         targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,

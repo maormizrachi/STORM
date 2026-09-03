@@ -25,7 +25,8 @@ enum class EligibilityReason : unsigned char
     OpticallyThin,
     NoDiffusionCoefficient,
     BoundaryExcluded,
-    NoLeakage
+    NoLeakage,
+    ConversionNotProbabilistic
 };
 
 template<typename PointT>

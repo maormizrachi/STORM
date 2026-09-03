@@ -7,6 +7,26 @@
 
 namespace STORM::ddmc {
 
+inline double RadiationTemperatureAverage(double leftTemperature,
+                                          double rightTemperature)
+{
+    if(!(leftTemperature >= 0.0) || !(rightTemperature >= 0.0) ||
+       !std::isfinite(leftTemperature) || !std::isfinite(rightTemperature))
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    double maximumTemperature = std::max(leftTemperature, rightTemperature);
+    if(maximumTemperature == 0.0)
+    {
+        return 0.0;
+    }
+    double minimumRatio =
+        std::min(leftTemperature, rightTemperature) / maximumTemperature;
+    return maximumTemperature * std::pow(
+        0.5 * (1.0 + minimumRatio * minimumRatio *
+               minimumRatio * minimumRatio), 0.25);
+}
+
 inline double TwoSidedResistance(double sourceDistance,
                                  double sourceDiffusion,
                                  double targetDistance,

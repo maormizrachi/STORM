@@ -4,6 +4,7 @@
 #include <iostream>
 #include <stdexcept>
 
+#include "radiation/ddmc/DDMCGeometry.hpp"
 #include "radiation/ddmc/DDMCSampling.hpp"
 #include "radiation/ddmc/DDMCWollaegerInterface.hpp"
 
@@ -164,6 +165,25 @@ void testFrequencyDependentHelpers()
             "out-of-range group cutoff does not fail closed");
 }
 
+void testRadiationTemperatureAverage()
+{
+    requireClose(
+        STORM::ddmc::RadiationTemperatureAverage(3.0, 3.0),
+        3.0, 2.0e-15,
+        "equal temperatures do not preserve the interface temperature");
+    requireClose(
+        STORM::ddmc::RadiationTemperatureAverage(0.0, 4.0),
+        4.0 * std::pow(0.5, 0.25), 2.0e-15,
+        "hot-cold interface does not average radiation energy density");
+    requireClose(
+        STORM::ddmc::RadiationTemperatureAverage(1.0e300, 0.0),
+        1.0e300 * std::pow(0.5, 0.25), 2.0e-15,
+        "scaled temperature average overflowed");
+    require(std::isnan(
+                STORM::ddmc::RadiationTemperatureAverage(-1.0, 1.0)),
+            "negative interface temperature was accepted");
+}
+
 } // namespace
 
 int main()
@@ -174,6 +194,7 @@ int main()
         testProbabilityAndReciprocity();
         testCellMappingFallbackAndRoundoff();
         testFrequencyDependentHelpers();
+        testRadiationTemperatureAverage();
     }
     catch(std::exception const &error)
     {

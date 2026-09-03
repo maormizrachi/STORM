@@ -41,7 +41,6 @@ struct RadiationIMCParameters
     double rwMinParticleOpticalDepth = 5.0;
     bool withDDMC = false;
     double ddmcMinCellOpticalDepth = 15.0;
-    double ddmcMinParticleOpticalDepth = 5.0;
     double ddmcExternalSourceMinFaceOpticalDepth = 5.0;
     bool ddmcUseMovingInterfaceCorrection = true;
     double ddmcMaxInterfaceVelocityOverC = 0.1;
@@ -110,7 +109,6 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
     if(parameters.withDDMC)
     {
         os << "\tDDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << '\n';
-        os << "\tDDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << '\n';
         os << "\tDDMC external-source min face optical depth: "
            << parameters.ddmcExternalSourceMinFaceOpticalDepth << '\n';
         os << "\tDDMC moving-interface correction: "

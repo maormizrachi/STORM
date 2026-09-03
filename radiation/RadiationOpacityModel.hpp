@@ -29,10 +29,22 @@ public:
 
     virtual double CalcPlanckOpacity(const CellT &cell) = 0;
 
+    virtual double CalcPlanckOpacityAtTemperature(const CellT &cell, double temperature)
+    {
+        (void) temperature;
+        return this->CalcPlanckOpacity(cell);
+    }
+
     virtual double CalcAbsorptionOpacity(const CellT &cell, double frequency)
     {
         (void) frequency;
         return this->CalcPlanckOpacity(cell);
+    }
+
+    virtual double CalcAbsorptionOpacityAtTemperature(const CellT &cell, double frequency, double temperature)
+    {
+        (void) temperature;
+        return this->CalcAbsorptionOpacity(cell, frequency);
     }
 
     virtual double CalcScatteringOpacity(const CellT &cell)
@@ -45,6 +57,18 @@ public:
     {
         (void) frequency;
         return this->CalcScatteringOpacity(cell);
+    }
+
+    virtual double CalcScatteringOpacityAtTemperature(const CellT &cell, double temperature)
+    {
+        (void) temperature;
+        return this->CalcScatteringOpacity(cell);
+    }
+
+    virtual double CalcScatteringOpacityAtTemperature(const CellT &cell, double frequency, double temperature)
+    {
+        (void) temperature;
+        return this->CalcScatteringOpacity(cell, frequency);
     }
 
     virtual PointT getRandomVelocity(const CellT &cell,
