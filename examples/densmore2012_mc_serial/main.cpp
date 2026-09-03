@@ -19,7 +19,7 @@
 #include "radiation/RadiationIMC.hpp"
 #include "../densmore2012/DensmoreBoundary.hpp"
 #include "../densmore2012/DensmoreOpacity.hpp"
-#include "../desmore2012_mc/densmore2012_mesh.hpp"
+#include "../densmore2012_mc/densmore2012_mesh.hpp"
 
 namespace
 {
@@ -159,7 +159,7 @@ int main()
             profile[i] = {grid.GetCellCM(i).x, cells[i].temperature};
         }
         std::sort(profile.begin(), profile.end());
-        std::ofstream output("desmore2012_mc_serial_profile.txt");
+        std::ofstream output("densmore2012_mc_serial_profile.txt");
         output << "# Densmore2012 serial MC+RW  t=" << finalTime
                << "  Nx=" << densmore2012_mesh::cellCount << "\n";
         output << "# x(cm)  T(K)\n";
@@ -168,7 +168,7 @@ int main()
             output << std::setprecision(16) << point.first << " "
                    << point.second << "\n";
         }
-        std::cout << "Wrote desmore2012_mc_serial_profile.txt" << std::endl;
+        std::cout << "Wrote densmore2012_mc_serial_profile.txt" << std::endl;
     }
     catch(const std::exception &error)
     {

@@ -232,7 +232,7 @@ int main(int argc, char *argv[])
                 profile[i] = {allX[i], allTemperature[i]};
             }
             std::sort(profile.begin(), profile.end());
-            std::ofstream output("desmore2012_mc"
+            std::ofstream output("densmore2012_mc"
 #ifdef STORM_DENSMORE_MC_DDMC_REGRESSION
                                  "_ddmc"
 #endif
