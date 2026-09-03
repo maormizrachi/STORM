@@ -33,8 +33,8 @@ def main():
 
     l1 = float(np.mean(
         np.abs(temperatureSimKeV - temperatureReferenceInterp)))
-    print(f"DESMORE2012_MC_TGAS_L1={l1:.8e}")
-    print(f"DESMORE2012_MC_MAX_TGAS_L1={args.max_tgas_l1:.8e}")
+    print(f"DENSMORE2012_MC_TGAS_L1={l1:.8e}")
+    print(f"DENSMORE2012_MC_MAX_TGAS_L1={args.max_tgas_l1:.8e}")
 
     if l1 > args.max_tgas_l1:
         print(

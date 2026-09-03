@@ -1,4 +1,5 @@
-TEST_ID="desmore2012_mc_ddmc"
+TEST_ID="densmore2012_mc"
+LEGACY_TEST_ID="desmore2012_mc"
 TAGS="mpi"
 CATEGORY="physics"
 MPI_NP=32
@@ -7,5 +8,5 @@ SLURM_MEM_PER_CPU="10G"
 SLURM_EXCLUSIVE=YES
 SBATCH_ARGS='--distribution=cyclic'
 RUN_COMMAND='mpirun --map-by node -np ${SLURM_NTASKS} "${STORM_BIN}"'
-CHECK_FUNCTION="check_desmore2012_mc_ddmc_case"
+CHECK_FUNCTION="check_densmore2012_mc_case"
 TIMEOUT=5400
