@@ -296,7 +296,9 @@ public:
         owner_.initializeParticleRNG(particle);
         particle.id = std::numeric_limits<std::size_t>::max();
         particle.cellIndex = cellIndex;
-        particle.velocity = units::clight * owner_.samplePostProcessExternalSourceDirection(source.outwardNormal, particle);
+        particle.velocity = owner_.lightSpeed() *
+            owner_.samplePostProcessExternalSourceDirection(
+                source.outwardNormal, particle);
         static constexpr double nudge = 1.0e-8;
         particle.location = (1.0 - nudge) * source.location + nudge * owner_.componentGrid().GetMeshPoint(cellIndex);
         if(!owner_.componentGrid().IsPointInCell(particle.location, cellIndex))
@@ -305,11 +307,13 @@ public:
         }
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if((owner_.parameters_.withHydro and !owner_.parameters_.MMC) or
+            if((owner_.parameters_.withHydro and !owner_.parameters_.MMC and
+                !owner_.parameters_.staticScatterers) or
                 (owner_.parameters_.postProcess.enabled and
                 owner_.parameters_.postProcess.useCellVelocities))
             {
-                radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+                radiation_imc_detail::lorentzTransformToLab<PointT>(
+                    particle, cell, owner_.lightSpeed());
             }
         }
         return particle;
@@ -343,13 +347,17 @@ public:
         MCParticle materialParticle = particle;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if((owner_.parameters_.withHydro and !owner_.parameters_.MMC) or
+            if((owner_.parameters_.withHydro and !owner_.parameters_.MMC and
+                !owner_.parameters_.staticScatterers) or
                 (owner_.parameters_.postProcess.enabled and owner_.parameters_.postProcess.useCellVelocities))
             {
-                radiation_imc_detail::lorentzTransformToComoving<PointT>(materialParticle, owner_.cells_[cellIndex]);
+                radiation_imc_detail::lorentzTransformToComoving<PointT>(
+                    materialParticle, owner_.cells_[cellIndex],
+                    owner_.lightSpeed());
             }
         }
-        materialParticle.velocity = units::clight * owner_.samplePostProcessExternalSourceDirection(normal, particle);
+        materialParticle.velocity = owner_.lightSpeed() *
+            owner_.samplePostProcessExternalSourceDirection(normal, particle);
         if(owner_.parameters_.withMultigroupOpacity)
         {
             materialParticle.frequency = owner_.samplePostProcessExternalSourcePlanckFrequency(owner_.cells_[cellIndex]);
@@ -364,10 +372,13 @@ public:
     #endif
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if((owner_.parameters_.withHydro and !owner_.parameters_.MMC) or
+            if((owner_.parameters_.withHydro and !owner_.parameters_.MMC and
+                !owner_.parameters_.staticScatterers) or
                 (owner_.parameters_.postProcess.enabled and owner_.parameters_.postProcess.useCellVelocities))
             {
-                radiation_imc_detail::lorentzTransformToLab<PointT>(materialParticle, owner_.cells_[cellIndex]);
+                radiation_imc_detail::lorentzTransformToLab<PointT>(
+                    materialParticle, owner_.cells_[cellIndex],
+                    owner_.lightSpeed());
                 owner_.clampFrequencyToBounds(materialParticle.frequency);
             }
         }

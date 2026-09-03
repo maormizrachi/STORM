@@ -397,6 +397,13 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
                         (weightBeforeTransform * oldVelocityY - particle.weight * particle.velocity.y) * inverseC2,
                         (weightBeforeTransform * oldVelocityZ - particle.weight * particle.velocity.z) * inverseC2);
         }
+        else if(views.staticScatterers)
+        {
+            AddMomentum(views, cellIndex,
+                particle.weight * (oldVelocityX - particle.velocity.x) * inverseC2,
+                particle.weight * (oldVelocityY - particle.velocity.y) * inverseC2,
+                particle.weight * (oldVelocityZ - particle.velocity.z) * inverseC2);
+        }
         result.step.change = ParticleStatus::NO_CELL_MOVE;
     }
     else

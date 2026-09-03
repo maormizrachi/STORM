@@ -337,11 +337,13 @@ public:
             bool useComovingTransportFrame = false;
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                    !owner_.parameters_.staticScatterers) ||
                    (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
                 {
                     useComovingTransportFrame = true;
-                    dopplerShift = radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
+                    dopplerShift = radiation_imc_detail::computeDopplerShift<PointT>(
+                        particle, cell, owner_.lightSpeed());
                 }
             }
 
@@ -564,7 +566,7 @@ public:
 
             particle.timeLeft -= dt;
             double weightEvolutionOpacity = absorptionOpacity * transportFleck;
-            double tmp2 = weightEvolutionOpacity * units::clight;
+            double tmp2 = weightEvolutionOpacity * owner_.lightSpeed();
             double tmp = -dt * tmp2;
             double expFactor1 = std::expm1(tmp * dopplerShift);
             double expFactor2 = std::expm1(tmp);
@@ -582,7 +584,9 @@ public:
                 {
                     if(owner_.parameters_.withHydro and not owner_.parameters_.diffusionPressureGradient)
                     {
-                        owner_.tallyMomentum(cellIndex, -expFactor1 * particle.weight * particle.velocity * units::inv_clight2);
+                        owner_.tallyMomentum(
+                            cellIndex, -expFactor1 * particle.weight *
+                            particle.velocity * owner_.inverseLightSpeedSquared());
                     }
                 }
             }
@@ -644,6 +648,7 @@ public:
             else if(min.first == SCATTERING)
             {
                 PointT oldVelocity = particle.velocity;
+                double const weightBeforeScatter = particle.weight;
                 double D_lab_to_co = dopplerShift;
                 double eventRandom = owner_.randomUnitOpen(particle) * eventOpacity;
                 bool isEffectiveScatter = false;
@@ -657,10 +662,12 @@ public:
                     polarization::initializeIfNeeded<PointT>(polarizationMaterialParticle);
                     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                     {
-                        if(owner_.parameters_.withHydro && !owner_.parameters_.MMC)
+                        if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                           !owner_.parameters_.staticScatterers)
                         {
                             radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                                polarizationMaterialParticle, cell);
+                                polarizationMaterialParticle, cell,
+                                owner_.lightSpeed());
                             polarizationOldVelocity = polarizationMaterialParticle.velocity;
                             polarizationMaterialParticle.polarizationBasis =
                                 polarization::projectBasisToDirection(
@@ -715,7 +722,7 @@ public:
                         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                         {
                             radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                                comptonParticle, cell);
+                                comptonParticle, cell, owner_.lightSpeed());
                             owner_.clampFrequencyToBounds(comptonParticle.frequency);
                         }
                     }
@@ -734,7 +741,7 @@ public:
                         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                         {
                             radiation_imc_detail::lorentzTransformToLab<PointT>(
-                                comptonParticle, cell);
+                                comptonParticle, cell, owner_.lightSpeed());
                             owner_.clampFrequencyToBounds(comptonParticle.frequency);
                         }
                     }
@@ -756,7 +763,7 @@ public:
                                     (labParticleBeforeCompton.weight *
                                          labParticleBeforeCompton.velocity -
                                      particle.weight * particle.velocity) *
-                                        units::inv_clight2);
+                                        owner_.inverseLightSpeedSquared());
                             }
                         }
                     }
@@ -788,11 +795,13 @@ public:
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
                     if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                       !owner_.parameters_.staticScatterers &&
                        !isComptonScatter && !comptonTransformedToLab)
                     {
                         double weightBefore = particle.weight;
                         particle.weight *= D_lab_to_co;
-                        radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+                        radiation_imc_detail::lorentzTransformToLab<PointT>(
+                            particle, cell, owner_.lightSpeed());
                         if(owner_.parameters_.withMultigroupOpacity)
                         {
                             owner_.clampFrequencyToBounds(particle.frequency);
@@ -808,9 +817,28 @@ public:
                         {
                             if(not owner_.parameters_.diffusionPressureGradient and not owner_.parameters_.noHydroFeedback)
                             {
-                                owner_.tallyMomentum(cellIndex, (weightBefore * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2);
+                                owner_.tallyMomentum(
+                                    cellIndex,
+                                    (weightBefore * oldVelocity -
+                                     particle.weight * particle.velocity) *
+                                        owner_.inverseLightSpeedSquared());
                             }
                         }
+                    }
+                }
+                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                {
+                    if(owner_.parameters_.withHydro &&
+                       owner_.parameters_.staticScatterers &&
+                       !owner_.parameters_.diffusionPressureGradient &&
+                       !owner_.parameters_.noHydroFeedback &&
+                       !isComptonScatter)
+                    {
+                        owner_.tallyMomentum(
+                            cellIndex,
+                            (weightBeforeScatter * oldVelocity -
+                             particle.weight * particle.velocity) *
+                                owner_.inverseLightSpeedSquared());
                     }
                 }
         #ifdef MONTECARLO_POLARIZATION

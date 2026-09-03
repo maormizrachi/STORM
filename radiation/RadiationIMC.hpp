@@ -545,6 +545,29 @@ private:
     void validateEnergyBoundaries() const;
     void rejectUnsupportedParameters() const;
     void rejectUnsupportedParameter(const std::string &name) const;
+    double lightSpeed() const
+    {
+        return this->parameters_.lightSpeed;
+    }
+    double inverseLightSpeedSquared() const
+    {
+        const double speed = this->lightSpeed();
+        return 1.0 / (speed * speed);
+    }
+    double inverseLightSpeed() const
+    {
+        return 1.0 / this->lightSpeed();
+    }
+    void normalizeParticleSpeed(MCParticle &particle) const
+    {
+        const double speed = std::sqrt(
+            ScalarProd(particle.velocity, particle.velocity));
+        if(!(speed > 0.0) || !std::isfinite(speed))
+        {
+            throw StormError("RadiationIMC received an invalid particle speed");
+        }
+        particle.velocity *= this->lightSpeed() / speed;
+    }
     inline bool polarizationEnabled(void) const
     {
         return this->parameters_.withPolarization or this->parameters_.postProcess.polarization.enabled;

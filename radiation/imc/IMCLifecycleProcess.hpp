@@ -315,7 +315,19 @@ public:
 
             const double random1 = owner_.randomUnitOpen(particle);
             const double random2 = owner_.randomUnitOpen(particle);
-            return owner_.opacity_->getRandomVelocity(cell, random1, random2);
+            PointT velocity = owner_.opacity_->getRandomVelocity(
+                cell, random1, random2);
+            if(owner_.lightSpeed() == units::clight)
+            {
+                return velocity;
+            }
+            const double speed = std::sqrt(ScalarProd(velocity, velocity));
+            if(!(speed > 0.0) || !std::isfinite(speed))
+            {
+                throw StormError(
+                    "RadiationIMC opacity model returned an invalid random velocity");
+            }
+            return velocity * (owner_.lightSpeed() / speed);
     }
 
     PointT sampleScatterVelocity(
@@ -324,8 +336,19 @@ public:
 
             const double random1 = owner_.randomUnitOpen(particle);
             const double random2 = owner_.randomUnitOpen(particle);
-            return owner_.opacity_->getNewScatterVelocity(
+            PointT velocity = owner_.opacity_->getNewScatterVelocity(
                 cell, particle.velocity, particle.frequency, random1, random2);
+            if(owner_.lightSpeed() == units::clight)
+            {
+                return velocity;
+            }
+            const double speed = std::sqrt(ScalarProd(velocity, velocity));
+            if(!(speed > 0.0) || !std::isfinite(speed))
+            {
+                throw StormError(
+                    "RadiationIMC opacity model returned an invalid scattering velocity");
+            }
+            return velocity * (owner_.lightSpeed() / speed);
     }
 
     void resetTransportTallies(std::size_t cellCount)
@@ -717,10 +740,13 @@ public:
                 double gamma = 1.0;
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
-                    if((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                    if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                        !owner_.parameters_.staticScatterers) ||
                        (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
                     {
-                        gamma = 1.0 / std::sqrt(1.0 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2);
+                        gamma = 1.0 / std::sqrt(
+                            1.0 - ScalarProd(cell.velocity, cell.velocity) *
+                            owner_.inverseLightSpeedSquared());
                     }
                 }
 
@@ -763,7 +789,7 @@ public:
                     eo.addEntry("cv", cv);
                     throw eo;
                 }
-                owner_.factorFleck_[i] = 1.0 / (1.0 + (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * owner_.planckOpacities_[i] * units::clight * fleckDt * gamma) / cv);
+                owner_.factorFleck_[i] = 1.0 / (1.0 + (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * owner_.planckOpacities_[i] * owner_.lightSpeed() * fleckDt * gamma) / cv);
                 if(!std::isfinite(owner_.factorFleck_[i]) ||
                    owner_.factorFleck_[i] < 0.0 || owner_.factorFleck_[i] > 1.0)
                 {
@@ -865,6 +891,10 @@ public:
                 if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
                 {
                     owner_.initializeParticleRNG(particle);
+                }
+                if(owner_.lightSpeed() != units::clight)
+                {
+                    owner_.normalizeParticleSpeed(particle);
                 }
                 owner_.setInitialWeightFromWeight(particle);
                 if(owner_.parameters_.postProcess.enabled)

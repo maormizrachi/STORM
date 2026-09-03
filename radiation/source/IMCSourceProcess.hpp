@@ -72,8 +72,8 @@ public:
         views.cellCount = owner_.componentGrid().GetPointNo();
         views.groupCount = owner_.parameters_.withMultigroupOpacity
             ? NumGroups : 0;
-        views.speedOfLight = units::clight;
-        views.invClight2 = units::inv_clight2;
+        views.speedOfLight = owner_.lightSpeed();
+        views.invClight2 = owner_.inverseLightSpeedSquared();
         views.sampleFrequency =
             (owner_.parameters_.withMultigroupOpacity &&
              owner_.thermalEmissionCdf_.size() ==
@@ -82,7 +82,8 @@ public:
         views.applyLabFrame = 0;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+            if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                !owner_.parameters_.staticScatterers) ||
                (owner_.parameters_.postProcess.enabled &&
                 owner_.parameters_.postProcess.useCellVelocities))
             {
@@ -260,10 +261,13 @@ public:
             double gamma = 1.0;
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                    !owner_.parameters_.staticScatterers) ||
                     (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
                 {
-                    gamma = 1.0 / std::sqrt(1.0 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2);
+                    gamma = 1.0 / std::sqrt(
+                        1.0 - ScalarProd(cell.velocity, cell.velocity) *
+                        owner_.inverseLightSpeedSquared());
                 }
             }
             gammaVec[i] = gamma;
@@ -287,7 +291,7 @@ public:
                     owner_.planckOpacities_[i],
                     fullDt,
                     units::arad,
-                    units::clight);
+                    owner_.lightSpeed());
             }
             localTotalEnergy += energyToCreateVec[i];
         }
@@ -534,13 +538,14 @@ public:
                 if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                 {
                     if(owner_.parameters_.withHydro &&
+                        !owner_.parameters_.staticScatterers &&
                         !owner_.parameters_.diffusionPressureGradient)
                     {
                         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                         {
                             owner_.extensives_[i].momentum -=
                                 energyToCreate * owner_.cells_[i].velocity *
-                                units::inv_clight2 * gamma;
+                                owner_.inverseLightSpeedSquared() * gamma;
                         }
                     }
                 }
@@ -888,10 +893,12 @@ public:
                     }
 
                     if(usedGroupFrequencySampling &&
-                        ((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                        ((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                          !owner_.parameters_.staticScatterers) ||
                         (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities)))
                     {
-                        double D = radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
+                        double D = radiation_imc_detail::computeDopplerShift<PointT>(
+                            particle, cell, owner_.lightSpeed());
                         particle.frequency = freqCo / D;
                         particle.weight = energyToCreate / (nPhotonsCell * D) * weightCorrection;
                     }
@@ -903,10 +910,12 @@ public:
                 }
 
                 if(!usedGroupFrequencySampling &&
-                    ((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                    ((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                      !owner_.parameters_.staticScatterers) ||
                     (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities)))
                 {
-                    double D = radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
+                    double D = radiation_imc_detail::computeDopplerShift<PointT>(
+                        particle, cell, owner_.lightSpeed());
                     if(owner_.parameters_.withMultigroupOpacity)
                     {
                         double rnd = owner_.randomUnitOpen(particle);
@@ -993,10 +1002,12 @@ public:
         }
     #endif
 
-        if((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+        if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+            !owner_.parameters_.staticScatterers) ||
             (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
         {
-            radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+            radiation_imc_detail::lorentzTransformToLab<PointT>(
+                particle, cell, owner_.lightSpeed());
     #ifdef MONTECARLO_POLARIZATION
             if(owner_.polarizationEnabled())
             {
@@ -1211,6 +1222,16 @@ public:
 
     void adjustExistingParticles(std::vector<MCParticle> &particles, double fullDt)
     {
+        if(owner_.lightSpeed() != units::clight)
+        {
+            for(MCParticle &particle : particles)
+            {
+                if(!particle.radiationState.isResident())
+                {
+                    owner_.normalizeParticleSpeed(particle);
+                }
+            }
+        }
         owner_.splitComptonRiskyParticles(particles, fullDt);
         if(not owner_.parameters_.MMC)
         {

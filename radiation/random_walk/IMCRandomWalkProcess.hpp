@@ -157,7 +157,7 @@ public:
                         data.groupCutoff = cutoff;
                         data.sigmaA_bar = sumBgSigADiff / totalBgDiff;
                         data.sigmaT_bar = sumBgSigTDiff / totalBgDiff;
-                        data.D = (units::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff;
+                        data.D = (owner_.lightSpeed() / 3.0) * sumBgOverSigTDiff / totalBgDiff;
                         data.gamma = (totalSigABgAll > 0.0) ? sumBgSigADiff / totalSigABgAll : 1.0;
                         owner_.rwCellTotalOpacity_[i] = data.sigmaT_bar;
                         owner_.rwCellEligible_[i] = true;
@@ -218,7 +218,7 @@ public:
             {
                 sigmaT = owner_.rwCellTotalOpacity_[cellIndex];
                 sigma_a_eff = owner_.planckOpacities_[cellIndex];
-                D_phys = (sigmaT > 0.0) ? units::clight / (3.0 * sigmaT) : 0.0;
+                D_phys = (sigmaT > 0.0) ? owner_.lightSpeed() / (3.0 * sigmaT) : 0.0;
                 gamma_rw = 1.0;
             }
 
@@ -231,9 +231,12 @@ public:
                 double coFreq = particle.frequency;
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC)
+                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                       !owner_.parameters_.staticScatterers)
                     {
-                        double dopplerShift = radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
+                        double dopplerShift =
+                            radiation_imc_detail::computeDopplerShift<PointT>(
+                                particle, cell, owner_.lightSpeed());
                         coFreq *= dopplerShift;
                     }
                 }
@@ -261,7 +264,7 @@ public:
             if(isPGRW && gamma_rw < 1.0 && sigma_a_eff > 0.0 && f > 0.0)
             {
                 double xiUp = owner_.randomUnitOpen(particle);
-                tUpscatter = -std::log(xiUp) / (units::clight * (1.0 - f) * sigma_a_eff * (1.0 - gamma_rw));
+                tUpscatter = -std::log(xiUp) / (owner_.lightSpeed() * (1.0 - f) * sigma_a_eff * (1.0 - gamma_rw));
             }
 
             enum { RW_LEAK, RW_CENSUS, RW_UPSCATTER };
@@ -283,7 +286,7 @@ public:
                 dt = tUpscatter;
             }
 
-            double rwAbsRate = sigma_a_eff * f * units::clight;
+            double rwAbsRate = sigma_a_eff * f * owner_.lightSpeed();
             double rwExp = std::expm1(-dt * rwAbsRate);
             if(!owner_.parameters_.noHydroFeedback)
             {
@@ -371,12 +374,13 @@ public:
                 double dtCo = dt;
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC)
+                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                       !owner_.parameters_.staticScatterers)
                     {
                         dtCo *= radiation_imc_detail::computeDopplerShift<PointT>(
-                            polarizationParticle, cell);
+                            polarizationParticle, cell, owner_.lightSpeed());
                         radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                            polarizationParticle, cell);
+                            polarizationParticle, cell, owner_.lightSpeed());
                     }
                 }
                 ParticleCounterEngine polarizationEngine(
@@ -423,9 +427,11 @@ public:
 
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                if(owner_.parameters_.withHydro && !owner_.parameters_.MMC)
+                if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                   !owner_.parameters_.staticScatterers)
                 {
-                    radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell);
+                    radiation_imc_detail::lorentzTransformToLab<PointT>(
+                        particle, cell, owner_.lightSpeed());
                     if(owner_.parameters_.withMultigroupOpacity)
                     {
                         owner_.clampFrequencyToBounds(particle.frequency);
@@ -445,7 +451,7 @@ public:
                                 cellIndex,
                                 (oldWeight * oldVelocity -
                                  particle.weight * particle.velocity) *
-                                    units::inv_clight2);
+                                    owner_.inverseLightSpeedSquared());
                         }
                     }
                 }

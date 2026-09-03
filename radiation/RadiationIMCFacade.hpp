@@ -46,6 +46,13 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
     {
         throw StormError("RadiationIMC requires newPhotonsPerCell > 0");
     }
+    if(!(this->parameters_.lightSpeed > 0.0) ||
+       !std::isfinite(this->parameters_.lightSpeed))
+    {
+        StormError eo("RadiationIMC requires a finite, positive light speed");
+        eo.addEntry("lightSpeed", this->parameters_.lightSpeed);
+        throw eo;
+    }
     if(!this->eos_)
     {
         throw StormError("RadiationIMC requires a non-null EOS");
@@ -376,7 +383,8 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
     requiresHostParticleAdjustment() const
 {
     return this->parameters_.withCompton ||
-           this->parameters_.MMC;
+           this->parameters_.MMC ||
+           this->lightSpeed() != units::clight;
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,

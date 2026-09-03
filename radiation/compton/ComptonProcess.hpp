@@ -156,14 +156,15 @@ public:
                 double gamma = 1.0;
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC)
+                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                       !owner_.parameters_.staticScatterers)
                     {
                         gamma = 1.0 / std::sqrt(
                             1.0 - ScalarProd(cell.velocity, cell.velocity) *
-                            units::inv_clight2);
+                            owner_.inverseLightSpeedSquared());
                     }
                 }
-                double const cdtEff = units::clight * sourceDt * gamma;
+                double const cdtEff = owner_.lightSpeed() * sourceDt * gamma;
                 double denominator = 1.0 + data.beta * cdtEff * data.Gamma;
                 if((denominator <= 0.0 || data.Upsilon < 0.0) &&
                    owner_.parameters_.comptonAllowNZeroFallback)
@@ -173,7 +174,7 @@ public:
                        owner_.parameters_.comptonUseInduced &&
                        owner_.parameters_.comptonInducedMode ==
                            ComptonInducedMode::AdaptivePlanckFallback &&
-                       data.planckOpacity * units::clight * sourceDt >= 1.0)
+                       data.planckOpacity * owner_.lightSpeed() * sourceDt >= 1.0)
                     {
                         fallbackMode = ComptonOccupationMode::PlanckFunction;
                     }
@@ -332,7 +333,7 @@ public:
             double const lteRadiationEnergyDensity = usePlanckLTE
                 ? units::arad * boost::math::pow<4>(lteTemperature) : 0.0;
             double const pi = 3.141592653589793238462643383279502884;
-            double const occupationFactor = boost::math::pow<3>(units::clight) /
+            double const occupationFactor = boost::math::pow<3>(owner_.lightSpeed()) /
                 (8.0 * pi * units::planck_constant);
             for(std::size_t group = 0; group < NumGroups; ++group)
             {
@@ -533,7 +534,7 @@ public:
         ComptonCellData &data) const
     {
 
-            double const cdt = units::clight * sourceDt;
+            double const cdt = owner_.lightSpeed() * sourceDt;
             for(std::size_t group = 0; group < NumGroups; ++group)
             {
                 double const kgbg = data.absorptionOpacity[group] *
@@ -687,7 +688,7 @@ public:
                 {
                     residualMatrix[row][column] =
                         (row == column ? 1.0 : 0.0) -
-                        fullDt * units::clight *
+                        fullDt * owner_.lightSpeed() *
                             data.residualKernel[column][row];
                 }
             }
@@ -866,13 +867,14 @@ public:
                 double gamma = 1.0;
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC)
+                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                       !owner_.parameters_.staticScatterers)
                     {
                         gamma = 1.0 / std::sqrt(
                             1.0 - ScalarProd(
                                 owner_.cells_[cellIndex].velocity,
                                 owner_.cells_[cellIndex].velocity) *
-                            units::inv_clight2);
+                            owner_.inverseLightSpeedSquared());
                     }
                 }
 
@@ -895,12 +897,13 @@ public:
                             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                             {
                                 if(owner_.parameters_.withHydro &&
+                                   !owner_.parameters_.staticScatterers &&
                                    !owner_.parameters_.diffusionPressureGradient)
                                 {
                                     owner_.extensives_[cellIndex].momentum -=
                                         sourceEnergy[group] *
                                         owner_.cells_[cellIndex].velocity *
-                                        units::inv_clight2 * gamma;
+                                        owner_.inverseLightSpeedSquared() * gamma;
                                 }
                             }
                         }
@@ -1343,12 +1346,14 @@ public:
             double dopplerShift = 1.0;
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                    !owner_.parameters_.staticScatterers) ||
                    (owner_.parameters_.postProcess.enabled &&
                     owner_.parameters_.postProcess.useCellVelocities))
                 {
                     dopplerShift =
-                        radiation_imc_detail::computeDopplerShift<PointT>(particle, cell);
+                        radiation_imc_detail::computeDopplerShift<PointT>(
+                            particle, cell, owner_.lightSpeed());
                 }
             }
             if(!(dopplerShift > 0.0) || !std::isfinite(dopplerShift))
@@ -1442,7 +1447,7 @@ public:
                     oldDirection * cosine +
                     sine * (std::cos(phi) * perpendicular1 +
                             std::sin(phi) * perpendicular2));
-                particle.velocity = newDirection * units::clight;
+                particle.velocity = newDirection * owner_.lightSpeed();
             }
             else
             {
@@ -1557,7 +1562,7 @@ public:
             {
                 for(std::size_t column = 0; column < NumGroups; ++column)
                 {
-                    double const Lrc = fullDt * units::clight *
+                    double const Lrc = fullDt * owner_.lightSpeed() *
                         data.residualKernel[column][row];
                     if(!std::isfinite(Lrc))
                     {
@@ -1838,7 +1843,7 @@ public:
                         currentDelta[row] + fraction * drive[row];
                     for(std::size_t column = 0; column < NumGroups; ++column)
                     {
-                        double const Lrc = fullDt * units::clight *
+                        double const Lrc = fullDt * owner_.lightSpeed() *
                             data.residualKernel[column][row];
                         fractionalMatrix[row][column] =
                             (row == column ? 1.0 : 0.0) - fraction * Lrc;

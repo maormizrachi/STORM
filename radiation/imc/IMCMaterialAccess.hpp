@@ -416,17 +416,23 @@ void setCellGroupEnergyIfPresent(CellT &cell, std::size_t group, double value)
 }
 
 template<typename PointT, typename ParticleT, typename CellT>
-double computeDopplerShift(const ParticleT &particle, const CellT &cell)
+double computeDopplerShift(const ParticleT &particle, const CellT &cell,
+                           double lightSpeed)
 {
     if constexpr(has_member_velocity<CellT>::value)
     {
+        if(!(lightSpeed > 0.0) || !std::isfinite(lightSpeed))
+        {
+            throw StormError("RadiationIMC received an invalid particle speed");
+        }
+        const double inverseLightSpeedSquared = 1.0 / (lightSpeed * lightSpeed);
         double v2 = ScalarProd(cell.velocity, cell.velocity);
         if(v2 < 1e-30)
         {
             return 1.0;
         }
-        double gamma = 1.0 / std::sqrt(1.0 - v2 * units::inv_clight2);
-        return gamma * (1.0 - ScalarProd(cell.velocity, particle.velocity) * units::inv_clight2);
+        double gamma = 1.0 / std::sqrt(1.0 - v2 * inverseLightSpeedSquared);
+        return gamma * (1.0 - ScalarProd(cell.velocity, particle.velocity) * inverseLightSpeedSquared);
     }
     else
     {
@@ -437,20 +443,26 @@ double computeDopplerShift(const ParticleT &particle, const CellT &cell)
 }
 
 template<typename PointT, typename ParticleT, typename CellT>
-void lorentzTransformToComoving(ParticleT &particle, const CellT &cell)
+void lorentzTransformToComoving(ParticleT &particle, const CellT &cell,
+                                double lightSpeed)
 {
     if constexpr(has_member_velocity<CellT>::value)
     {
+        if(!(lightSpeed > 0.0) || !std::isfinite(lightSpeed))
+        {
+            throw StormError("RadiationIMC received an invalid particle speed");
+        }
+        const double inverseLightSpeedSquared = 1.0 / (lightSpeed * lightSpeed);
         double const v2 = ScalarProd(cell.velocity, cell.velocity);
         if(v2 < 1e-30)
         {
             return;
         }
         double const gamma = 1.0 / std::sqrt(
-            1.0 - v2 * units::inv_clight2);
+            1.0 - v2 * inverseLightSpeedSquared);
         double const dopplerShift = gamma *
             (1.0 - ScalarProd(cell.velocity, particle.velocity) *
-             units::inv_clight2);
+             inverseLightSpeedSquared);
         if(!(dopplerShift > 0.0) || !std::isfinite(dopplerShift))
         {
             throw StormError(
@@ -461,10 +473,11 @@ void lorentzTransformToComoving(ParticleT &particle, const CellT &cell)
         double const vDotP = ScalarProd(particle.velocity, cell.velocity);
         particle.velocity = particle.velocity + cell.velocity *
             ((gamma - 1.0) * vDotP / v2 - gamma);
-        double const newSpeed = fastabs(particle.velocity);
+        double const newSpeed = std::sqrt(
+            ScalarProd(particle.velocity, particle.velocity));
         if(newSpeed > 0.0)
         {
-            particle.velocity *= units::clight / newSpeed;
+            particle.velocity *= lightSpeed / newSpeed;
         }
     }
     else
@@ -475,26 +488,33 @@ void lorentzTransformToComoving(ParticleT &particle, const CellT &cell)
 }
 
 template<typename PointT, typename ParticleT, typename CellT>
-void lorentzTransformToLab(ParticleT &particle, const CellT &cell)
+void lorentzTransformToLab(ParticleT &particle, const CellT &cell,
+                           double lightSpeed)
 {
     if constexpr(has_member_velocity<CellT>::value)
     {
+        if(!(lightSpeed > 0.0) || !std::isfinite(lightSpeed))
+        {
+            throw StormError("RadiationIMC received an invalid particle speed");
+        }
+        const double inverseLightSpeedSquared = 1.0 / (lightSpeed * lightSpeed);
         double v2 = ScalarProd(cell.velocity, cell.velocity);
         if(v2 < 1e-30)
         {
             return;
         }
-        double gamma = 1.0 / std::sqrt(1.0 - units::inv_clight2 * v2);
+        double gamma = 1.0 / std::sqrt(1.0 - inverseLightSpeedSquared * v2);
         PointT negV = cell.velocity * (-1.0);
-        double dopplerShift = gamma * (1.0 - ScalarProd(negV, particle.velocity) * units::inv_clight2);
+        double dopplerShift = gamma * (1.0 - ScalarProd(negV, particle.velocity) * inverseLightSpeedSquared);
         particle.frequency *= dopplerShift;
         particle.weight *= dopplerShift;
         double vDotP = ScalarProd(particle.velocity, negV);
         particle.velocity = particle.velocity + negV * ((gamma - 1.0) * vDotP / v2 - gamma);
-        double newSpeed = fastabs(particle.velocity);
+        double newSpeed = std::sqrt(
+            ScalarProd(particle.velocity, particle.velocity));
         if(newSpeed > 0.0)
         {
-            particle.velocity = particle.velocity * (units::clight / newSpeed);
+            particle.velocity = particle.velocity * (lightSpeed / newSpeed);
         }
     }
     else

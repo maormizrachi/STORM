@@ -41,6 +41,7 @@ struct GreyIMCViews
     std::uint8_t depositMaterialEnergy = 1;
     std::uint8_t comovingTransport = 0;
     std::uint8_t depositMomentum = 0;
+    std::uint8_t staticScatterers = 0;
     std::uint8_t spectralEnabled = 0;
     std::uint8_t ddmcOnlyTransport = 0;
 };

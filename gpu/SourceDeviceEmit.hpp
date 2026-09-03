@@ -70,6 +70,7 @@ inline void EmitSourcesOnDevice(DeviceSourceContext &context)
         context.speedOfLight,
         false,
         context.applyLabFrame != 0,
+        false,
         false);
 
     source::SampleViews<DeviceVec3> sampleViews;

@@ -654,7 +654,8 @@ public:
         double speedOfLight,
         bool depositMaterialEnergy,
         bool comovingTransport,
-        bool depositMomentum) const
+        bool depositMomentum,
+        bool staticScatterers) const
     {
         GreyIMCViews<DeviceVec3> result;
         result.grid.cellFaceOffsets = this->cellFaceOffsets_.d_view.data();
@@ -834,6 +835,7 @@ public:
         result.depositMaterialEnergy = depositMaterialEnergy;
         result.comovingTransport = comovingTransport;
         result.depositMomentum = depositMomentum;
+        result.staticScatterers = staticScatterers;
         result.spectralEnabled = this->spectralEnabled_;
         return result;
     }

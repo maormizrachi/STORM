@@ -174,7 +174,7 @@ public:
                         data.sigmaParticleGate = data.sigmaT;
                         data.sigmaGroupExit = data.sigmaT;
                         data.diffusionCoefficient = data.sigmaDiffusion > 0.0
-                            ? units::clight / (3.0 * data.sigmaDiffusion) : 0.0;
+                            ? owner_.lightSpeed() / (3.0 * data.sigmaDiffusion) : 0.0;
                         data.gamma = (totalSigABg > 0.0)? sumBgSigADiff / totalSigABg : 1.0;
                         data.eligible = data.sigmaParticleGate > 0.0 and
                                         data.sigmaParticleGate * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth and
@@ -190,7 +190,7 @@ public:
                     data.sigmaDiffusion = data.sigmaT;
                     data.sigmaParticleGate = data.sigmaT;
                     data.sigmaGroupExit = data.sigmaT;
-                    data.diffusionCoefficient = (data.sigmaDiffusion > 0.0)? units::clight / (3.0 * data.sigmaDiffusion) : 0.0;
+                    data.diffusionCoefficient = (data.sigmaDiffusion > 0.0)? owner_.lightSpeed() / (3.0 * data.sigmaDiffusion) : 0.0;
                     data.gamma = 1.0;
                     data.eligible = (data.sigmaParticleGate * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth and data.diffusionCoefficient > 0.0);
                 }
@@ -362,7 +362,7 @@ public:
                             owner_.componentGrid().GetArea(faceIndex);
                         maxJump = std::max(maxJump,
                             fastabs(targetVelocity - owner_.cells_[i].velocity) *
-                            units::inv_clight);
+                            owner_.inverseLightSpeed());
                     }
                     data.velocityDivergence = divergence / volume;
                     data.maxFaceVelocityJumpOverC = maxJump;
@@ -413,7 +413,7 @@ public:
                         double const area = owner_.componentGrid().GetArea(faceIdx);
                         double const boundaryRate = ddmc::BoundaryLeakRate(
                             area, volume, data.sigmaDiffusion,
-                            sourceDistanceToFace, units::clight);
+                            sourceDistanceToFace, owner_.lightSpeed());
                         if(!(boundaryRate > 0.0) || !std::isfinite(boundaryRate))
                         {
                             throw StormError(
@@ -492,7 +492,7 @@ public:
                             normal));
                         double boundaryRate = ddmc::BoundaryLeakRate(
                             area, volume, data.sigmaDiffusion,
-                            sourceDistanceToFace, units::clight);
+                            sourceDistanceToFace, owner_.lightSpeed());
                         double const coefficient =
                             ddmc::Densmore2006CellCoefficient(
                                 data.sigmaDiffusion, data.singleScatterAlbedo,
@@ -500,7 +500,7 @@ public:
                         if(std::isfinite(coefficient))
                         {
                             boundaryRate = ddmc::Densmore2006BoundaryLeakRate(
-                                area, volume, units::clight, coefficient);
+                                area, volume, owner_.lightSpeed(), coefficient);
                         }
                         if(!(boundaryRate > 0.0) ||
                            !std::isfinite(boundaryRate))
@@ -591,7 +591,7 @@ public:
 
                     double boundaryRate = ddmc::BoundaryLeakRate(
                         area, volume, data.sigmaDiffusion,
-                        sourceDistance, units::clight);
+                        sourceDistance, owner_.lightSpeed());
                     std::size_t const targetCutoff =
                         nextCellIndex < owner_.ddmcPointGroupCutoff_.size()
                         ? owner_.ddmcPointGroupCutoff_[nextCellIndex] : 0;
@@ -627,7 +627,7 @@ public:
                         {
                             boundaryRate =
                                 ddmc::Densmore2006BoundaryLeakRate(
-                                    area, volume, units::clight,
+                                    area, volume, owner_.lightSpeed(),
                                     coefficient);
                         }
                         // Outside Eq. (59)'s probabilistic range, retain the
@@ -885,7 +885,8 @@ public:
                     }
 
                     PointT const deltaP = data.sigmaMomentum *
-                        owner_.componentGrid().GetVolume(i) * units::inv_clight * fluxDt;
+                        owner_.componentGrid().GetVolume(i) *
+                        owner_.inverseLightSpeed() * fluxDt;
                     if(!(std::isfinite(deltaP[0]) && std::isfinite(deltaP[1]) &&
                          std::isfinite(deltaP[2])))
                     {
@@ -908,7 +909,8 @@ public:
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
                 useComovingFrame =
-                    (owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                    (owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                     !owner_.parameters_.staticScatterers) ||
                     (owner_.parameters_.postProcess.enabled &&
                      owner_.parameters_.postProcess.useCellVelocities);
             }
@@ -962,7 +964,8 @@ public:
                     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                     {
                         radiation_imc_detail::lorentzTransformToLab<PointT>(
-                            particle, owner_.cells_[cellIndex]);
+                            particle, owner_.cells_[cellIndex],
+                            owner_.lightSpeed());
                     }
                 }
                 particle.radiationState.clearDDMC();
@@ -1048,7 +1051,8 @@ public:
                     if(!particle.radiationState.isResident() && useComovingFrame)
                     {
                         radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                            frequencyProbe, owner_.cells_[cellIndex]);
+                            frequencyProbe, owner_.cells_[cellIndex],
+                            owner_.lightSpeed());
                     }
                 }
                 double coFreq = frequencyProbe.frequency;
@@ -1068,7 +1072,8 @@ public:
                     if(useComovingFrame)
                     {
                         radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                            particle, owner_.cells_[cellIndex]);
+                            particle, owner_.cells_[cellIndex],
+                            owner_.lightSpeed());
                         owner_.clampFrequencyToBounds(particle.frequency);
                         convertedIncomingToComoving = true;
                     }
@@ -1091,7 +1096,8 @@ public:
                     if(useComovingFrame)
                     {
                         radiation_imc_detail::lorentzTransformToLab<PointT>(
-                            particle, owner_.cells_[cellIndex]);
+                            particle, owner_.cells_[cellIndex],
+                            owner_.lightSpeed());
                         owner_.clampFrequencyToBounds(particle.frequency);
                         particle.initialWeight = std::abs(particle.weight);
                     }
@@ -1112,7 +1118,7 @@ public:
                data.sigmaEnergyAbs > 0.0 &&
                (f > 0.0 || owner_.postProcessExternalSourceMode_))
             {
-                upscatterRate = units::clight * (1.0 - f) * data.sigmaEnergyAbs *
+                upscatterRate = owner_.lightSpeed() * (1.0 - f) * data.sigmaEnergyAbs *
                     (1.0 - data.gamma);
             }
             double eventRate = data.totalLeakRate + upscatterRate;
@@ -1151,7 +1157,7 @@ public:
                 double const fHistory = owner_.factorFleck_[cellIndex];
                 double const scatteringOpacity =
                     owner_.scatteringOpacities_[cellIndex];
-                double const explicitResetOpacity = upscatterRate / units::clight;
+                double const explicitResetOpacity = upscatterRate / owner_.lightSpeed();
                 ParticleCounterEngine polarizationEngine(
                     particle.rngKey, particle.rngCounter);
                 std::uniform_real_distribution<double> polarizationUnit(0.0, 1.0);
@@ -1167,6 +1173,7 @@ public:
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
                 if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                   !owner_.parameters_.staticScatterers &&
                    data.velocityDivergence != 0.0)
                 {
                     double const logShift = -data.velocityDivergence * dt / 3.0;
@@ -1181,7 +1188,7 @@ public:
                 }
             }
 
-            double absRate = data.sigmaEnergyAbs * f * units::clight;
+            double absRate = data.sigmaEnergyAbs * f * owner_.lightSpeed();
             double oldWeight = particle.weight;
             double expFactor = std::expm1(-dt * absRate);
 
@@ -1193,11 +1200,12 @@ public:
                              radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
                     if(owner_.parameters_.withHydro &&
+                       !owner_.parameters_.staticScatterers &&
                        !owner_.parameters_.diffusionPressureGradient)
                     {
                         owner_.tallyMomentum(
                             cellIndex, absorbedEnergy * owner_.cells_[cellIndex].velocity *
-                            units::inv_clight2);
+                            owner_.inverseLightSpeedSquared());
                     }
                 }
             }
@@ -1254,11 +1262,12 @@ public:
                                  radiation_imc_detail::has_member_velocity<CellT>::value)
                     {
                         if(owner_.parameters_.withHydro &&
+                           !owner_.parameters_.staticScatterers &&
                            !owner_.parameters_.diffusionPressureGradient)
                         {
                             owner_.tallyMomentum(
                                 cellIndex, particle.weight * owner_.cells_[cellIndex].velocity *
-                                units::inv_clight2);
+                                owner_.inverseLightSpeedSquared());
                         }
                     }
                 }
@@ -1455,7 +1464,7 @@ public:
                             owner_.energyBoundaries_[data.groupCutoff];
                     if(leaveDDMCBand)
                     {
-                        particle.velocity = units::clight *
+                        particle.velocity = owner_.lightSpeed() *
                             owner_.samplePostProcessExternalSourceDirection(nOut, particle);
         #ifdef MONTECARLO_POLARIZATION
                         if(owner_.polarizationEnabled())
@@ -1471,7 +1480,8 @@ public:
                             if(useComovingFrame)
                             {
                                 radiation_imc_detail::lorentzTransformToLab<PointT>(
-                                    particle, owner_.cells_[cellIndex]);
+                                    particle, owner_.cells_[cellIndex],
+                                    owner_.lightSpeed());
                                 owner_.clampFrequencyToBounds(particle.frequency);
                             }
                         }
@@ -1547,7 +1557,7 @@ public:
                 }
 
                 particle.location = leakFaceCenter;
-                particle.velocity = dir * units::clight;
+                particle.velocity = dir * owner_.lightSpeed();
 
                 bool const targetDDMC = useDDMCChannel && chosen->targetDDMCEligible;
                 if(!targetDDMC && owner_.parameters_.withMultigroupDDMC &&
@@ -1596,13 +1606,15 @@ public:
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
                     if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                       !owner_.parameters_.staticScatterers &&
                        !targetDDMC)
                     {
                         CellT sourceCell = owner_.cells_[cellIndex];
                         sourceCell.velocity = owner_.cells_[cellIndex].velocity;
                         MCParticle transportParticle = particle;
                         radiation_imc_detail::lorentzTransformToLab<PointT>(
-                            transportParticle, sourceCell);
+                            transportParticle, sourceCell,
+                            owner_.lightSpeed());
                         particle.velocity = transportParticle.velocity;
                         particle.frequency = transportParticle.frequency;
                         particle.weight = transportParticle.weight;
@@ -1871,7 +1883,8 @@ public:
             bool useVelocityFrames = false;
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC) ||
+                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                    !owner_.parameters_.staticScatterers) ||
                    (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
                 {
                     CellT faceCell = owner_.cells_[sourceCellIndex];
@@ -1879,7 +1892,7 @@ public:
                     faceCell.velocity = faceVelocity;
                     targetCell.velocity = owner_.ddmcPointVelocity_[targetCellIndex];
                     radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                        faceComoving, faceCell);
+                        faceComoving, faceCell, owner_.lightSpeed());
         #ifdef MONTECARLO_POLARIZATION
                     if(owner_.polarizationEnabled())
                     {
@@ -1889,9 +1902,9 @@ public:
         #endif
                     targetComoving = faceComoving;
                     radiation_imc_detail::lorentzTransformToLab<PointT>(
-                        targetComoving, faceCell);
+                        targetComoving, faceCell, owner_.lightSpeed());
                     radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                        targetComoving, targetCell);
+                        targetComoving, targetCell, owner_.lightSpeed());
                     useVelocityFrames = true;
                 }
             }
@@ -1967,7 +1980,7 @@ public:
                    owner_.parameters_.ddmcUseMovingInterfaceCorrection)
                 {
                     double const betaNormal = -ScalarProd(faceVelocity, normal) *
-                        units::inv_clight;
+                        owner_.inverseLightSpeed();
                     if(!std::isfinite(betaNormal) ||
                        std::abs(betaNormal) >
                            owner_.parameters_.ddmcMaxInterfaceVelocityOverC)
@@ -2051,7 +2064,7 @@ public:
                 e1 = e1 / std::max(fastabs(e1), std::numeric_limits<double>::min());
                 PointT e2 = CrossProduct(normal, e1);
                 e2 = e2 / std::max(fastabs(e2), std::numeric_limits<double>::min());
-                faceComoving.velocity = units::clight *
+                faceComoving.velocity = owner_.lightSpeed() *
                     (-reflectedMu * normal +
                      sinTheta * std::cos(phi) * e1 +
                      sinTheta * std::sin(phi) * e2);
@@ -2061,7 +2074,8 @@ public:
                     {
                         CellT faceCell = owner_.cells_[sourceCellIndex];
                         faceCell.velocity = faceVelocity;
-                        radiation_imc_detail::lorentzTransformToLab<PointT>(faceComoving, faceCell);
+                        radiation_imc_detail::lorentzTransformToLab<PointT>(
+                            faceComoving, faceCell, owner_.lightSpeed());
                     }
                 }
                 particle.velocity = faceComoving.velocity;
@@ -2100,9 +2114,9 @@ public:
                     targetCell.velocity = owner_.ddmcPointVelocity_[targetCellIndex];
                     targetComoving = faceComoving;
                     radiation_imc_detail::lorentzTransformToLab<PointT>(
-                        targetComoving, faceCell);
+                        targetComoving, faceCell, owner_.lightSpeed());
                     radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                        targetComoving, targetCell);
+                        targetComoving, targetCell, owner_.lightSpeed());
         #ifdef MONTECARLO_POLARIZATION
                     if(owner_.polarizationEnabled())
                     {
@@ -2267,12 +2281,14 @@ public:
         if constexpr(has_member_velocity<CellT>::value)
         {
             if((owner_.parameters_.withHydro &&
-                !owner_.parameters_.MMC) ||
+                !owner_.parameters_.MMC &&
+                !owner_.parameters_.staticScatterers) ||
                (owner_.parameters_.postProcess.enabled &&
                 owner_.parameters_.postProcess.useCellVelocities))
             {
                 lorentzTransformToComoving<PointT>(
-                    targetComoving, owner_.cells_[cellIndex]);
+                    targetComoving, owner_.cells_[cellIndex],
+                    owner_.lightSpeed());
             }
         }
         if(owner_.parameters_.withMultigroupOpacity)

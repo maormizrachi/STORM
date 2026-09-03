@@ -1400,7 +1400,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
     if(views.depositMaterialEnergy)
     {
         STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], -expFactor * oldWeight);
-        if(views.depositMomentum && views.pendingMomentum != nullptr &&
+        if(views.depositMomentum && views.comovingTransport &&
+           views.pendingMomentum != nullptr &&
            views.cellVelocities != nullptr)
         {
             const double absorbed = -expFactor * oldWeight;
@@ -1451,7 +1452,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         if(views.depositMaterialEnergy)
         {
             STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], particle.weight);
-            if(views.depositMomentum && views.pendingMomentum != nullptr &&
+            if(views.depositMomentum && views.comovingTransport &&
+               views.pendingMomentum != nullptr &&
                views.cellVelocities != nullptr)
             {
                 const double inverseC2 =

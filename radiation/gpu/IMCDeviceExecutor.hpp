@@ -65,6 +65,7 @@ public:
                 owner_.ddmcPointCellID_,
                 owner_.parameters_.withHydro &&
                     !owner_.parameters_.MMC &&
+                    !owner_.parameters_.staticScatterers &&
                     owner_.parameters_.ddmcUseMovingInterfaceCorrection,
                 owner_.parameters_.ddmcMaxInterfaceVelocityOverC,
                 owner_.parameters_.ddmcInterfaceTargetWeightRatio,
@@ -307,7 +308,9 @@ public:
         bool depositMomentum = false;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            comovingTransport = owner_.parameters_.withHydro and not owner_.parameters_.MMC;
+            comovingTransport = owner_.parameters_.withHydro and
+                not owner_.parameters_.MMC and
+                not owner_.parameters_.staticScatterers;
         }
         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
         {
@@ -317,10 +320,11 @@ public:
         }
         gpu::GreyIMCViews<gpu::DeviceVec3> result =
             gpuData_->Views(
-            units::clight,
+            owner_.lightSpeed(),
             !owner_.parameters_.noHydroFeedback,
             comovingTransport,
-            depositMomentum);
+            depositMomentum,
+            owner_.parameters_.staticScatterers);
         result.ddmcOnlyTransport =
             this->SharedDDMCKernelEligible() ? 0u : 1u;
         return result;
@@ -409,11 +413,14 @@ public:
             result.randomWalk.enabled = 1;
             result.randomWalk.spectralEnabled = owner_.parameters_.withMultigroupOpacity and owner_.rwCellData_.size() == result.grid.cellCount;
         }
-        result.speedOfLight = units::clight;
+        result.speedOfLight = owner_.lightSpeed();
         result.depositMaterialEnergy = not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled;
+        result.staticScatterers = owner_.parameters_.staticScatterers;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            result.comovingTransport = owner_.parameters_.withHydro and not owner_.parameters_.MMC;
+            result.comovingTransport = owner_.parameters_.withHydro and
+                not owner_.parameters_.MMC and
+                not owner_.parameters_.staticScatterers;
         }
         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
         {
