@@ -1,0 +1,6 @@
+TEST_ID="desmore2012_mc_serial"
+TAGS="serial"
+CATEGORY="physics"
+RUN_COMMAND='"${STORM_BIN}"'
+CHECK_FUNCTION="check_desmore2012_mc_serial_case"
+TIMEOUT=5400
