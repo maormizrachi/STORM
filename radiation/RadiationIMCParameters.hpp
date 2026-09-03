@@ -49,7 +49,7 @@ struct RadiationIMCParameters
     // Moving IMC-to-DDMC interface corrections above this bound bypass DDMC
     // for that crossing and remain unbiased in ordinary IMC transport.
     double ddmcMaxMovingInterfaceWeightCorrection = 10.0;
-    bool ddmcUseMultigroupPGRW = false;
+    bool withMultigroupDDMC = false;
     std::size_t ddmcMaxGroupCutoff = NumGroups;
     bool ddmcInterfaceDiagnostics = false;
     bool noHydroFeedback = false;
@@ -116,7 +116,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
            << parameters.ddmcMaxInterfaceVelocityOverC << '\n';
         os << "\tDDMC maximum group cutoff: "
            << parameters.ddmcMaxGroupCutoff << '\n';
-        os << "\tDDMC multigroup PGRW: " << parameters.ddmcUseMultigroupPGRW << '\n';
+        os << "\twith multigroup DDMC: " << parameters.withMultigroupDDMC << '\n';
         os << "\tDDMC max moving interface weight correction: "
            << parameters.ddmcMaxMovingInterfaceWeightCorrection << '\n';
     }

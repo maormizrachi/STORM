@@ -625,6 +625,7 @@ int main(int argc, char *argv[])
     imcParams.withHydro = true;
     imcParams.withMultigroupOpacity = true;
     imcParams.withDDMC = true;
+    imcParams.withMultigroupDDMC = true;
     imcParams.ddmcInterfaceTargetWeightRatio =
         interfaceTargetWeightRatio;
     imcParams.noHydroFeedback = true;

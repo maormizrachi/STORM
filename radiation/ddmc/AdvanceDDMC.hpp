@@ -577,7 +577,7 @@ double SampleAsymptoticMuPortable(double random)
     for(int iteration = 0; iteration < 56; ++iteration)
     {
         const double mu = 0.5 * (lo + hi);
-        const double cdf = 0.5 * mu * mu * (1.0 + mu);
+        const double cdf = mu * mu * (0.455 + 0.545 * mu);
         if(cdf < random)
         {
             lo = mu;
@@ -912,20 +912,17 @@ InterfaceResult TryIMCToDDMCInterface(
     double admission = StaticAdmissionProbability(
         mu, ddmc.interfaceTargetSigmaDiffusion[directedFace],
         ddmc.interfaceTargetDistance[directedFace]);
-    if(!ddmc.pgrwEnabled)
+    const double coefficient = Densmore2006CellCoefficient(
+        ddmc.interfaceTargetSigmaDiffusion[directedFace],
+        ddmc.interfaceTargetSingleScatterAlbedo[directedFace],
+        ddmc.interfaceTargetDistance[directedFace]);
+    if(IsProbabilisticDensmore2006Coefficient(coefficient))
     {
-        const double coefficient = Densmore2006CellCoefficient(
-            ddmc.interfaceTargetSigmaDiffusion[directedFace],
-            ddmc.interfaceTargetSingleScatterAlbedo[directedFace],
-            ddmc.interfaceTargetDistance[directedFace]);
-        if(IsProbabilisticDensmore2006Coefficient(coefficient))
-        {
-            admission =
-                Densmore2006AdmissionProbability(mu, coefficient);
-        }
-        // Outside Eq. (59)'s probabilistic range, retain the paired legacy
-        // admission probability initialized above.
+        admission =
+            Densmore2006AdmissionProbability(mu, coefficient);
     }
+    // Outside Eq. (59)'s probabilistic range, retain the paired legacy
+    // admission probability initialized above.
     if(CounterRNG::unitOpen(
            particle.rngKey, particle.rngCounter++) > admission)
     {
@@ -1568,11 +1565,22 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             }
             return result;
         }
-        const double kT = (ddmc.cellTemperature != nullptr)? boltzmannConstant * ddmc.cellTemperature[cellIndex] : 0.0;
-        SamplePlanckBandFrequency(
-            particle, views.energyBoundaries, views.thermalEmissionCdf,
-            views.groupCount, cellIndex, kT, groupCutoff,
-            views.groupCount);
+        const double *cumulativeOpacity =
+            views.thermalEmissionCdf +
+            cellIndex * (views.groupCount + 1) + 1;
+        const double opacityCdfCoordinate =
+            UpperBandOpacityCdfCoordinate(
+                cumulativeOpacity, views.groupCount, groupCutoff,
+                CounterRNG::unitOpen(
+                    particle.rngKey, particle.rngCounter++));
+        if(!transport::IsFinite(opacityCdfCoordinate))
+        {
+            result.error = AdvanceError::InvalidData;
+            return result;
+        }
+        particle.frequency = SampleFrequencyFromCellCdf(
+            views.energyBoundaries, views.thermalEmissionCdf,
+            views.groupCount, cellIndex, opacityCdfCoordinate);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
         SampleRandomVelocity(particle, views.speedOfLight);
         LorentzToLab(particle, views, cellIndex);
@@ -1777,6 +1785,24 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
 
     result.step.change = ParticleStatus::CELL_MOVE;
     result.step.nextCellIndex = ddmc.nextCellIndices[chosen];
+    if(views.grid.cellFaceOffsets != nullptr &&
+       views.grid.nextCellIndices != nullptr &&
+       views.grid.boundaryCrossings != nullptr)
+    {
+        const std::size_t begin = views.grid.cellFaceOffsets[cellIndex];
+        const std::size_t end = views.grid.cellFaceOffsets[cellIndex + 1];
+        for(std::size_t directedFace = begin;
+            directedFace < end; ++directedFace)
+        {
+            if(views.grid.nextCellIndices[directedFace] ==
+               result.step.nextCellIndex)
+            {
+                result.step.boundaryCrossing =
+                    views.grid.boundaryCrossings[directedFace];
+                break;
+            }
+        }
+    }
     return result;
 }
 

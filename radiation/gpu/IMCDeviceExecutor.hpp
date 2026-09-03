@@ -47,7 +47,7 @@ public:
                 owner_.parameters_.ddmcMinParticleOpticalDepth,
                 temperatures,
                 owner_.ddmcPointCellID_,
-                owner_.parameters_.ddmcUseMultigroupPGRW &&
+                owner_.parameters_.withMultigroupDDMC &&
                     owner_.parameters_.withMultigroupOpacity);
             const auto &gridData = owner_.componentGridData();
             ddmcSnapshot_.BuildInterface(

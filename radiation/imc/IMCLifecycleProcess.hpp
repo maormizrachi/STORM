@@ -185,10 +185,17 @@ public:
                             owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection);
                 throw eo;
             }
-            if(owner_.parameters_.withDDMC && owner_.parameters_.ddmcUseMultigroupPGRW &&
+            if(owner_.parameters_.withDDMC && owner_.parameters_.withMultigroupDDMC &&
                !owner_.parameters_.withMultigroupOpacity)
             {
-                rejectUnsupportedParameter("ddmcUseMultigroupPGRW requires withMultigroupOpacity");
+                rejectUnsupportedParameter("withMultigroupDDMC requires withMultigroupOpacity");
+            }
+            if(owner_.parameters_.withDDMC &&
+               owner_.parameters_.withMultigroupOpacity &&
+               !owner_.parameters_.withMultigroupDDMC)
+            {
+                rejectUnsupportedParameter(
+                    "multigroup DDMC requires withMultigroupDDMC");
             }
             if(owner_.parameters_.withCompton && !owner_.parameters_.withMultigroupOpacity)
             {
@@ -865,6 +872,15 @@ public:
                     particle.timeLeft = transportDt * owner_.randomUnitOpen(particle);
                 }
             }
+            boundaryParticles.erase(
+                std::remove_if(
+                    boundaryParticles.begin(), boundaryParticles.end(),
+                    [&](MCParticle &particle)
+                    {
+                        return !owner_.ddmcEngine_->
+                            keepDDMCThermalBoundaryParticle(particle);
+                    }),
+                boundaryParticles.end());
             newParticles.insert(
                 newParticles.end(),
                 boundaryParticles.begin(),

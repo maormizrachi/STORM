@@ -112,7 +112,7 @@ public:
                 }
                 double meanChordLength = 4.0 * volume / surfaceArea;
 
-                if(owner_.parameters_.ddmcUseMultigroupPGRW and owner_.parameters_.withMultigroupOpacity)
+                if(owner_.parameters_.withMultigroupDDMC and owner_.parameters_.withMultigroupOpacity)
                 {
                     GroupArray energyCenters = owner_.opacity_->getEnergyCenters(owner_.energyBoundaries_);
                     double kT = units::k_boltz * cell.temperature;
@@ -144,7 +144,9 @@ public:
                         double sigT_g = sigA_g + scatOp_g;
                         double Bg = ddmc::PlanckBandMass(owner_.energyBoundaries_, kT, g, g + 1);
                         totalSigABg += sigA_g * Bg;
-                        if(not foundNonDiffusive and sigT_g * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth)
+                        if(not foundNonDiffusive &&
+                           g < owner_.parameters_.ddmcMaxGroupCutoff &&
+                           sigT_g * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth)
                         {
                             cutoff = g + 1;
                             totalBgDiff += Bg;
@@ -162,15 +164,17 @@ public:
                     }
                     if(cutoff > 0 and totalBgDiff > 0.0)
                     {
-                        data.groupCutoff = std::min(cutoff, owner_.parameters_.ddmcMaxGroupCutoff);
+                        data.groupCutoff = cutoff;
                         data.sigmaA = sumBgSigADiff / totalBgDiff;
                         data.sigmaT = sumBgSigTDiff / totalBgDiff;
                         data.sigmaEnergyAbs = data.sigmaA;
                         data.sigmaMomentum = data.sigmaT;
-                        data.sigmaDiffusion = data.sigmaT;
+                        data.sigmaDiffusion = ddmc::RosselandOpacityFromBandSums(
+                            totalBgDiff, sumBgOverSigTDiff);
                         data.sigmaParticleGate = data.sigmaT;
                         data.sigmaGroupExit = data.sigmaT;
-                        data.diffusionCoefficient = (sumBgOverSigTDiff > 0.0)? (units::clight / 3.0) * sumBgOverSigTDiff / totalBgDiff : 0.0;
+                        data.diffusionCoefficient = data.sigmaDiffusion > 0.0
+                            ? units::clight / (3.0 * data.sigmaDiffusion) : 0.0;
                         data.gamma = (totalSigABg > 0.0)? sumBgSigADiff / totalSigABg : 1.0;
                         data.eligible = data.sigmaParticleGate > 0.0 and
                                         data.sigmaParticleGate * meanChordLength >= owner_.parameters_.ddmcMinCellOpticalDepth and
@@ -223,7 +227,7 @@ public:
                             {
                                 ++data.rigidBoundaryFaceCount;
                             }
-                            else
+                            else if(behavior != DDMCBoundaryFaceBehavior::ThermalSource)
                             {
                                 ++data.unsupportedBoundaryFaceCount;
                                 ++owner_.ddmcUnsupportedBoundaryFaceCount_;
@@ -375,7 +379,7 @@ public:
                 double volume = owner_.componentGrid().GetVolume(i);
                 PointT const cellCenter = owner_.componentGrid().GetMeshPoint(i);
                 double const sourceBandMass =
-                    (owner_.parameters_.ddmcUseMultigroupPGRW &&
+                    (owner_.parameters_.withMultigroupDDMC &&
                      owner_.parameters_.withMultigroupOpacity)
                     ? ddmc::PlanckBandMass(
                         owner_.energyBoundaries_, units::k_boltz * owner_.cells_[i].temperature,
@@ -451,12 +455,84 @@ public:
                     std::size_t nextCellIndex = (neighbors.first == i) ? neighbors.second : neighbors.first;
                     if(owner_.componentGrid().IsPointOutsideBox(nextCellIndex))
                     {
-                        if(owner_.componentBoundary()->getDDMCBoundaryFaceBehavior(
-                               faceIdx, i, nextCellIndex) !=
-                           DDMCBoundaryFaceBehavior::ReflectingRigid)
+                        DDMCBoundaryFaceBehavior const behavior =
+                            owner_.componentBoundary()->getDDMCBoundaryFaceBehavior(
+                                faceIdx, i, nextCellIndex);
+                        if(behavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
+                        {
+                            continue;
+                        }
+                        if(behavior != DDMCBoundaryFaceBehavior::ThermalSource)
                         {
                             data.boundaryExcluded = true;
+                            continue;
                         }
+
+                        PointT normal = owner_.componentGrid().Normal(faceIdx);
+                        double const normalMagnitude = fastabs(normal);
+                        double const area = owner_.componentGrid().GetArea(faceIdx);
+                        if(!(normalMagnitude > 0.0) || !std::isfinite(normalMagnitude) ||
+                           !(area > 0.0) || !std::isfinite(area))
+                        {
+                            ++owner_.ddmcLeakInvalidGeometryCount_;
+                            data.boundaryExcluded = true;
+                            continue;
+                        }
+                        normal = normal / normalMagnitude;
+                        if(ScalarProd(
+                               normal,
+                               owner_.componentGrid().GetMeshPoint(nextCellIndex) -
+                                   cellCenter) < 0.0)
+                        {
+                            normal = -normal;
+                        }
+
+                        double const sourceDistanceToFace = std::abs(ScalarProd(
+                            owner_.componentGrid().FaceCM(faceIdx) - cellCenter,
+                            normal));
+                        double boundaryRate = ddmc::BoundaryLeakRate(
+                            area, volume, data.sigmaDiffusion,
+                            sourceDistanceToFace, units::clight);
+                        double const coefficient =
+                            ddmc::Densmore2006CellCoefficient(
+                                data.sigmaDiffusion, data.singleScatterAlbedo,
+                                sourceDistanceToFace);
+                        if(std::isfinite(coefficient))
+                        {
+                            boundaryRate = ddmc::Densmore2006BoundaryLeakRate(
+                                area, volume, units::clight, coefficient);
+                        }
+                        if(!(boundaryRate > 0.0) ||
+                           !std::isfinite(boundaryRate))
+                        {
+                            ++owner_.ddmcLeakInvalidGeometryCount_;
+                            continue;
+                        }
+
+                        DDMCFaceLeak faceLeak;
+                        faceLeak.faceIndex = faceIdx;
+                        faceLeak.nextCellIndex = nextCellIndex;
+                        faceLeak.kind = ddmc::FaceKind::InterfaceToIMC;
+                        faceLeak.rate = boundaryRate;
+                        faceLeak.boundaryRate = boundaryRate;
+                        faceLeak.ddmcRate = boundaryRate;
+                        faceLeak.sourceBandMass = sourceBandMass;
+                        faceLeak.commonBandMass = sourceBandMass;
+                        faceLeak.area = area;
+                        faceLeak.sourceDistanceToFace = sourceDistanceToFace;
+                        faceLeak.outwardNormal = normal;
+                        data.faceLeaks.push_back(faceLeak);
+                        data.totalLeakRate += boundaryRate;
+                        data.faceAreaSum += area;
+                        double const nx = normal[0];
+                        double const ny = normal[1];
+                        double const nz = normal[2];
+                        data.fluxMatrix[0] += area * nx * nx;
+                        data.fluxMatrix[1] += area * nx * ny;
+                        data.fluxMatrix[2] += area * nx * nz;
+                        data.fluxMatrix[3] += area * ny * ny;
+                        data.fluxMatrix[4] += area * ny * nz;
+                        data.fluxMatrix[5] += area * nz * nz;
                         continue;
                     }
                     PointT normal = owner_.componentGrid().Normal(faceIdx);
@@ -522,7 +598,7 @@ public:
                     double ddmcFraction = 0.0;
                     if(targetEligible && internalRate > 0.0)
                     {
-                        if(!(owner_.parameters_.ddmcUseMultigroupPGRW &&
+                        if(!(owner_.parameters_.withMultigroupDDMC &&
                              owner_.parameters_.withMultigroupOpacity) ||
                            targetCutoff >= data.groupCutoff)
                         {
@@ -539,10 +615,7 @@ public:
                         }
                     }
 
-                    const bool multigroupPGRW =
-                        owner_.parameters_.ddmcUseMultigroupPGRW &&
-                        owner_.parameters_.withMultigroupOpacity;
-                    if(ddmcFraction < 1.0 && !multigroupPGRW)
+                    if(ddmcFraction < 1.0)
                     {
                         const double coefficient =
                             ddmc::Densmore2006CellCoefficient(
@@ -634,7 +707,8 @@ public:
                     bool const targetEligible = face.nextCellIndex <
                         owner_.ddmcPointEligible_.size() &&
                         owner_.ddmcPointEligible_[face.nextCellIndex] != 0;
-                    if(face.ddmcRate > 0.0 && !targetEligible)
+                    if(face.kind == ddmc::FaceKind::Internal &&
+                       face.ddmcRate > 0.0 && !targetEligible)
                     {
                         face.kind = ddmc::FaceKind::InterfaceToIMC;
                         face.ddmcRate = 0.0;
@@ -960,7 +1034,7 @@ public:
                 return false;
             }
 
-            if(owner_.parameters_.ddmcUseMultigroupPGRW && owner_.parameters_.withMultigroupOpacity)
+            if(owner_.parameters_.withMultigroupDDMC && owner_.parameters_.withMultigroupOpacity)
             {
                 if(data.groupCutoff == 0 || data.groupCutoff > NumGroups)
                 {
@@ -1034,7 +1108,7 @@ public:
 
             double f = owner_.factorFleck_[cellIndex];
             double upscatterRate = 0.0;
-            if(owner_.parameters_.ddmcUseMultigroupPGRW && data.gamma < 1.0 &&
+            if(owner_.parameters_.withMultigroupDDMC && data.gamma < 1.0 &&
                data.sigmaEnergyAbs > 0.0 &&
                (f > 0.0 || owner_.postProcessExternalSourceMode_))
             {
@@ -1052,7 +1126,7 @@ public:
             double tEvent = -std::log(owner_.randomUnitOpen(particle)) / eventRate;
             double tCensus = particle.timeLeft;
             double tCutoff = std::numeric_limits<double>::max();
-            if(owner_.parameters_.ddmcUseMultigroupPGRW &&
+            if(owner_.parameters_.withMultigroupDDMC &&
                data.groupCutoff > 0 && data.groupCutoff <= NumGroups &&
                data.velocityDivergence < 0.0)
             {
@@ -1135,7 +1209,7 @@ public:
 
             if(owner_.parameters_.withEgTimeAvg && owner_.parameters_.withMultigroupOpacity)
             {
-                if(owner_.parameters_.ddmcUseMultigroupPGRW && data.groupCutoff > 0 &&
+                if(owner_.parameters_.withMultigroupDDMC && data.groupCutoff > 0 &&
                    data.groupCutoff <= NumGroups)
                 {
                     double const kT = units::k_boltz *
@@ -1238,7 +1312,7 @@ public:
                 if(owner_.parameters_.withMultigroupOpacity)
                 {
                     bool sampledResidentBand = false;
-                    if(owner_.parameters_.ddmcUseMultigroupPGRW &&
+                    if(owner_.parameters_.withMultigroupDDMC &&
                        data.groupCutoff > 0 && data.groupCutoff <= NumGroups)
                     {
                         double const kT = units::k_boltz *
@@ -1375,7 +1449,7 @@ public:
                     }
 
                     bool const leaveDDMCBand =
-                        owner_.parameters_.ddmcUseMultigroupPGRW &&
+                        owner_.parameters_.withMultigroupDDMC &&
                         data.groupCutoff < NumGroups &&
                         particle.frequency >=
                             owner_.energyBoundaries_[data.groupCutoff];
@@ -1476,7 +1550,7 @@ public:
                 particle.velocity = dir * units::clight;
 
                 bool const targetDDMC = useDDMCChannel && chosen->targetDDMCEligible;
-                if(!targetDDMC && owner_.parameters_.ddmcUseMultigroupPGRW &&
+                if(!targetDDMC && owner_.parameters_.withMultigroupDDMC &&
                    owner_.parameters_.withMultigroupOpacity)
                 {
                     std::size_t beginGroup = 0;
@@ -1583,6 +1657,9 @@ public:
 
                 functionality.change = ParticleStatus::CELL_MOVE;
                 functionality.nextCellIndex = chosen->nextCellIndex;
+                functionality.boundaryCrossing =
+                    owner_.componentGrid().IsPointOutsideBox(
+                        chosen->nextCellIndex);
                 if(targetDDMC)
                 {
                     ++owner_.ddmcResidentLeakCount_;
@@ -1599,7 +1676,7 @@ public:
             }
             else
             {
-                if(!owner_.parameters_.ddmcUseMultigroupPGRW)
+                if(!owner_.parameters_.withMultigroupDDMC)
                 {
                     finalizePolarization(particle.velocity);
                     particle.radiationState.clearDDMC();
@@ -1608,35 +1685,31 @@ public:
                     return true;
                 }
                 CellT &cell = owner_.cells_[cellIndex];
-                double const kT = units::k_boltz * cell.temperature;
-                double const upperBandMass = ddmc::PlanckBandMass(
-                    owner_.energyBoundaries_, kT, data.groupCutoff, NumGroups);
-                if(!(upperBandMass > 0.0))
+                GroupArray const cumulativeOpacity =
+                    owner_.opacity_->GetCumulativeOpacity(
+                        cell, owner_.energyBoundaries_);
+                double const opacityCdfCoordinate =
+                    ddmc::UpperBandOpacityCdfCoordinate(
+                        cumulativeOpacity, data.groupCutoff,
+                        owner_.randomUnitOpen(particle));
+                if(!std::isfinite(opacityCdfCoordinate))
                 {
-                    StormError eo("RadiationIMC DDMC upscatter has no representable upper frequency band");
+                    StormError eo(
+                        "RadiationIMC DDMC upscatter has no opacity-weighted upper frequency band");
                     eo.addEntry("Cell index", cellIndex);
                     eo.addEntry("Group cutoff", data.groupCutoff);
-                    eo.addEntry("Upper-band Planck mass", upperBandMass);
+                    eo.addEntry("Total emission weight", cumulativeOpacity.back());
+                    double const weightThroughCutoff =
+                        data.groupCutoff > 0 &&
+                        data.groupCutoff <= cumulativeOpacity.size()
+                        ? cumulativeOpacity[data.groupCutoff - 1] : 0.0;
+                    eo.addEntry(
+                        "Emission weight through cutoff",
+                        weightThroughCutoff);
                     throw eo;
                 }
-                double remaining = owner_.randomUnitOpen(particle) * upperBandMass;
-                std::size_t selectedGroup = data.groupCutoff;
-                for(std::size_t group = data.groupCutoff; group < NumGroups; ++group)
-                {
-                    double const groupMass = ddmc::PlanckBandMass(
-                        owner_.energyBoundaries_, kT, group, group + 1);
-                    if(remaining <= groupMass || group + 1 == NumGroups)
-                    {
-                        selectedGroup = group;
-                        double const localRandom = groupMass > 0.0
-                            ? std::clamp(remaining / groupMass, 0.0, 1.0)
-                            : owner_.randomUnitOpen(particle);
-                        particle.frequency = owner_.opacity_->SampleThermalEnergyInGroup(
-                            cell, selectedGroup, localRandom, owner_.energyBoundaries_);
-                        break;
-                    }
-                    remaining -= groupMass;
-                }
+                particle.frequency = owner_.opacity_->GetThermalEnergy(
+                    cell, opacityCdfCoordinate, owner_.energyBoundaries_);
                 owner_.clampFrequencyToBounds(particle.frequency);
                 particle.velocity = owner_.sampleRandomVelocity(cell, particle);
                 exitDDMCToTransport(false);
@@ -1840,7 +1913,7 @@ public:
                 std::numeric_limits<double>::quiet_NaN(),
                 std::numeric_limits<double>::quiet_NaN());
 
-            if(owner_.parameters_.ddmcUseMultigroupPGRW &&
+            if(owner_.parameters_.withMultigroupDDMC &&
                owner_.parameters_.withMultigroupOpacity)
             {
                 std::size_t const cutoff = owner_.ddmcPointGroupCutoff_[targetCellIndex];
@@ -1937,12 +2010,8 @@ public:
             double const targetDistance = std::abs(ScalarProd(targetCenter - owner_.componentGrid().FaceCM(faceIndex), normal));
             double admission = ddmc::StaticAdmissionProbability(
                 mu, targetOpacity, targetDistance);
-            const bool multigroupPGRW =
-                owner_.parameters_.ddmcUseMultigroupPGRW &&
-                owner_.parameters_.withMultigroupOpacity;
-            if(!multigroupPGRW &&
-               targetCellIndex <
-                   owner_.ddmcPointSingleScatterAlbedo_.size())
+            if(targetCellIndex <
+               owner_.ddmcPointSingleScatterAlbedo_.size())
             {
                 const double coefficient =
                     ddmc::Densmore2006CellCoefficient(
@@ -2114,6 +2183,158 @@ public:
                 targetCellIndex, faceIndex, diagnosticGroup, admittedTargetWeight,
                 sourceGroupCutoff, targetGroupCutoff, mu, admission);
             return true;
+    }
+
+    bool keepDDMCThermalBoundaryParticle(MCParticle &particle)
+    {
+        std::size_t const cellIndex = particle.cellIndex;
+        if(!owner_.parameters_.withDDMC || !owner_.componentBoundary() ||
+           cellIndex >= owner_.componentGrid().GetPointNo() ||
+           cellIndex >= owner_.ddmcCellData_.size() ||
+           !owner_.ddmcCellData_[cellIndex].eligible)
+        {
+            return true;
+        }
+
+        PointT const cellCenter =
+            owner_.componentGrid().GetMeshPoint(cellIndex);
+        std::size_t sourceFace = std::numeric_limits<std::size_t>::max();
+        PointT outwardNormal{};
+        double centerToFaceDistance = 0.0;
+        double closestPlaneDistance = std::numeric_limits<double>::infinity();
+        for(std::size_t faceIdx :
+            owner_.componentGrid().GetCellFaces(cellIndex))
+        {
+            const std::pair<std::size_t, std::size_t> &neighbors =
+                owner_.componentGrid().GetFaceNeighbors(faceIdx);
+            std::size_t const nextCellIndex =
+                neighbors.first == cellIndex
+                ? neighbors.second : neighbors.first;
+            if(!owner_.componentGrid().IsPointOutsideBox(nextCellIndex) ||
+               owner_.componentBoundary()->getDDMCBoundaryFaceBehavior(
+                   faceIdx, cellIndex, nextCellIndex) !=
+                   DDMCBoundaryFaceBehavior::ThermalSource)
+            {
+                continue;
+            }
+
+            PointT normal = owner_.componentGrid().Normal(faceIdx);
+            double const normalMagnitude = fastabs(normal);
+            if(!(normalMagnitude > 0.0) ||
+               !std::isfinite(normalMagnitude))
+            {
+                continue;
+            }
+            normal = normal / normalMagnitude;
+            if(ScalarProd(
+                   normal,
+                   owner_.componentGrid().GetMeshPoint(nextCellIndex) -
+                       cellCenter) < 0.0)
+            {
+                normal = -normal;
+            }
+
+            double const speed = fastabs(particle.velocity);
+            if(!(speed > 0.0) ||
+               ScalarProd(particle.velocity / speed, normal) >= 0.0)
+            {
+                continue;
+            }
+            double const cellDistance = std::abs(ScalarProd(
+                owner_.componentGrid().FaceCM(faceIdx) - cellCenter, normal));
+            double const planeDistance = std::abs(ScalarProd(
+                particle.location - owner_.componentGrid().FaceCM(faceIdx),
+                normal));
+            double const faceScale = std::max(
+                {cellDistance,
+                 std::sqrt(owner_.componentGrid().GetArea(faceIdx)),
+                 std::numeric_limits<double>::min()});
+            if(planeDistance <= 1.0e-8 * faceScale &&
+               planeDistance < closestPlaneDistance)
+            {
+                sourceFace = faceIdx;
+                outwardNormal = normal;
+                centerToFaceDistance = cellDistance;
+                closestPlaneDistance = planeDistance;
+            }
+        }
+        if(sourceFace == std::numeric_limits<std::size_t>::max())
+        {
+            return true;
+        }
+
+        MCParticle targetComoving = particle;
+        if constexpr(has_member_velocity<CellT>::value)
+        {
+            if((owner_.parameters_.withHydro &&
+                !owner_.parameters_.MMC) ||
+               (owner_.parameters_.postProcess.enabled &&
+                owner_.parameters_.postProcess.useCellVelocities))
+            {
+                lorentzTransformToComoving<PointT>(
+                    targetComoving, owner_.cells_[cellIndex]);
+            }
+        }
+        if(owner_.parameters_.withMultigroupOpacity)
+        {
+            owner_.clampFrequencyToBounds(targetComoving.frequency);
+            std::size_t const groupCutoff =
+                owner_.ddmcCellData_[cellIndex].groupCutoff;
+            if(groupCutoff == 0 || groupCutoff > NumGroups ||
+               targetComoving.frequency >=
+                   owner_.energyBoundaries_[groupCutoff])
+            {
+                return true;
+            }
+        }
+
+        double const speed = fastabs(targetComoving.velocity);
+        if(!(speed > 0.0) || !std::isfinite(speed))
+        {
+            return true;
+        }
+        double const mu = std::clamp(
+            -ScalarProd(
+                targetComoving.velocity / speed, outwardNormal),
+            0.0, 1.0);
+        DDMCCellData const &data = owner_.ddmcCellData_[cellIndex];
+        double admission = ddmc::StaticAdmissionProbability(
+            mu, data.sigmaDiffusion, centerToFaceDistance);
+        double const coefficient = ddmc::Densmore2006CellCoefficient(
+            data.sigmaDiffusion, data.singleScatterAlbedo,
+            centerToFaceDistance);
+        if(std::isfinite(coefficient))
+        {
+            admission = ddmc::Densmore2006AdmissionProbability(
+                mu, coefficient);
+        }
+
+        if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
+        {
+            owner_.initializeParticleRNG(particle);
+        }
+        if(owner_.randomUnitOpen(particle) > admission)
+        {
+            return false;
+        }
+
+        particle.velocity = targetComoving.velocity;
+        particle.frequency = targetComoving.frequency;
+        particle.weight = targetComoving.weight;
+        particle.initialWeight = std::abs(particle.weight);
+        owner_.addDDMCFluxContribution(
+            cellIndex,
+            particle.weight * (particle.velocity / speed));
+        particle.radiationState.set(
+            RadiationTransportState<PointT>::DDMCMode);
+        particle.radiationState.set(
+            RadiationTransportState<PointT>::DDMCCellResident);
+        particle.radiationState.set(
+            RadiationTransportState<PointT>::DDMCComovingFrame);
+        particle.location = cellCenter;
+        particle.velocity = owner_.sampleRandomVelocity(
+            owner_.cells_[cellIndex], particle);
+        return true;
     }
 
     std::string getDDMCFaceDiagnosticsTSV(double xMin, double xMax) const

@@ -2,6 +2,7 @@
 #define STORM_DDMC_SAMPLING_HPP
 
 #include <cstddef>
+#include <limits>
 
 #include "../transport/TransportPortability.hpp"
 
@@ -9,6 +10,54 @@ namespace STORM::ddmc {
 
 // Matches source/Radiation/planck_integral/planck_integral.hpp (cgs Boltzmann).
 static constexpr double boltzmannConstant = 1.380649e-16;
+
+STORM_TRANSPORT_INLINE
+double RosselandOpacityFromBandSums(const double totalBandWeight,
+                                    const double weightedInverseOpacity)
+{
+    if(!(totalBandWeight > 0.0) || !(weightedInverseOpacity > 0.0))
+    {
+        return 0.0;
+    }
+    const double opacity = totalBandWeight / weightedInverseOpacity;
+    return transport::IsFinite(opacity) ? opacity : 0.0;
+}
+
+STORM_TRANSPORT_INLINE
+double UpperBandOpacityCdfCoordinate(const double *cumulativeOpacity,
+                                     const std::size_t groupCount,
+                                     const std::size_t groupCutoff,
+                                     const double unitRandom)
+{
+    if(cumulativeOpacity == nullptr || groupCount == 0 ||
+       groupCutoff >= groupCount ||
+       !(unitRandom >= 0.0 && unitRandom < 1.0))
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    const double lower =
+        groupCutoff > 0 ? cumulativeOpacity[groupCutoff - 1] : 0.0;
+    const double total = cumulativeOpacity[groupCount - 1];
+    if(!transport::IsFinite(lower) || !transport::IsFinite(total) ||
+       !(total > lower) || lower < 0.0)
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return (lower + unitRandom * (total - lower)) / total;
+}
+
+template<typename CumulativeOpacity>
+inline
+double UpperBandOpacityCdfCoordinate(
+    const CumulativeOpacity &cumulativeOpacity,
+    const std::size_t groupCutoff,
+    const double unitRandom)
+{
+    return UpperBandOpacityCdfCoordinate(
+        cumulativeOpacity.data(), cumulativeOpacity.size(),
+        groupCutoff, unitRandom);
+}
 
 STORM_TRANSPORT_INLINE
 double ClarkTaylor(const double x)
