@@ -314,13 +314,6 @@ STORM_TRANSPORT_INLINE double StaticAdmissionProbability(const double mu, const 
     return value < 0.0 ? 0.0 : (value > 1.0 ? 1.0 : value);
 }
 
-struct Densmore2006InterfaceCoefficients
-{
-    double analyticEmissivity = std::numeric_limits<double>::quiet_NaN();
-    double conversionCoefficient = std::numeric_limits<double>::quiet_NaN();
-    bool valid = false;
-};
-
 STORM_TRANSPORT_INLINE double Densmore2006SingleScatterAlbedo(
     const double transportOpacity,
     const double effectiveAbsorptionOpacity)
@@ -339,68 +332,57 @@ STORM_TRANSPORT_INLINE double Densmore2006SingleScatterAlbedo(
 // Eqs. (19), (35), (39), and (48). opticalThickness is sigma_t*Delta_x,
 // where Delta_x is twice the DDMC center-to-face normal distance for the
 // locally planar interface represented by the finite-volume face.
-STORM_TRANSPORT_INLINE Densmore2006InterfaceCoefficients Densmore2006Coefficients(
+STORM_TRANSPORT_INLINE double Densmore2006ConversionCoefficient(
     const double opticalThickness,
     const double singleScatterAlbedo)
 {
-    Densmore2006InterfaceCoefficients result;
     if(!(opticalThickness >= 0.0) ||
        !transport::IsFinite(opticalThickness) ||
        !(singleScatterAlbedo >= 0.0) ||
        !(singleScatterAlbedo <= 1.0) ||
        !transport::IsFinite(singleScatterAlbedo))
     {
-        return result;
+        return std::numeric_limits<double>::quiet_NaN();
     }
 
     const double attenuation =
         transport::Sqrt(3.0 * (1.0 - singleScatterAlbedo));
     const double extrapolationDenominator =
         1.0 + ExtrapolationLength * attenuation;
-    result.analyticEmissivity =
+    const double analyticEmissivity =
         (4.0 / 3.0) * attenuation / extrapolationDenominator;
 
     if(attenuation == 0.0)
     {
         // Continuous omega -> 1 limit of Eqs. (39) and (48).
-        result.conversionCoefficient = 8.0 /
+        return 8.0 /
             (3.0 * opticalThickness + 6.0 * ExtrapolationLength);
     }
-    else
-    {
-        const double halfScaledThickness =
-            0.5 * attenuation * opticalThickness;
-        const double absoluteHalfThickness =
-            transport::Abs(halfScaledThickness);
-        const double root = absoluteHalfThickness > 1.0
-            ? absoluteHalfThickness * transport::Sqrt(
-                1.0 + 1.0 /
-                    (absoluteHalfThickness * absoluteHalfThickness))
-            : transport::Sqrt(
-                1.0 + absoluteHalfThickness * absoluteHalfThickness);
-        const double betaFactor = root + halfScaledThickness;
 
-        // Divide Eq. (48) by attenuation*opticalThickness. Writing
-        // root - 1 as x^2/(root + 1) avoids cancellation as tau -> 0.
-        const double betaFactorMinusOne = halfScaledThickness +
-            halfScaledThickness * (halfScaledThickness / (root + 1.0));
-        const double emissivityTerm =
-            ExtrapolationLength * attenuation / extrapolationDenominator;
-        const double denominator =
-            betaFactorMinusOne + emissivityTerm;
-        result.conversionCoefficient =
-            result.analyticEmissivity * betaFactor / denominator;
-    }
-
-    // Eq. (26) reaches (5/4)*P at normal incidence; Eq. (59) therefore
-    // requires 0 <= P <= 4/5 for a probabilistic IMC-to-DDMC conversion.
-    result.valid = transport::IsFinite(result.conversionCoefficient) &&
-        result.conversionCoefficient >= 0.0 &&
-        result.conversionCoefficient <= 0.8;
-    return result;
+    const double halfScaledThickness =
+        0.5 * attenuation * opticalThickness;
+    const double absoluteHalfThickness = transport::Abs(halfScaledThickness);
+    const double root = absoluteHalfThickness > 1.0
+        ? absoluteHalfThickness * transport::Sqrt(
+            1.0 + 1.0 / (absoluteHalfThickness * absoluteHalfThickness))
+        : transport::Sqrt(
+            1.0 + absoluteHalfThickness * absoluteHalfThickness);
+    const double betaFactor = root + halfScaledThickness;
+    const double denominator =
+        halfScaledThickness +
+        halfScaledThickness * halfScaledThickness / (root + 1.0) +
+        ExtrapolationLength * attenuation / extrapolationDenominator;
+    return analyticEmissivity * betaFactor / denominator;
 }
 
-STORM_TRANSPORT_INLINE Densmore2006InterfaceCoefficients Densmore2006CellCoefficients(
+STORM_TRANSPORT_INLINE bool IsProbabilisticDensmore2006Coefficient(
+    const double coefficient)
+{
+    return transport::IsFinite(coefficient) &&
+        coefficient >= 0.0 && coefficient <= 0.8;
+}
+
+STORM_TRANSPORT_INLINE double Densmore2006CellCoefficient(
     const double transportOpacity,
     const double singleScatterAlbedo,
     const double centerToFaceDistance)
@@ -410,23 +392,26 @@ STORM_TRANSPORT_INLINE Densmore2006InterfaceCoefficients Densmore2006CellCoeffic
        !(centerToFaceDistance >= 0.0) ||
        !transport::IsFinite(centerToFaceDistance))
     {
-        return {};
+        return std::numeric_limits<double>::quiet_NaN();
     }
-    return Densmore2006Coefficients(
+    const double coefficient = Densmore2006ConversionCoefficient(
         2.0 * transportOpacity * centerToFaceDistance,
         singleScatterAlbedo);
+    return IsProbabilisticDensmore2006Coefficient(coefficient)
+        ? coefficient : std::numeric_limits<double>::quiet_NaN();
 }
 
 STORM_TRANSPORT_INLINE double Densmore2006AdmissionProbability(
     const double mu,
-    const Densmore2006InterfaceCoefficients &coefficients)
+    const double conversionCoefficient)
 {
-    if(!coefficients.valid || !transport::IsFinite(mu) || mu < 0.0)
+    if(!IsProbabilisticDensmore2006Coefficient(conversionCoefficient) ||
+       !transport::IsFinite(mu) || mu < 0.0)
     {
         return std::numeric_limits<double>::quiet_NaN();
     }
     const double boundedMu = mu < 1.0 ? mu : 1.0;
-    return 0.5 * coefficients.conversionCoefficient *
+    return 0.5 * conversionCoefficient *
         (1.0 + 1.5 * boundedMu);
 }
 
@@ -434,14 +419,14 @@ STORM_TRANSPORT_INLINE double Densmore2006BoundaryLeakRate(
     const double area,
     const double volume,
     const double lightSpeed,
-    const Densmore2006InterfaceCoefficients &coefficients)
+    const double conversionCoefficient)
 {
-    if(!coefficients.valid || !(area > 0.0) || !(volume > 0.0) ||
-       !(lightSpeed > 0.0))
+    if(!IsProbabilisticDensmore2006Coefficient(conversionCoefficient) ||
+       !(area > 0.0) || !(volume > 0.0) || !(lightSpeed > 0.0))
     {
         return std::numeric_limits<double>::quiet_NaN();
     }
-    return lightSpeed * area * coefficients.conversionCoefficient /
+    return lightSpeed * area * conversionCoefficient /
         (4.0 * volume);
 }
 

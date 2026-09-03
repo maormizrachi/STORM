@@ -914,15 +914,14 @@ InterfaceResult TryIMCToDDMCInterface(
         ddmc.interfaceTargetDistance[directedFace]);
     if(!ddmc.pgrwEnabled)
     {
-        const Densmore2006InterfaceCoefficients coefficients =
-            Densmore2006CellCoefficients(
-                ddmc.interfaceTargetSigmaDiffusion[directedFace],
-                ddmc.interfaceTargetSingleScatterAlbedo[directedFace],
-                ddmc.interfaceTargetDistance[directedFace]);
-        if(coefficients.valid)
+        const double coefficient = Densmore2006CellCoefficient(
+            ddmc.interfaceTargetSigmaDiffusion[directedFace],
+            ddmc.interfaceTargetSingleScatterAlbedo[directedFace],
+            ddmc.interfaceTargetDistance[directedFace]);
+        if(IsProbabilisticDensmore2006Coefficient(coefficient))
         {
             admission =
-                Densmore2006AdmissionProbability(mu, coefficients);
+                Densmore2006AdmissionProbability(mu, coefficient);
         }
         // Outside Eq. (59)'s probabilistic range, retain the paired legacy
         // admission probability initialized above.

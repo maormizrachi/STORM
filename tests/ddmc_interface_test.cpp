@@ -25,61 +25,47 @@ void requireClose(double actual,
     require(std::abs(actual - expected) <= relativeTolerance * scale, message);
 }
 
-void testPaperReferencePoint()
+void testCoefficient()
 {
-    STORM::ddmc::Densmore2006InterfaceCoefficients const coefficients =
-        STORM::ddmc::Densmore2006Coefficients(15.0, 0.9);
-    require(coefficients.valid,
+    const double coefficient =
+        STORM::ddmc::Densmore2006ConversionCoefficient(15.0, 0.9);
+    require(STORM::ddmc::IsProbabilisticDensmore2006Coefficient(coefficient),
             "Densmore reference point is not probabilistic");
-    requireClose(coefficients.analyticEmissivity, 0.5257329470522999,
-                 2.0e-15, "analytic emissivity does not match Eq. (19)");
-    requireClose(coefficients.conversionCoefficient, 0.5754275279498156,
-                 2.0e-15, "conversion coefficient does not match Eq. (48)");
+    requireClose(coefficient, 0.5754275279498156, 2.0e-15,
+                 "conversion coefficient does not match Eq. (48)");
     requireClose(STORM::ddmc::Densmore2006AdmissionProbability(
-                     1.0, coefficients),
-                 1.25 * coefficients.conversionCoefficient,
+                     1.0, coefficient),
+                 1.25 * coefficient,
                  2.0e-15,
                  "normal-incidence probability does not match Eq. (26)");
-}
-
-void testAsymptoticLimits()
-{
-    constexpr double omega = 0.9;
-    STORM::ddmc::Densmore2006InterfaceCoefficients const thin =
-        STORM::ddmc::Densmore2006Coefficients(1.0e-6, omega);
+    const double thin =
+        STORM::ddmc::Densmore2006ConversionCoefficient(1.0e-6, 0.9);
     double const standardThin =
         8.0 / (3.0e-6 + 6.0 * STORM::ddmc::ExtrapolationLength);
-    requireClose(thin.conversionCoefficient, standardThin, 2.0e-12,
+    requireClose(thin, standardThin, 2.0e-12,
                  "thin-cell limit does not recover the standard boundary");
-
-    STORM::ddmc::Densmore2006InterfaceCoefficients const thick =
-        STORM::ddmc::Densmore2006Coefficients(1.0e6, omega);
-    require(thick.valid, "optically thick Densmore coefficient is invalid");
-    requireClose(thick.conversionCoefficient, thick.analyticEmissivity,
-                 2.0e-6,
-                 "large-tau coefficient does not approach emissivity");
-
-    STORM::ddmc::Densmore2006InterfaceCoefficients const pureScattering =
-        STORM::ddmc::Densmore2006Coefficients(15.0, 1.0);
-    double const pureScatteringLimit =
-        8.0 / (45.0 + 6.0 * STORM::ddmc::ExtrapolationLength);
-    requireClose(pureScattering.conversionCoefficient, pureScatteringLimit,
+    const double thick =
+        STORM::ddmc::Densmore2006ConversionCoefficient(1.0e6, 0.9);
+    requireClose(thick, 0.5257329470522999, 2.0e-6,
+                 "large-tau coefficient does not approach Eq. (19)");
+    const double pureScattering =
+        STORM::ddmc::Densmore2006ConversionCoefficient(15.0, 1.0);
+    requireClose(pureScattering,
+                 8.0 / (45.0 + 6.0 * STORM::ddmc::ExtrapolationLength),
                  2.0e-15, "omega-to-one limit is discontinuous");
 }
 
 void testProbabilityBoundsAndReciprocity()
 {
-    STORM::ddmc::Densmore2006InterfaceCoefficients const invalid =
-        STORM::ddmc::Densmore2006Coefficients(15.0, 0.5);
-    require(!invalid.valid,
+    const double invalid =
+        STORM::ddmc::Densmore2006CellCoefficient(5.0, 0.5, 1.5);
+    require(!std::isfinite(invalid),
             "coefficient above the paper's four-fifths bound was accepted");
 
-    STORM::ddmc::Densmore2006InterfaceCoefficients const coefficients =
-        STORM::ddmc::Densmore2006Coefficients(15.0, 0.99);
-    require(coefficients.valid,
-            "valid high-albedo coefficient was rejected");
+    const double coefficient =
+        STORM::ddmc::Densmore2006ConversionCoefficient(15.0, 0.99);
     double const normalAdmission =
-        STORM::ddmc::Densmore2006AdmissionProbability(1.0, coefficients);
+        STORM::ddmc::Densmore2006AdmissionProbability(1.0, coefficient);
     require(normalAdmission >= 0.0 && normalAdmission <= 1.0,
             "angular admission probability left the unit interval");
 
@@ -92,16 +78,16 @@ void testProbabilityBoundsAndReciprocity()
         double const mu = (static_cast<double>(i) + 0.5) / bins;
         average += 2.0 * mu *
             STORM::ddmc::Densmore2006AdmissionProbability(
-                mu, coefficients) / bins;
+                mu, coefficient) / bins;
     }
-    requireClose(average, coefficients.conversionCoefficient, 2.0e-9,
+    requireClose(average, coefficient, 2.0e-9,
                  "angular conversion is not reciprocal with boundary leakage");
 
     double const rate = STORM::ddmc::Densmore2006BoundaryLeakRate(
-        2.0, 5.0, 7.0, coefficients);
+        2.0, 5.0, 7.0, coefficient);
     requireClose(
         rate,
-        7.0 * 2.0 * coefficients.conversionCoefficient / (4.0 * 5.0),
+        7.0 * 2.0 * coefficient / (4.0 * 5.0),
         2.0e-15, "boundary leak rate does not match Eq. (29)");
 }
 
@@ -112,20 +98,12 @@ void testCellMappingAndRoundoff()
     requireClose(albedo, 0.92, 2.0e-15,
                  "Fleck effective absorption is not mapped into albedo");
 
-    STORM::ddmc::Densmore2006InterfaceCoefficients const fromCell =
-        STORM::ddmc::Densmore2006CellCoefficients(5.0, albedo, 1.5);
-    STORM::ddmc::Densmore2006InterfaceCoefficients const fromTau =
-        STORM::ddmc::Densmore2006Coefficients(15.0, albedo);
-    require(fromCell.valid == fromTau.valid,
-            "cell mapping changed coefficient validity");
-    requireClose(fromCell.conversionCoefficient,
-                 fromTau.conversionCoefficient, 2.0e-15,
+    const double fromCell =
+        STORM::ddmc::Densmore2006CellCoefficient(5.0, albedo, 1.5);
+    const double fromTau =
+        STORM::ddmc::Densmore2006ConversionCoefficient(15.0, albedo);
+    requireClose(fromCell, fromTau, 2.0e-15,
                  "cell mapping does not use twice the center-face distance");
-
-    STORM::ddmc::Densmore2006InterfaceCoefficients const fallback =
-        STORM::ddmc::Densmore2006CellCoefficients(5.0, 0.5, 1.5);
-    require(!fallback.valid,
-            "cell mapping did not expose the legacy-fallback condition");
 
     double const atOne =
         STORM::ddmc::Densmore2006AdmissionProbability(1.0, fromCell);
@@ -142,8 +120,7 @@ int main()
 {
     try
     {
-        testPaperReferencePoint();
-        testAsymptoticLimits();
+        testCoefficient();
         testProbabilityBoundsAndReciprocity();
         testCellMappingAndRoundoff();
     }

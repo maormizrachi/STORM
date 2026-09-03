@@ -544,17 +544,18 @@ public:
                         owner_.parameters_.withMultigroupOpacity;
                     if(ddmcFraction < 1.0 && !multigroupPGRW)
                     {
-                        const ddmc::Densmore2006InterfaceCoefficients coefficients =
-                            ddmc::Densmore2006CellCoefficients(
+                        const double coefficient =
+                            ddmc::Densmore2006CellCoefficient(
                                 data.sigmaDiffusion,
                                 data.singleScatterAlbedo,
                                 sourceDistance);
-                        if(coefficients.valid)
+                        if(ddmc::IsProbabilisticDensmore2006Coefficient(
+                               coefficient))
                         {
                             boundaryRate =
                                 ddmc::Densmore2006BoundaryLeakRate(
                                     area, volume, units::clight,
-                                    coefficients);
+                                    coefficient);
                         }
                         // Outside Eq. (59)'s probabilistic range, retain the
                         // paired legacy boundary coefficient initialized above.
@@ -1943,17 +1944,18 @@ public:
                targetCellIndex <
                    owner_.ddmcPointSingleScatterAlbedo_.size())
             {
-                const ddmc::Densmore2006InterfaceCoefficients coefficients =
-                    ddmc::Densmore2006CellCoefficients(
+                const double coefficient =
+                    ddmc::Densmore2006CellCoefficient(
                         targetOpacity,
                         owner_.ddmcPointSingleScatterAlbedo_[
                             targetCellIndex],
                         targetDistance);
-                if(coefficients.valid)
+                if(ddmc::IsProbabilisticDensmore2006Coefficient(
+                       coefficient))
                 {
                     admission =
                         ddmc::Densmore2006AdmissionProbability(
-                            mu, coefficients);
+                            mu, coefficient);
                 }
                 // Outside Eq. (59)'s probabilistic range, retain the paired
                 // legacy admission probability initialized above.
