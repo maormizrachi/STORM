@@ -1,11 +1,13 @@
 #ifndef STORM_GPU_COMB_DEVICE_ACTIVATE_HPP
 #define STORM_GPU_COMB_DEVICE_ACTIVATE_HPP
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #ifdef STORM_WITH_MPI
@@ -63,11 +65,10 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
     }
     KokkosLocalTransportExecutor &executor = *context.executor;
     const std::size_t censusCount = executor.PendingCensusCount();
-    if(censusCount == 0 or context.cellCount == 0)
-    {
-        return;
-    }
 
+    // Ranks with an empty census must still reach the reductions below, so
+    // there is no early exit here: every rank that enters this function has to
+    // take part in the same collectives.
     const comb::Parameters &parameters = context.parameters;
     const std::size_t cellCount = context.cellCount;
     const std::uint64_t activationEpoch = context.activationEpoch;
@@ -80,7 +81,6 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
     Kokkos::View<std::size_t*> cellWriteCursor("storm_comb_cell_write_cursor", cellCount);
     Kokkos::View<std::size_t*> outputCounts("storm_comb_output_counts", cellCount);
     Kokkos::View<std::size_t*> outputOffsets("storm_comb_output_offsets", cellCount + 1);
-    Kokkos::View<std::size_t*> permutation("storm_comb_permutation", censusCount);
     Kokkos::View<std::size_t*> rankKeys("storm_comb_rank_keys", censusCount);
     Kokkos::View<particle_id_t*> idKeys("storm_comb_id_keys", censusCount);
     Kokkos::View<double*> combOffsets("storm_comb_offsets", cellCount);
@@ -159,7 +159,8 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
                 cellOffsets(cell + 1) = cellOffsets(cell) + cellCounts(cell);
             }
         });
-    Kokkos::deep_copy(cellWriteCursor, cellOffsets);
+    Kokkos::deep_copy(cellWriteCursor,
+        Kokkos::subview(cellOffsets, std::pair<std::size_t, std::size_t>(0, cellCount)));
 
     Kokkos::parallel_for("storm_comb_scatter_by_cell",
         Kokkos::RangePolicy<>(0, censusCount),
@@ -181,49 +182,59 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
             idKeys(writeIndex) = censusCold(i).id;
         });
 
-    Kokkos::parallel_for(
-        "storm_comb_sort_cells",
-        Kokkos::RangePolicy<>(0, cellCount),
-        KOKKOS_LAMBDA(const std::size_t cell)
+    // Order every cell by ascending (rank, id) and then apply the seeded
+    // Fisher-Yates shuffle, so the survivors picked below do not depend on the
+    // order packets happened to arrive in. This mirrors the host Comb
+    // reference and runs on the host: a per-cell sort on the device gets one
+    // thread per cell, which is quadratic in the packets of the busiest cell.
+    {
+        Kokkos::View<std::size_t *>::HostMirror hostSortedIndices = Kokkos::create_mirror_view(sortedIndices);
+        Kokkos::View<std::size_t *>::HostMirror hostRankKeys = Kokkos::create_mirror_view(rankKeys);
+        Kokkos::View<particle_id_t *>::HostMirror hostIDKeys = Kokkos::create_mirror_view(idKeys);
+        Kokkos::View<std::size_t *>::HostMirror hostCellOffsets = Kokkos::create_mirror_view(cellOffsets);
+        Kokkos::deep_copy(hostSortedIndices, sortedIndices);
+        Kokkos::deep_copy(hostRankKeys, rankKeys);
+        Kokkos::deep_copy(hostIDKeys, idKeys);
+        Kokkos::deep_copy(hostCellOffsets, cellOffsets);
+
+        std::vector<std::size_t> order;
+        std::vector<std::size_t> reordered;
+        for(std::size_t cell = 0; cell < cellCount; ++cell)
         {
-            const std::size_t begin = cellOffsets(cell);
-            const std::size_t end = cellOffsets(cell + 1);
-            const std::size_t count = end - begin;
-            for(std::size_t i = begin; i < end; ++i)
+            const std::size_t begin = hostCellOffsets(cell);
+            const std::size_t count = hostCellOffsets(cell + 1) - begin;
+            if(count == 0)
             {
-                permutation(i - begin) = sortedIndices(i);
+                continue;
             }
-            for(std::size_t i = 1; i < count; ++i)
-            {
-                const std::size_t currentIndex = permutation(i);
-                const std::size_t currentRank = rankKeys(begin + i);
-                const particle_id_t currentID = idKeys(begin + i);
-                std::size_t j = i;
-                while(j > 0)
-                {
-                    const std::size_t previousIndex = permutation(j - 1);
-                    const std::size_t previousRank = rankKeys(begin + j - 1);
-                    const particle_id_t previousID = idKeys(begin + j - 1);
-                    if(not comb::LessParticleKey(static_cast<rank_t>(previousRank), previousID, static_cast<rank_t>(currentRank), currentID))
-                    {
-                        break;
-                    }
-                    permutation(j) = previousIndex;
-                    rankKeys(begin + j) = previousRank;
-                    idKeys(begin + j) = previousID;
-                    --j;
-                }
-                permutation(j) = currentIndex;
-                rankKeys(begin + j) = currentRank;
-                idKeys(begin + j) = currentID;
-            }
+            order.resize(count);
             for(std::size_t i = 0; i < count; ++i)
             {
-                sortedIndices(begin + i) = permutation(i);
+                order[i] = i;
+            }
+            std::sort(order.begin(), order.end(),
+                [&](const std::size_t left, const std::size_t right)
+                {
+                    return comb::LessParticleKey(
+                        static_cast<rank_t>(hostRankKeys(begin + left)),
+                        hostIDKeys(begin + left),
+                        static_cast<rank_t>(hostRankKeys(begin + right)),
+                        hostIDKeys(begin + right));
+                });
+            reordered.resize(count);
+            for(std::size_t i = 0; i < count; ++i)
+            {
+                reordered[i] = hostSortedIndices(begin + order[i]);
             }
             const std::uint64_t rngKey = comb::MakeBinRngKey(activationEpoch, static_cast<std::uint64_t>(rank), cell);
-            comb::FisherYatesShuffle(sortedIndices.data() + begin, count, rngKey);
-        });
+            comb::FisherYatesShuffle(reordered.data(), count, rngKey);
+            for(std::size_t i = 0; i < count; ++i)
+            {
+                hostSortedIndices(begin + i) = reordered[i];
+            }
+        }
+        Kokkos::deep_copy(sortedIndices, hostSortedIndices);
+    }
 
     Kokkos::View<double*> particleWeights("storm_comb_particle_weights", censusCount);
     Kokkos::parallel_for("storm_comb_gather_weights",
@@ -261,7 +272,8 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
     Kokkos::View<DeviceParticle*> outputPackets("storm_comb_output_packets", outputCount);
     Kokkos::View<DeviceParticleCold*> outputCold("storm_comb_output_cold", outputCount);
     Kokkos::View<std::size_t*> cellEmitCursor("storm_comb_emit_cursor", cellCount);
-    Kokkos::deep_copy(cellEmitCursor, outputOffsets);
+    Kokkos::deep_copy(cellEmitCursor,
+        Kokkos::subview(outputOffsets, std::pair<std::size_t, std::size_t>(0, cellCount)));
 
     Kokkos::parallel_for("storm_comb_emit_outputs",
         Kokkos::RangePolicy<>(0, cellCount),

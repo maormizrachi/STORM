@@ -11,6 +11,7 @@
 #include "utils/RandomOnFace.hpp"
 #include "elementary/PointOps.hpp"
 #include "DensmoreOpacity.hpp"
+#include "radiation/ddmc/DDMCSampling.hpp"
 #include <planck_integral/planck_integral.hpp>
 
 namespace STORM {
@@ -158,7 +159,7 @@ public:
                                 {
                                     ++g;
                                 }
-                                p.frequency = boundaries_[g] + unif(re) * (boundaries_[g + 1] - boundaries_[g]);
+                                p.frequency = ddmc::SamplePlanckFrequencyInGroup(boundaries_.data(), N_DENSMORE_GROUPS, g, kT, unif(re));
                             }
                             else
                             {

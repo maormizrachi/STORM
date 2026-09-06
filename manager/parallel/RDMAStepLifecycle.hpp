@@ -502,9 +502,17 @@ void RDMAMonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
             std::chrono::high_resolution_clock::now();
         if constexpr(gpu::HasDeviceCensusPostStep<Physics>::value)
         {
-            const bool canUseDevicePostStep =
+            bool canUseDevicePostStep =
                 this->physics->SupportsDeviceCensusPostStep() &&
                 data.remaining.empty();
+#ifdef STORM_WITH_MPI
+            // Device activation may run collectives, and data.remaining is a
+            // per-rank quantity, so the whole communicator has to agree before
+            // any rank enters activateDevice.
+            int deviceCensusVote = canUseDevicePostStep? 1 : 0;
+            MPI_Allreduce(MPI_IN_PLACE, &deviceCensusVote, 1, MPI_INT, MPI_LAND, this->comm_world);
+            canUseDevicePostStep = (deviceCensusVote != 0);
+#endif
             if(canUseDevicePostStep)
             {
                 if(this->populationControl->SupportsDeviceActivation())

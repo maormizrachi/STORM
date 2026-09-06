@@ -38,9 +38,7 @@ struct Intersection
 
 template<typename ParticleT, typename PointT>
 STORM_GPU_INLINE_FUNCTION
-Intersection FindIntersection(const ParticleT &particle,
-                              const FlatGridView<PointT> &grid,
-                              const double speed)
+Intersection FindIntersection(const ParticleT &particle, const FlatGridView<PointT> &grid, const double speed)
 {
     Intersection result;
     const std::size_t cellIndex = static_cast<std::size_t>(particle.cellIndex);
@@ -64,13 +62,8 @@ Intersection FindIntersection(const ParticleT &particle,
             continue;
         }
 
-        const double locationPlane =
-            particle.location.x * normal.x +
-            particle.location.y * normal.y +
-            particle.location.z * normal.z;
-        const double time =
-            (grid.facePlaneOffsets[directedFace] - locationPlane) /
-            normalVelocity;
+        const double locationPlane = particle.location.x * normal.x + particle.location.y * normal.y + particle.location.z * normal.z;
+        const double time = (grid.facePlaneOffsets[directedFace] - locationPlane) / normalVelocity;
         if(time > 0.0 && time < result.time)
         {
             result.time = time;

@@ -12,15 +12,14 @@ namespace STORM::ddmc {
 static constexpr double boltzmannConstant = 1.380649e-16;
 
 STORM_TRANSPORT_INLINE
-double RosselandOpacityFromBandSums(const double totalBandWeight,
-                                    const double weightedInverseOpacity)
+double RosselandOpacityFromBandSums(const double totalBandWeight, const double weightedInverseOpacity)
 {
-    if(!(totalBandWeight > 0.0) || !(weightedInverseOpacity > 0.0))
+    if(not (totalBandWeight > 0.0) or not (weightedInverseOpacity > 0.0))
     {
         return 0.0;
     }
     const double opacity = totalBandWeight / weightedInverseOpacity;
-    return transport::IsFinite(opacity) ? opacity : 0.0;
+    return transport::IsFinite(opacity)? opacity : 0.0;
 }
 
 STORM_TRANSPORT_INLINE
@@ -29,18 +28,14 @@ double UpperBandOpacityCdfCoordinate(const double *cumulativeOpacity,
                                      const std::size_t groupCutoff,
                                      const double unitRandom)
 {
-    if(cumulativeOpacity == nullptr || groupCount == 0 ||
-       groupCutoff >= groupCount ||
-       !(unitRandom >= 0.0 && unitRandom < 1.0))
+    if(cumulativeOpacity == nullptr or groupCount == 0 or groupCutoff >= groupCount or not (unitRandom >= 0.0 and unitRandom < 1.0))
     {
         return std::numeric_limits<double>::quiet_NaN();
     }
 
-    const double lower =
-        groupCutoff > 0 ? cumulativeOpacity[groupCutoff - 1] : 0.0;
+    const double lower = (groupCutoff > 0)? cumulativeOpacity[groupCutoff - 1] : 0.0;
     const double total = cumulativeOpacity[groupCount - 1];
-    if(!transport::IsFinite(lower) || !transport::IsFinite(total) ||
-       !(total > lower) || lower < 0.0)
+    if(not transport::IsFinite(lower) or not transport::IsFinite(total) or not (total > lower) or lower < 0.0)
     {
         return std::numeric_limits<double>::quiet_NaN();
     }
@@ -48,15 +43,9 @@ double UpperBandOpacityCdfCoordinate(const double *cumulativeOpacity,
 }
 
 template<typename CumulativeOpacity>
-inline
-double UpperBandOpacityCdfCoordinate(
-    const CumulativeOpacity &cumulativeOpacity,
-    const std::size_t groupCutoff,
-    const double unitRandom)
+inline double UpperBandOpacityCdfCoordinate(const CumulativeOpacity &cumulativeOpacity, const std::size_t groupCutoff, const double unitRandom)
 {
-    return UpperBandOpacityCdfCoordinate(
-        cumulativeOpacity.data(), cumulativeOpacity.size(),
-        groupCutoff, unitRandom);
+    return UpperBandOpacityCdfCoordinate(cumulativeOpacity.data(), cumulativeOpacity.size(), groupCutoff, unitRandom);
 }
 
 STORM_TRANSPORT_INLINE
@@ -112,12 +101,9 @@ double PlanckIntegral(const double a, const double b)
 
 template<typename Boundaries>
 STORM_TRANSPORT_INLINE
-double PlanckBandMass(const Boundaries &boundaries,
-                      const double kT,
-                      const std::size_t beginGroup,
-                      const std::size_t endGroup)
+double PlanckBandMass(const Boundaries &boundaries, const double kT, const std::size_t beginGroup, const std::size_t endGroup)
 {
-    if(!(kT > 0.0) || !transport::IsFinite(kT) || beginGroup >= endGroup)
+    if(not (kT > 0.0) or not transport::IsFinite(kT) or beginGroup >= endGroup)
     {
         return 0.0;
     }
@@ -125,8 +111,7 @@ double PlanckBandMass(const Boundaries &boundaries,
     double mass = 0.0;
     for(std::size_t group = beginGroup; group < endGroup; ++group)
     {
-        const double contribution =
-            PlanckIntegral(boundaries[group] / kT, boundaries[group + 1] / kT);
+        const double contribution = PlanckIntegral(boundaries[group] / kT, boundaries[group + 1] / kT);
         if(transport::IsFinite(contribution) && contribution > 0.0)
         {
             mass += contribution;
@@ -137,20 +122,14 @@ double PlanckBandMass(const Boundaries &boundaries,
 
 template<typename Boundaries>
 STORM_TRANSPORT_INLINE
-double PlanckBandFraction(const Boundaries &boundaries,
-                          const double kT,
-                          const std::size_t beginGroup,
-                          const std::size_t endGroup,
-                          const std::size_t totalEndGroup)
+double PlanckBandFraction(const Boundaries &boundaries, const double kT, const std::size_t beginGroup, const std::size_t endGroup, const std::size_t totalEndGroup)
 {
-    const double denominator =
-        PlanckBandMass(boundaries, kT, beginGroup, totalEndGroup);
+    const double denominator = PlanckBandMass(boundaries, kT, beginGroup, totalEndGroup);
     if(!(denominator > 0.0))
     {
         return 0.0;
     }
-    const double value =
-        PlanckBandMass(boundaries, kT, beginGroup, endGroup) / denominator;
+    const double value = PlanckBandMass(boundaries, kT, beginGroup, endGroup) / denominator;
     if(value < 0.0)
     {
         return 0.0;
@@ -216,6 +195,83 @@ double SampleFrequencyInGroupFromCellCdf(const double *boundaries,
     return SampleFrequencyInGroup(boundaries, groupCount, group, fraction);
 }
 
+// ∫ dx/(e^x-1) = ln(1-e^{-x}). For σ(E)∝E^{-3}, σ(E)B(E)∝1/(e^{E/kT}-1).
+STORM_TRANSPORT_INLINE
+double BoseEinstein0Antiderivative(const double x)
+{
+    if(!(x > 0.0) || !transport::IsFinite(x))
+    {
+        return 0.0;
+    }
+    if(x < 1.0e-8)
+    {
+        return transport::Log(x);
+    }
+    return transport::Log1p(-transport::Exp(-x));
+}
+
+STORM_TRANSPORT_INLINE
+double BoseEinstein0Integral(const double a, const double b)
+{
+    if(!(a < b) || !(a > 0.0) || !transport::IsFinite(a) || !transport::IsFinite(b))
+    {
+        return 0.0;
+    }
+    const double value = BoseEinstein0Antiderivative(b) - BoseEinstein0Antiderivative(a);
+    return (transport::IsFinite(value) && value > 0.0)? value : 0.0;
+}
+
+STORM_TRANSPORT_INLINE
+double SampleBoseEinstein0FrequencyInGroup(const double *boundaries,
+                                           const std::size_t groupCount,
+                                           const std::size_t group,
+                                           const double kT,
+                                           double random)
+{
+    if(boundaries == nullptr || group >= groupCount)
+    {
+        return 0.0;
+    }
+    const double left = boundaries[group];
+    const double right = boundaries[group + 1];
+    if(!(kT > 0.0) || !transport::IsFinite(kT) || !(left < right))
+    {
+        return 0.5 * (left + right);
+    }
+    if(random < 0.0)
+    {
+        random = 0.0;
+    }
+    else if(random > 1.0)
+    {
+        random = 1.0;
+    }
+    const double a = left / kT;
+    const double b = right / kT;
+    const double groupMass = BoseEinstein0Integral(a, b);
+    if(!(groupMass > 0.0))
+    {
+        return 0.5 * (left + right);
+    }
+    const double target = random * groupMass;
+    double lo = left;
+    double hi = right;
+    for(int iteration = 0; iteration < 56; ++iteration)
+    {
+        const double mid = 0.5 * (lo + hi);
+        const double mass = BoseEinstein0Integral(a, mid / kT);
+        if(mass < target)
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    return 0.5 * (lo + hi);
+}
+
 STORM_TRANSPORT_INLINE
 double SamplePlanckFrequencyInGroup(const double *boundaries,
                                     const std::size_t groupCount,
@@ -266,11 +322,7 @@ double SamplePlanckFrequencyInGroup(const double *boundaries,
 }
 
 STORM_TRANSPORT_INLINE
-double SampleFrequencyFromCellCdf(const double *boundaries,
-                                  const double *cdf,
-                                  const std::size_t groupCount,
-                                  const std::size_t cellIndex,
-                                  const double random)
+double SampleFrequencyFromCellCdf(const double *boundaries, const double *cdf, const std::size_t groupCount, const std::size_t cellIndex, const double random)
 {
     if(boundaries == nullptr || cdf == nullptr || groupCount == 0)
     {

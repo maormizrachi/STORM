@@ -28,7 +28,7 @@ export UCX_IB_RCACHE_MAX_UNRELEASED=0
 export OMP_NUM_THREADS=1
 export FI_CXI_RX_MATCH_MODE=hybrid
 
-# Default densmore2012 args: Nx=512, new_per_cell=16, boundary_per_cell=100.
+# Default densmore2012 args: Nx=1024, new_per_cell=16, boundary_per_cell=100.
 # sbatch copies this script to a node-local spool path, so re-exec the shared
 # filesystem copy: the spool path does not exist on the other nodes.
 exec mpirun -np "${SLURM_NTASKS:-32}" --map-by ppr:8:node \

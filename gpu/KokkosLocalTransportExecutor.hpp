@@ -10,7 +10,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-
 #include "DeviceParticle.hpp"
 #include "GreyIMCKernel.hpp"
 #include "ProfileRegion.hpp"
@@ -96,6 +95,7 @@ struct WaveCounters
     std::size_t physicsSteps = 0;
     std::size_t censusSteps = 0;
     std::size_t appended = 0;
+    std::size_t overflow = 0;
 };
 static_assert(std::is_trivially_copyable<WaveCounters>::value,
               "WaveCounters must be safe for device-host copies");
@@ -133,7 +133,10 @@ public:
           nextPackets_("storm_transport_next_packets", 0),
           coldPackets_("storm_transport_cold_packets", 0),
           nextColdPackets_("storm_transport_next_cold_packets", 0),
+          survivorFlags_("storm_transport_survivor_flags", 0),
           survivorSplitCounts_("storm_transport_survivor_split_counts", 0),
+          compactedSurvivorSplitCounts_(
+              "storm_transport_compacted_survivor_split_counts", 0),
           completedTransports_("storm_transport_completed", 0),
           fallbackTransports_("storm_transport_fallbacks", 0),
           pendingRemotes_("storm_transport_pending_remotes", 0),
@@ -142,8 +145,7 @@ public:
           censusCellCounts_("storm_transport_census_cell_counts", 0),
           hostEventTransports_("storm_transport_host_events", 0),
           hostRemoteTransports_("storm_transport_host_remotes", 0),
-          waveCounters_("storm_transport_wave_counters"),
-          waveOverflow_("storm_transport_wave_overflow")
+          waveCounters_("storm_transport_wave_counters")
     {}
 
     void Reset()
@@ -279,8 +281,6 @@ public:
             });
         this->activeCount_ = count;
         this->pendingCensusCount_ = 0;
-        this->ShrinkTo(this->censusPackets_, 0);
-        this->ShrinkTo(this->censusCold_, 0);
         this->metrics_.maxActiveCount =
             std::max(this->metrics_.maxActiveCount, count);
     }
@@ -496,18 +496,10 @@ public:
 
         const std::chrono::steady_clock::time_point deviceStart = std::chrono::steady_clock::now();
         Kokkos::deep_copy(this->waveCounters_, WaveCounters{});
-        Kokkos::deep_copy(this->waveOverflow_, 0);
         {
             STORM_PROFILE_REGION("storm/transport/kernel");
             this->LaunchGreyIMCTransport(views, launchCount, remoteOffset);
-        }
-
-        int overflow = 0;
-        Kokkos::deep_copy(overflow, this->waveOverflow_);
-        if(overflow != 0)
-        {
-            throw std::runtime_error(
-                "GPU transport event buffers overflowed");
+            this->CompactSurvivors(launchCount);
         }
 
         const std::chrono::steady_clock::time_point progressStart = std::chrono::steady_clock::now();
@@ -515,24 +507,24 @@ public:
             STORM_PROFILE_REGION("storm/transport/progress");
             progress();
         }
-        completed.progressSeconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - progressStart).count();
+
+        completed.progressSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - progressStart).count();
 
         WaveCounters counters;
         Kokkos::deep_copy(counters, this->waveCounters_);
-        this->metrics_.synchronizationCount += 2;
-        if(counters.appended >
-           std::numeric_limits<std::size_t>::max() - counters.survivor)
+        ++this->metrics_.synchronizationCount;
+        if(counters.overflow != 0)
         {
-            throw std::overflow_error(
-                "KokkosLocalTransportExecutor split output overflow");
+            throw std::runtime_error("GPU transport event buffers overflowed");
         }
-        const std::size_t totalSurvivors =
-            counters.survivor + counters.appended;
+        if(counters.appended > std::numeric_limits<std::size_t>::max() - counters.survivor)
+        {
+            throw std::overflow_error("KokkosLocalTransportExecutor split output overflow");
+        }
+        const std::size_t totalSurvivors = counters.survivor + counters.appended;
         {
             STORM_PROFILE_REGION("storm/transport/harvest_census");
-            this->HarvestWaveCensus(
-                censusOffset, counters.census, launchCount);
+            this->HarvestWaveCensus(censusOffset, counters.census, launchCount);
         }
         if(counters.appended > 0)
         {
@@ -543,13 +535,9 @@ public:
             auto expandedColdPackets = this->nextColdPackets_;
             auto splitCounts = this->survivorSplitCounts_;
             const std::size_t primarySurvivors = counters.survivor;
-            Kokkos::parallel_scan(
-                "storm_expand_ddmc_interface_splits",
+            Kokkos::parallel_scan("storm_expand_ddmc_interface_splits",
                 Kokkos::RangePolicy<>(0, primarySurvivors),
-                KOKKOS_LAMBDA(
-                    const std::size_t survivor,
-                    std::size_t &splitOffset,
-                    const bool final)
+                KOKKOS_LAMBDA(const std::size_t survivor, std::size_t &splitOffset, const bool final)
                 {
                     const std::size_t copies = splitCounts(survivor);
                     if(final && copies > 0)
@@ -570,8 +558,7 @@ public:
                     }
                     splitOffset += copies;
                 });
-            Kokkos::fence(
-                "KokkosLocalTransportExecutor split expansion");
+            Kokkos::fence("KokkosLocalTransportExecutor split expansion");
             ++this->metrics_.synchronizationCount;
         }
         completed.deviceSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - deviceStart).count();
@@ -588,20 +575,13 @@ public:
         {
             STORM_PROFILE_REGION("storm/transport/compact");
             this->CompactCappedWave(launchCount, totalSurvivors, activeCount);
-            this->metrics_.maxActiveCount =
-                std::max(this->metrics_.maxActiveCount, this->activeCount_);
-            this->ShrinkTo(this->packets_, this->activeCount_);
-            this->ShrinkTo(this->coldPackets_, this->activeCount_);
-            this->ShrinkTo(this->nextPackets_, 0);
-            this->ShrinkTo(this->nextColdPackets_, 0);
+            this->metrics_.maxActiveCount = std::max(this->metrics_.maxActiveCount, this->activeCount_);
         }
 
         {
             STORM_PROFILE_REGION("storm/copy_back");
-            this->CopyFinishedToHost(
-                completed, counters.terminal, counters.fallback);
-            this->FlushRemotesIfNeeded(
-                completed, minRemoteCopy, maxRemoteHolds, this->activeCount_ == 0);
+            this->CopyFinishedToHost(completed, counters.terminal, counters.fallback);
+            this->FlushRemotesIfNeeded(completed, minRemoteCopy, maxRemoteHolds, this->activeCount_ == 0);
         }
         return completed;
     }
@@ -651,21 +631,19 @@ public:
     }
 
 private:
-    void LaunchGreyIMCTransport(const GreyIMCViews<DeviceVec3> &views,
-                                const std::size_t launchCount,
-                                const std::size_t remoteOffset)
+    void LaunchGreyIMCTransport(const GreyIMCViews<DeviceVec3> &views, const std::size_t launchCount, const std::size_t remoteOffset)
     {
         const std::size_t maximumInnerSteps = this->maximumInnerSteps_;
         auto packets = this->packets_;
         auto nextPackets = this->nextPackets_;
         auto coldPackets = this->coldPackets_;
         auto nextColdPackets = this->nextColdPackets_;
+        auto survivorFlags = this->survivorFlags_;
         auto survivorSplitCounts = this->survivorSplitCounts_;
         auto completedTransports = this->completedTransports_;
         auto fallbackTransports = this->fallbackTransports_;
         auto pendingRemotes = this->pendingRemotes_;
         auto waveCounters = this->waveCounters_;
-        auto waveOverflow = this->waveOverflow_;
         const std::size_t completedCapacity = completedTransports.extent(0);
         const std::size_t fallbackCapacity = fallbackTransports.extent(0);
         const std::size_t remoteCapacity = pendingRemotes.extent(0);
@@ -678,6 +656,7 @@ private:
             DeviceParticle particle = packets(i);
             DeviceParticleCold cold;
             AssignCold(cold, coldPackets(i));
+            survivorFlags(i) = 0;
             TransportResult result;
             std::size_t pendingExtraSplits = 0;
             std::size_t taken = 0;
@@ -690,8 +669,7 @@ private:
                 {
                     pendingExtraSplits = result.ddmcExtraSplits;
                 }
-                if(TryKeepPacketOnDevice(
-                       particle, cold, result, views))
+                if(TryKeepPacketOnDevice(particle, cold, result, views))
                 {
                     if(pendingExtraSplits > 0)
                     {
@@ -702,20 +680,18 @@ private:
                 break;
             }
 
-            Kokkos::atomic_fetch_add(
-                &waveCounters().physicsSteps, taken);
+            Kokkos::atomic_fetch_add(&waveCounters().physicsSteps, taken);
             if(result.error == TransportError::HostFallback)
             {
                 CompletedTransport transport;
                 transport.particle = particle;
                 AssignCold(transport.cold, cold);
                 transport.result = result;
-                const std::size_t fallbackIndex =
-                    Kokkos::atomic_fetch_add(
-                        &waveCounters().fallback, std::size_t(1));
+                const std::size_t fallbackIndex = Kokkos::atomic_fetch_add(&waveCounters().fallback, std::size_t(1));
                 if(fallbackIndex >= fallbackCapacity)
                 {
-                    Kokkos::atomic_fetch_add(&waveOverflow(), 1);
+                    Kokkos::atomic_fetch_add(
+                        &waveCounters().overflow, std::size_t(1));
                     return;
                 }
                 fallbackTransports(fallbackIndex) = transport;
@@ -724,14 +700,11 @@ private:
             if(result.error == TransportError::None &&
                result.step.change == ParticleStatus::NO_CELL_MOVE)
             {
-                const std::size_t survivorIndex =
-                    Kokkos::atomic_fetch_add(
-                        &waveCounters().survivor, std::size_t(1));
-                nextPackets(survivorIndex) = particle;
-                AssignCold(nextColdPackets(survivorIndex), cold);
-                survivorSplitCounts(survivorIndex) = pendingExtraSplits;
-                Kokkos::atomic_fetch_add(
-                    &waveCounters().appended, pendingExtraSplits);
+                packets(i) = particle;
+                AssignCold(coldPackets(i), cold);
+                survivorSplitCounts(i) = pendingExtraSplits;
+                survivorFlags(i) = 1;
+                Kokkos::atomic_fetch_add(&waveCounters().appended, pendingExtraSplits);
                 return;
             }
 
@@ -741,51 +714,82 @@ private:
             transport.result = result;
             if(IsCensusTerminal(particle, result))
             {
-                const std::size_t cellIndex =
-                    static_cast<std::size_t>(
-                        particle.cellIndex);
-                if(views.grid.cellIDs != nullptr &&
-                   cellIndex < views.grid.cellCount)
+                const std::size_t cellIndex = static_cast<std::size_t>(particle.cellIndex);
+                if(views.grid.cellIDs != nullptr and cellIndex < views.grid.cellCount)
                 {
-                    cold.cellID =
-                        views.grid.cellIDs[cellIndex];
+                    cold.cellID = views.grid.cellIDs[cellIndex];
                 }
                 AccumulateCensusEnergy(particle, views);
-                const std::size_t censusIndex =
-                    Kokkos::atomic_fetch_add(
-                        &waveCounters().census, std::size_t(1));
-                Kokkos::atomic_fetch_add(
-                    &waveCounters().censusSteps,
-                    static_cast<std::size_t>(particle.steps));
+                const std::size_t censusIndex = Kokkos::atomic_fetch_add(&waveCounters().census, std::size_t(1));
+                Kokkos::atomic_fetch_add(&waveCounters().censusSteps, static_cast<std::size_t>(particle.steps));
                 nextPackets(launchCount - 1 - censusIndex) = particle;
                 AssignCold(nextColdPackets(launchCount - 1 - censusIndex), cold);
             }
             else if(IsRankHopTerminal(particle, result, views))
             {
-                const std::size_t remoteIndex =
-                    remoteOffset +
-                    Kokkos::atomic_fetch_add(
-                        &waveCounters().remote, std::size_t(1));
+                const std::size_t remoteIndex = remoteOffset + Kokkos::atomic_fetch_add(&waveCounters().remote, std::size_t(1));
                 if(remoteIndex >= remoteCapacity)
                 {
-                    Kokkos::atomic_fetch_add(&waveOverflow(), 1);
+                    Kokkos::atomic_fetch_add(
+                        &waveCounters().overflow, std::size_t(1));
                     return;
                 }
                 pendingRemotes(remoteIndex) = transport;
             }
             else
             {
-                const std::size_t terminalIndex =
-                    Kokkos::atomic_fetch_add(
-                        &waveCounters().terminal, std::size_t(1));
+                const std::size_t terminalIndex = Kokkos::atomic_fetch_add(&waveCounters().terminal, std::size_t(1));
                 if(terminalIndex >= completedCapacity)
                 {
-                    Kokkos::atomic_fetch_add(&waveOverflow(), 1);
+                    Kokkos::atomic_fetch_add(
+                        &waveCounters().overflow, std::size_t(1));
                     return;
                 }
                 completedTransports(terminalIndex) = transport;
             }
             });
+    }
+
+    void CompactSurvivors(const std::size_t launchCount)
+    {
+        auto packets = this->packets_;
+        auto coldPackets = this->coldPackets_;
+        auto survivorFlags = this->survivorFlags_;
+        auto splitCounts = this->survivorSplitCounts_;
+        auto nextPackets = this->nextPackets_;
+        auto nextColdPackets = this->nextColdPackets_;
+        auto compactedSplitCounts =
+            this->compactedSurvivorSplitCounts_;
+        auto waveCounters = this->waveCounters_;
+
+        Kokkos::parallel_scan(
+            "storm_compact_transport_survivors",
+            Kokkos::RangePolicy<>(0, launchCount),
+            KOKKOS_LAMBDA(
+                const std::size_t i,
+                std::size_t &output,
+                const bool final)
+            {
+                const bool keep = survivorFlags(i) != 0;
+                if(final && keep)
+                {
+                    nextPackets(output) = packets(i);
+                    AssignCold(nextColdPackets(output), coldPackets(i));
+                    compactedSplitCounts(output) = splitCounts(i);
+                }
+                if(keep)
+                {
+                    ++output;
+                }
+                if(final && i + 1 == launchCount)
+                {
+                    waveCounters().survivor = output;
+                }
+            });
+
+        std::swap(
+            this->survivorSplitCounts_,
+            this->compactedSurvivorSplitCounts_);
     }
 
     template<typename ViewT>
@@ -798,24 +802,7 @@ private:
         }
     }
 
-    template<typename ViewT>
-    void ShrinkTo(ViewT &view, const std::size_t used)
-    {
-        if(view.extent(0) <= used || view.extent(0) <= 65536)
-        {
-            return;
-        }
-        if(used * 2 >= view.extent(0))
-        {
-            return;
-        }
-        Kokkos::resize(view, used);
-        ++this->metrics_.reallocationCount;
-    }
-
-    void CompactCappedWave(const std::size_t launchCount,
-                           const std::size_t totalSurvivors,
-                           const std::size_t previousActiveCount)
+    void CompactCappedWave(const std::size_t launchCount, const std::size_t totalSurvivors, const std::size_t previousActiveCount)
     {
         const std::size_t leftoverCount = previousActiveCount - launchCount;
         if(leftoverCount == 0)
@@ -827,9 +814,7 @@ private:
         }
         if(totalSurvivors > launchCount)
         {
-            throw std::runtime_error(
-                "GPU transport split expansion exceeded the capped wave "
-                "while unlaunched particles remain");
+            throw std::runtime_error("GPU transport split expansion exceeded the capped wave while unlaunched particles remain");
         }
         const std::size_t newActive = totalSurvivors + leftoverCount;
         this->EnsureCapacity(this->packets_, newActive);
@@ -838,8 +823,7 @@ private:
         auto coldPackets = this->coldPackets_;
         auto nextPackets = this->nextPackets_;
         auto nextCold = this->nextColdPackets_;
-        Kokkos::parallel_for(
-            "storm_copy_wave_survivors",
+        Kokkos::parallel_for("storm_copy_wave_survivors",
             Kokkos::RangePolicy<>(0, totalSurvivors),
             KOKKOS_LAMBDA(const std::size_t i)
             {
@@ -854,8 +838,7 @@ private:
             const std::size_t scratch = this->nextPackets_.extent(0);
             if(scratch == 0)
             {
-                throw std::runtime_error(
-                    "GPU transport leftover compact needs a scratch buffer");
+                throw std::runtime_error("GPU transport leftover compact needs a scratch buffer");
             }
             while(remaining > 0)
             {
@@ -864,16 +847,14 @@ private:
                 auto destC = this->coldPackets_;
                 auto scratchP = this->nextPackets_;
                 auto scratchC = this->nextColdPackets_;
-                Kokkos::parallel_for(
-                    "storm_scratch_leftover",
+                Kokkos::parallel_for("storm_scratch_leftover",
                     Kokkos::RangePolicy<>(0, chunk),
                     KOKKOS_LAMBDA(const std::size_t i)
                     {
                         scratchP(i) = destP(src + i);
                         scratchC(i) = destC(src + i);
                     });
-                Kokkos::parallel_for(
-                    "storm_place_leftover",
+                Kokkos::parallel_for("storm_place_leftover",
                     Kokkos::RangePolicy<>(0, chunk),
                     KOKKOS_LAMBDA(const std::size_t i)
                     {
@@ -888,10 +869,7 @@ private:
         this->activeCount_ = newActive;
     }
 
-    void HarvestWaveCensus(
-        const std::size_t censusOffset,
-        const std::size_t censusCount,
-        const std::size_t activeCount)
+    void HarvestWaveCensus(const std::size_t censusOffset, const std::size_t censusCount, const std::size_t activeCount)
     {
         if(censusCount == 0)
         {
@@ -904,8 +882,7 @@ private:
         auto nextCold = this->nextColdPackets_;
         auto censusPackets = this->censusPackets_;
         auto censusCold = this->censusCold_;
-        Kokkos::parallel_for(
-            "storm_harvest_wave_census",
+        Kokkos::parallel_for("storm_harvest_wave_census",
             Kokkos::RangePolicy<>(0, censusCount),
             KOKKOS_LAMBDA(const std::size_t i)
             {
@@ -924,25 +901,25 @@ private:
         this->EnsureCapacity(this->nextPackets_, required);
         this->EnsureCapacity(this->coldPackets_, required);
         this->EnsureCapacity(this->nextColdPackets_, required);
+        this->EnsureCapacity(this->survivorFlags_, required);
         this->EnsureCapacity(this->survivorSplitCounts_, required);
+        this->EnsureCapacity(
+            this->compactedSurvivorSplitCounts_, required);
         this->EnsureCapacity(this->completedTransports_, incoming);
         this->EnsureCapacity(this->fallbackTransports_, incoming);
-        this->EnsureCapacity(
-            this->pendingRemotes_, this->pendingRemoteCount_ + incoming);
-        this->EnsureCapacity(
-            this->hostEventTransports_, incoming);
-        this->EnsureCapacity(
-            this->hostRemoteTransports_, this->pendingRemoteCount_ + incoming);
+        this->EnsureCapacity(this->pendingRemotes_, this->pendingRemoteCount_ + incoming);
+        this->EnsureCapacity(this->hostEventTransports_, incoming);
+        this->EnsureCapacity(this->hostRemoteTransports_, this->pendingRemoteCount_ + incoming);
     }
 
-    void ReserveForWave(const std::size_t activeCount,
-                        const std::size_t remoteOffset,
-                        const std::size_t,
-                        const bool fullEventBuffers)
+    void ReserveForWave(const std::size_t activeCount, const std::size_t remoteOffset, const std::size_t, const bool fullEventBuffers)
     {
         this->EnsureCapacity(this->nextPackets_, activeCount);
         this->EnsureCapacity(this->nextColdPackets_, activeCount);
+        this->EnsureCapacity(this->survivorFlags_, activeCount);
         this->EnsureCapacity(this->survivorSplitCounts_, activeCount);
+        this->EnsureCapacity(
+            this->compactedSurvivorSplitCounts_, activeCount);
         const std::size_t eventGuess = fullEventBuffers
             ? activeCount
             : std::max<std::size_t>(65536, activeCount / 3);
@@ -1048,27 +1025,18 @@ private:
         this->pendingRemoteCount_ = 0;
     }
 
-    void CopyCensusToHost(
-        CompletedBatch &completed,
-        const bool clear = true)
+    void CopyCensusToHost(CompletedBatch &completed, const bool clear = true)
     {
         if(this->pendingCensusCount_ == 0)
         {
             return;
         }
         const std::size_t count = this->pendingCensusCount_;
-        const std::chrono::steady_clock::time_point copyBackStart =
-            std::chrono::steady_clock::now();
-        auto hostPackets = Kokkos::create_mirror_view_and_copy(
-            Kokkos::HostSpace(),
-            Kokkos::subview(
-                this->censusPackets_,
-                std::pair<std::size_t, std::size_t>(0, count)));
-        auto hostCold = Kokkos::create_mirror_view_and_copy(
-            Kokkos::HostSpace(),
-            Kokkos::subview(
-                this->censusCold_,
-                std::pair<std::size_t, std::size_t>(0, count)));
+        const std::chrono::steady_clock::time_point copyBackStart = std::chrono::steady_clock::now();
+        auto hostPackets = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),
+                                                                Kokkos::subview(this->censusPackets_, std::pair<std::size_t, std::size_t>(0, count)));
+        auto hostCold = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),
+                                                                Kokkos::subview(this->censusCold_, std::pair<std::size_t, std::size_t>(0, count)));
         this->EnsureCapacity(this->hostEventTransports_, count);
         for(std::size_t i = 0; i < count; ++i)
         {
@@ -1076,12 +1044,9 @@ private:
             this->hostEventTransports_(i).cold = hostCold(i);
             this->hostEventTransports_(i).result = TransportResult{};
         }
-        completed.census = CompletedTransportSpan{
-            this->hostEventTransports_.data(), count};
+        completed.census = CompletedTransportSpan{this->hostEventTransports_.data(), count};
         this->metrics_.censusCopyCount += this->pendingCensusCount_;
-        completed.copyBackSeconds +=
-            std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - copyBackStart).count();
+        completed.copyBackSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - copyBackStart).count();
         if(clear)
         {
             this->pendingCensusCount_ = 0;
@@ -1101,7 +1066,9 @@ private:
     Kokkos::View<DeviceParticle*> nextPackets_;
     Kokkos::View<DeviceParticleCold*> coldPackets_;
     Kokkos::View<DeviceParticleCold*> nextColdPackets_;
+    Kokkos::View<std::uint8_t*> survivorFlags_;
     Kokkos::View<std::size_t*> survivorSplitCounts_;
+    Kokkos::View<std::size_t*> compactedSurvivorSplitCounts_;
     Kokkos::View<CompletedTransport*> completedTransports_;
     Kokkos::View<CompletedTransport*> fallbackTransports_;
     Kokkos::View<CompletedTransport*> pendingRemotes_;
@@ -1111,7 +1078,6 @@ private:
     Kokkos::View<CompletedTransport*, PinnedHostSpace> hostEventTransports_;
     Kokkos::View<CompletedTransport*, PinnedHostSpace> hostRemoteTransports_;
     Kokkos::View<WaveCounters> waveCounters_;
-    Kokkos::View<int> waveOverflow_;
     TransportExecutorMetrics metrics_;
 };
 

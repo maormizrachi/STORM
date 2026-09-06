@@ -29,22 +29,14 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
     {
         this->parameters_.withRandomWalk = false;
     }
-    lifecycleProcess_ = std::make_unique<
-        radiation_imc_detail::IMCLifecycleProcess<RadiationIMC>>(*this);
-    transportProcess_ = std::make_unique<
-        radiation_imc_detail::IMCTransportProcess<RadiationIMC>>(*this);
-    sourceProcess_ = std::make_unique<
-        radiation_imc_detail::IMCSourceProcess<RadiationIMC>>(*this);
-    randomWalkProcess_ = std::make_unique<
-        radiation_imc_detail::IMCRandomWalkProcess<RadiationIMC>>(*this);
-    ddmcEngine_ = std::make_unique<
-        radiation_imc_detail::DDMCEngine<RadiationIMC>>(*this);
-    comptonProcess_ = std::make_unique<
-        radiation_imc_detail::ComptonProcess<RadiationIMC>>(*this);
-    observerProcess_ = std::make_unique<
-        radiation_imc_detail::IMCObserverProcess<RadiationIMC>>(*this);
-    deviceExecutor_ = std::make_unique<
-        radiation_imc_detail::IMCDeviceExecutor<RadiationIMC>>(*this);
+    lifecycleProcess_ = std::make_unique<radiation_imc_detail::IMCLifecycleProcess<RadiationIMC>>(*this);
+    transportProcess_ = std::make_unique<radiation_imc_detail::IMCTransportProcess<RadiationIMC>>(*this);
+    sourceProcess_ = std::make_unique<radiation_imc_detail::IMCSourceProcess<RadiationIMC>>(*this);
+    randomWalkProcess_ = std::make_unique<radiation_imc_detail::IMCRandomWalkProcess<RadiationIMC>>(*this);
+    ddmcEngine_ = std::make_unique<radiation_imc_detail::DDMCEngine<RadiationIMC>>(*this);
+    comptonProcess_ = std::make_unique<radiation_imc_detail::ComptonProcess<RadiationIMC>>(*this);
+    observerProcess_ = std::make_unique<radiation_imc_detail::IMCObserverProcess<RadiationIMC>>(*this);
+    deviceExecutor_ = std::make_unique<radiation_imc_detail::IMCDeviceExecutor<RadiationIMC>>(*this);
 
     if(this->parameters_.newPhotonsPerCell == 0)
     {
@@ -68,7 +60,6 @@ RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
 
     this->validateGridSizedState();
     this->rejectUnsupportedParameters();
-    ddmc::RequireSharedSamplingCore();
 
     if(this->parameters_.energyBoundariesProvided)
     {

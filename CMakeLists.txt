@@ -288,6 +288,13 @@ if(STORM_WITH_GPU)
     set(_storm_gpu_scope PUBLIC)
   endif()
   target_compile_definitions(storm ${_storm_gpu_scope} STORM_WITH_GPU)
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+     CMAKE_CXX_COMPILER MATCHES "(hipcc|amdclang\\+\\+)$")
+    target_compile_options(
+      storm ${_storm_gpu_scope} -fno-optimize-sibling-calls)
+  endif()
+
   if(STORM_GPU_PROFILING)
     target_compile_definitions(storm ${_storm_gpu_scope} STORM_GPU_PROFILING)
   endif()

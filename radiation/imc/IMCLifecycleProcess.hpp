@@ -60,432 +60,403 @@ public:
 
     void validateGridSizedState() const
     {
-
-            const std::size_t Ncells = owner_.componentGrid().GetPointNo();
-            if(owner_.cells_.size() < Ncells)
-            {
-                StormError eo("RadiationIMC cells vector is smaller than the grid cell count");
-                eo.addEntry("Grid cells", Ncells);
-                eo.addEntry("Cells size", owner_.cells_.size());
-                throw eo;
-            }
-            if(owner_.extensives_.size() < Ncells)
-            {
-                StormError eo("RadiationIMC extensives vector is smaller than the grid cell count");
-                eo.addEntry("Grid cells", Ncells);
-                eo.addEntry("Extensives size", owner_.extensives_.size());
-                throw eo;
-            }
+        const std::size_t Ncells = owner_.componentGrid().GetPointNo();
+        if(owner_.cells_.size() < Ncells)
+        {
+            StormError eo("RadiationIMC cells vector is smaller than the grid cell count");
+            eo.addEntry("Grid cells", Ncells);
+            eo.addEntry("Cells size", owner_.cells_.size());
+            throw eo;
+        }
+        if(owner_.extensives_.size() < Ncells)
+        {
+            StormError eo("RadiationIMC extensives vector is smaller than the grid cell count");
+            eo.addEntry("Grid cells", Ncells);
+            eo.addEntry("Extensives size", owner_.extensives_.size());
+            throw eo;
+        }
     }
 
     void validateEnergyBoundaries() const
     {
-
-            for(std::size_t g = 0; g < NumGroups; ++g)
+        for(std::size_t g = 0; g < NumGroups; ++g)
+        {
+            if(!std::isfinite(owner_.energyBoundaries_[g]) ||
+                !std::isfinite(owner_.energyBoundaries_[g + 1]) ||
+                owner_.energyBoundaries_[g + 1] <= owner_.energyBoundaries_[g])
             {
-                if(!std::isfinite(owner_.energyBoundaries_[g]) ||
-                   !std::isfinite(owner_.energyBoundaries_[g + 1]) ||
-                   owner_.energyBoundaries_[g + 1] <= owner_.energyBoundaries_[g])
-                {
-                    StormError eo("RadiationIMC energy boundaries must be finite and strictly increasing");
-                    eo.addEntry("Group", g);
-                    eo.addEntry("Lower", owner_.energyBoundaries_[g]);
-                    eo.addEntry("Upper", owner_.energyBoundaries_[g + 1]);
-                    throw eo;
-                }
+                StormError eo("RadiationIMC energy boundaries must be finite and strictly increasing");
+                eo.addEntry("Group", g);
+                eo.addEntry("Lower", owner_.energyBoundaries_[g]);
+                eo.addEntry("Upper", owner_.energyBoundaries_[g + 1]);
+                throw eo;
             }
+        }
     }
 
     void rejectUnsupportedParameter(const std::string &name) const
     {
 
-            StormError eo("RadiationIMC option is planned but not implemented in the initial STORM port");
-            eo.addEntry("Unsupported option", name);
-            throw eo;
+        StormError eo("RadiationIMC option is planned but not implemented in the initial STORM port");
+        eo.addEntry("Unsupported option", name);
+        throw eo;
     }
 
     void rejectUnsupportedParameters() const
     {
 
-            if(owner_.parameters_.withCompton && owner_.parameters_.withDDMC)
+        if(owner_.parameters_.withCompton && owner_.parameters_.withDDMC)
+        {
+            StormError eo("RadiationIMC configuration is invalid: Compton and DDMC are incompatible");
+            eo.addEntry("withCompton", true);
+            eo.addEntry("withDDMC", true);
+            eo.addEntry("Reason", "Compton group-changing transport has no DDMC derivation");
+            throw eo;
+        }
+        if(owner_.parameters_.withDDMC && !owner_.componentBoundary())
+        {
+            StormError eo("RadiationIMC DDMC requires a boundary-condition object");
+            eo.addEntry("Reason", "DDMC precompute must classify every external face");
+            throw eo;
+        }
+        if(owner_.parameters_.withRandomWalk &&
+            (!std::isfinite(owner_.parameters_.rwMinCellOpticalDepth) ||
+            owner_.parameters_.rwMinCellOpticalDepth <= 0.0))
+        {
+            StormError eo("RadiationIMC random-walk cell optical-depth threshold must be finite and positive");
+            eo.addEntry("rwMinCellOpticalDepth", owner_.parameters_.rwMinCellOpticalDepth);
+            throw eo;
+        }
+        if(owner_.parameters_.withRandomWalk &&
+            (!std::isfinite(owner_.parameters_.rwMinParticleOpticalDepth) ||
+            owner_.parameters_.rwMinParticleOpticalDepth <= 0.0))
+        {
+            StormError eo("RadiationIMC random-walk particle optical-depth threshold must be finite and positive");
+            eo.addEntry("rwMinParticleOpticalDepth", owner_.parameters_.rwMinParticleOpticalDepth);
+            throw eo;
+        }
+        if(owner_.parameters_.withDDMC &&
+            (!std::isfinite(owner_.parameters_.ddmcMinCellOpticalDepth) ||
+            owner_.parameters_.ddmcMinCellOpticalDepth <= 0.0))
+        {
+            StormError eo("RadiationIMC DDMC cell optical-depth threshold must be finite and positive");
+            eo.addEntry("ddmcMinCellOpticalDepth", owner_.parameters_.ddmcMinCellOpticalDepth);
+            throw eo;
+        }
+        if(owner_.parameters_.withDDMC &&
+            (!std::isfinite(
+                owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth) ||
+            owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth <= 0.0))
+        {
+            StormError eo(
+                "RadiationIMC DDMC external-source face optical-depth threshold must be finite and positive");
+            eo.addEntry("ddmcExternalSourceMinFaceOpticalDepth",
+                        owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth);
+            throw eo;
+        }
+        if(owner_.parameters_.withDDMC &&
+            (!(owner_.parameters_.ddmcMaxInterfaceVelocityOverC > 0.0) ||
+            !std::isfinite(owner_.parameters_.ddmcMaxInterfaceVelocityOverC) ||
+            !(owner_.parameters_.ddmcInterfaceTargetWeightRatio > 0.0) ||
+            !std::isfinite(owner_.parameters_.ddmcInterfaceTargetWeightRatio) ||
+            owner_.parameters_.ddmcMaxInterfaceSplits == 0 ||
+            owner_.parameters_.ddmcMaxGroupCutoff == 0 ||
+            owner_.parameters_.ddmcMaxGroupCutoff > NumGroups))
+        {
+            throw StormError(
+                "RadiationIMC DDMC interface controls are outside their valid ranges");
+        }
+        if(owner_.parameters_.withDDMC &&
+            (!std::isfinite(owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection) ||
+            owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection <= 0.0))
+        {
+            StormError eo("RadiationIMC DDMC moving-interface weight correction cap must be finite and positive");
+            eo.addEntry("ddmcMaxMovingInterfaceWeightCorrection",
+                        owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection);
+            throw eo;
+        }
+        if(owner_.parameters_.withDDMC && owner_.parameters_.withMultigroupDDMC &&
+            !owner_.parameters_.withMultigroupOpacity)
+        {
+            rejectUnsupportedParameter("withMultigroupDDMC requires withMultigroupOpacity");
+        }
+        if(owner_.parameters_.withDDMC &&
+            owner_.parameters_.withMultigroupOpacity &&
+            !owner_.parameters_.withMultigroupDDMC)
+        {
+            rejectUnsupportedParameter(
+                "multigroup DDMC requires withMultigroupDDMC");
+        }
+        if(owner_.parameters_.withCompton && !owner_.parameters_.withMultigroupOpacity)
+        {
+            StormError eo("RadiationIMC Compton transport requires multigroup opacity");
+            eo.addEntry("withCompton", true);
+            eo.addEntry("withMultigroupOpacity", false);
+            throw eo;
+        }
+        if(owner_.parameters_.withCompton && owner_.parameters_.withRandomWalk)
+        {
+            StormError eo("RadiationIMC configuration is invalid: Compton and random walk are incompatible");
+            eo.addEntry("withCompton", true);
+            eo.addEntry("withRandomWalk", true);
+            eo.addEntry("Reason", "Compton event kernels are not represented by the random-walk closure");
+            throw eo;
+        }
+        if(owner_.parameters_.postProcess.polarization.enabled &&
+            !owner_.parameters_.postProcess.enabled &&
+            !owner_.parameters_.withPolarization)
+        {
+            throw StormError("RadiationIMC post-process polarization requires postProcess.enabled");
+        }
+        if(owner_.polarizationEnabled())
+        {
+            if(owner_.parameters_.withCompton)
             {
-                StormError eo("RadiationIMC configuration is invalid: Compton and DDMC are incompatible");
-                eo.addEntry("withCompton", true);
-                eo.addEntry("withDDMC", true);
-                eo.addEntry("Reason", "Compton group-changing transport has no DDMC derivation");
+                throw StormError("RadiationIMC polarization does not support Compton transport yet");
+            }
+    #ifndef MONTECARLO_POLARIZATION
+            throw StormError("RadiationIMC polarization requires a build with MONTECARLO_POLARIZATION");
+    #else
+            const typename Parameters::PostProcessParameters::PolarizationParameters &polarization =
+                owner_.parameters_.postProcess.polarization;
+            if(polarization.manualScatteringsAfterAcceleration < 0 ||
+                polarization.manualScatteringsAfterAcceleration > 128)
+            {
+                StormError eo("RadiationIMC polarization manual scatter count must be in [0, 128]");
+                eo.addEntry("manualScatteringsAfterAcceleration",
+                            polarization.manualScatteringsAfterAcceleration);
                 throw eo;
             }
-            if(owner_.parameters_.withDDMC && !owner_.componentBoundary())
+            if(!std::isfinite(polarization.depolarizationScatterings) ||
+                polarization.depolarizationScatterings <= 0.0)
             {
-                StormError eo("RadiationIMC DDMC requires a boundary-condition object");
-                eo.addEntry("Reason", "DDMC precompute must classify every external face");
+                StormError eo("RadiationIMC polarization depolarizationScatterings must be finite and positive");
+                eo.addEntry("depolarizationScatterings", polarization.depolarizationScatterings);
                 throw eo;
             }
-            if(owner_.parameters_.withRandomWalk &&
-               (!std::isfinite(owner_.parameters_.rwMinCellOpticalDepth) ||
-                owner_.parameters_.rwMinCellOpticalDepth <= 0.0))
+            if(polarization.acceleratedClosure != "damped_last_scatterings")
             {
-                StormError eo("RadiationIMC random-walk cell optical-depth threshold must be finite and positive");
-                eo.addEntry("rwMinCellOpticalDepth", owner_.parameters_.rwMinCellOpticalDepth);
+                StormError eo("RadiationIMC polarization acceleratedClosure is unsupported");
+                eo.addEntry("acceleratedClosure", polarization.acceleratedClosure);
                 throw eo;
             }
-            if(owner_.parameters_.withRandomWalk &&
-               (!std::isfinite(owner_.parameters_.rwMinParticleOpticalDepth) ||
-                owner_.parameters_.rwMinParticleOpticalDepth <= 0.0))
+    #endif
+        }
+        if(owner_.parameters_.postProcess.enabled)
+        {
+            if(!std::isfinite(owner_.parameters_.postProcess.sourceDt) ||
+                owner_.parameters_.postProcess.sourceDt <= 0.0)
             {
-                StormError eo("RadiationIMC random-walk particle optical-depth threshold must be finite and positive");
-                eo.addEntry("rwMinParticleOpticalDepth", owner_.parameters_.rwMinParticleOpticalDepth);
+                StormError eo("RadiationIMC post-process sourceDt must be finite and positive");
+                eo.addEntry("sourceDt", owner_.parameters_.postProcess.sourceDt);
                 throw eo;
             }
-            if(owner_.parameters_.withDDMC &&
-               (!std::isfinite(owner_.parameters_.ddmcMinCellOpticalDepth) ||
-                owner_.parameters_.ddmcMinCellOpticalDepth <= 0.0))
+            if(!std::isfinite(owner_.parameters_.postProcess.transportTime) ||
+                owner_.parameters_.postProcess.transportTime <= 0.0)
             {
-                StormError eo("RadiationIMC DDMC cell optical-depth threshold must be finite and positive");
-                eo.addEntry("ddmcMinCellOpticalDepth", owner_.parameters_.ddmcMinCellOpticalDepth);
+                StormError eo("RadiationIMC post-process transportTime must be finite and positive");
+                eo.addEntry("transportTime", owner_.parameters_.postProcess.transportTime);
                 throw eo;
             }
-            if(owner_.parameters_.withDDMC &&
-               (!std::isfinite(
-                    owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth) ||
-                owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth <= 0.0))
-            {
-                StormError eo(
-                    "RadiationIMC DDMC external-source face optical-depth threshold must be finite and positive");
-                eo.addEntry("ddmcExternalSourceMinFaceOpticalDepth",
-                            owner_.parameters_.ddmcExternalSourceMinFaceOpticalDepth);
-                throw eo;
-            }
-            if(owner_.parameters_.withDDMC &&
-               (!(owner_.parameters_.ddmcMaxInterfaceVelocityOverC > 0.0) ||
-                !std::isfinite(owner_.parameters_.ddmcMaxInterfaceVelocityOverC) ||
-                !(owner_.parameters_.ddmcInterfaceTargetWeightRatio > 0.0) ||
-                !std::isfinite(owner_.parameters_.ddmcInterfaceTargetWeightRatio) ||
-                owner_.parameters_.ddmcMaxInterfaceSplits == 0 ||
-                owner_.parameters_.ddmcMaxGroupCutoff == 0 ||
-                owner_.parameters_.ddmcMaxGroupCutoff > NumGroups))
-            {
-                throw StormError(
-                    "RadiationIMC DDMC interface controls are outside their valid ranges");
-            }
-            if(owner_.parameters_.withDDMC &&
-               (!std::isfinite(owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection) ||
-                owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection <= 0.0))
-            {
-                StormError eo("RadiationIMC DDMC moving-interface weight correction cap must be finite and positive");
-                eo.addEntry("ddmcMaxMovingInterfaceWeightCorrection",
-                            owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection);
-                throw eo;
-            }
-            if(owner_.parameters_.withDDMC && owner_.parameters_.withMultigroupDDMC &&
-               !owner_.parameters_.withMultigroupOpacity)
-            {
-                rejectUnsupportedParameter("withMultigroupDDMC requires withMultigroupOpacity");
-            }
-            if(owner_.parameters_.withDDMC &&
-               owner_.parameters_.withMultigroupOpacity &&
-               !owner_.parameters_.withMultigroupDDMC)
-            {
-                rejectUnsupportedParameter(
-                    "multigroup DDMC requires withMultigroupDDMC");
-            }
-            if(owner_.parameters_.withCompton && !owner_.parameters_.withMultigroupOpacity)
-            {
-                StormError eo("RadiationIMC Compton transport requires multigroup opacity");
-                eo.addEntry("withCompton", true);
-                eo.addEntry("withMultigroupOpacity", false);
-                throw eo;
-            }
-            if(owner_.parameters_.withCompton && owner_.parameters_.withRandomWalk)
-            {
-                StormError eo("RadiationIMC configuration is invalid: Compton and random walk are incompatible");
-                eo.addEntry("withCompton", true);
-                eo.addEntry("withRandomWalk", true);
-                eo.addEntry("Reason", "Compton event kernels are not represented by the random-walk closure");
-                throw eo;
-            }
-            if(owner_.parameters_.postProcess.polarization.enabled &&
-               !owner_.parameters_.postProcess.enabled &&
-               !owner_.parameters_.withPolarization)
-            {
-                throw StormError("RadiationIMC post-process polarization requires postProcess.enabled");
-            }
-            if(owner_.polarizationEnabled())
-            {
-                if(owner_.parameters_.withCompton)
-                {
-                    throw StormError("RadiationIMC polarization does not support Compton transport yet");
-                }
-        #ifndef MONTECARLO_POLARIZATION
-                throw StormError("RadiationIMC polarization requires a build with MONTECARLO_POLARIZATION");
-        #else
-                const typename Parameters::PostProcessParameters::PolarizationParameters &polarization =
-                    owner_.parameters_.postProcess.polarization;
-                if(polarization.manualScatteringsAfterAcceleration < 0 ||
-                   polarization.manualScatteringsAfterAcceleration > 128)
-                {
-                    StormError eo("RadiationIMC polarization manual scatter count must be in [0, 128]");
-                    eo.addEntry("manualScatteringsAfterAcceleration",
-                                polarization.manualScatteringsAfterAcceleration);
-                    throw eo;
-                }
-                if(!std::isfinite(polarization.depolarizationScatterings) ||
-                   polarization.depolarizationScatterings <= 0.0)
-                {
-                    StormError eo("RadiationIMC polarization depolarizationScatterings must be finite and positive");
-                    eo.addEntry("depolarizationScatterings", polarization.depolarizationScatterings);
-                    throw eo;
-                }
-                if(polarization.acceleratedClosure != "damped_last_scatterings")
-                {
-                    StormError eo("RadiationIMC polarization acceleratedClosure is unsupported");
-                    eo.addEntry("acceleratedClosure", polarization.acceleratedClosure);
-                    throw eo;
-                }
-        #endif
-            }
-            if(owner_.parameters_.postProcess.enabled)
-            {
-                if(!std::isfinite(owner_.parameters_.postProcess.sourceDt) ||
-                   owner_.parameters_.postProcess.sourceDt <= 0.0)
-                {
-                    StormError eo("RadiationIMC post-process sourceDt must be finite and positive");
-                    eo.addEntry("sourceDt", owner_.parameters_.postProcess.sourceDt);
-                    throw eo;
-                }
-                if(!std::isfinite(owner_.parameters_.postProcess.transportTime) ||
-                   owner_.parameters_.postProcess.transportTime <= 0.0)
-                {
-                    StormError eo("RadiationIMC post-process transportTime must be finite and positive");
-                    eo.addEntry("transportTime", owner_.parameters_.postProcess.transportTime);
-                    throw eo;
-                }
-            }
+        }
     }
 
     double randomUnitOpen(MCParticle &particle)
     {
-
-            if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
-            {
-                std::uint64_t creationRank = 0;
-        #ifdef STORM_WITH_MPI
-                creationRank = static_cast<std::uint64_t>(
-                    std::max<rank_t>(particle.rank, 0));
-        #endif
-                particle.rngKey = CounterRNG::makeKey(
-                    owner_.particleRngSeed_, creationRank,
-                    static_cast<std::uint64_t>(particle.id));
-                particle.rngCounter = 0;
-            }
-            return CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
+        if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
+        {
+            std::uint64_t creationRank = 0;
+    #ifdef STORM_WITH_MPI
+            creationRank = static_cast<std::uint64_t>(
+                std::max<rank_t>(particle.rank, 0));
+    #endif
+            particle.rngKey = CounterRNG::makeKey(
+                owner_.particleRngSeed_, creationRank,
+                static_cast<std::uint64_t>(particle.id));
+            particle.rngCounter = 0;
+        }
+        return CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
     }
 
     void initializeParticleRNG(MCParticle &particle)
     {
-
-            // Queried once: this runs per emitted particle, and the rank cannot change.
-            if(!owner_.creationRankCached_)
-            {
-        #ifdef STORM_WITH_MPI
-                int rank = 0;
-                MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-                owner_.creationRank_ = static_cast<std::uint64_t>(rank);
-        #else
-                owner_.creationRank_ = 0;
-        #endif
-                owner_.creationRankCached_ = true;
-            }
-            particle.rngKey = CounterRNG::makeKey(
-                owner_.particleRngSeed_, owner_.creationRank_, owner_.sourceRngStreamCounter_++);
-            particle.rngCounter = 0;
+        // Queried once: this runs per emitted particle, and the rank cannot change.
+        if(!owner_.creationRankCached_)
+        {
+    #ifdef STORM_WITH_MPI
+            int rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            owner_.creationRank_ = static_cast<std::uint64_t>(rank);
+    #else
+            owner_.creationRank_ = 0;
+    #endif
+            owner_.creationRankCached_ = true;
+        }
+        particle.rngKey = CounterRNG::makeKey(
+            owner_.particleRngSeed_, owner_.creationRank_, owner_.sourceRngStreamCounter_++);
+        particle.rngCounter = 0;
     }
 
-    PointT sampleRandomVelocity(
-        const CellT &cell, MCParticle &particle)
+    PointT sampleRandomVelocity(const CellT &cell, MCParticle &particle)
     {
-
-            const double random1 = owner_.randomUnitOpen(particle);
-            const double random2 = owner_.randomUnitOpen(particle);
-            PointT velocity = owner_.opacity_->getRandomVelocity(
-                cell, random1, random2);
-            if(owner_.lightSpeed() == units::clight)
-            {
-                return velocity;
-            }
-            const double speed = std::sqrt(ScalarProd(velocity, velocity));
-            if(!(speed > 0.0) || !std::isfinite(speed))
-            {
-                throw StormError(
-                    "RadiationIMC opacity model returned an invalid random velocity");
-            }
-            return velocity * (owner_.lightSpeed() / speed);
+        const double random1 = owner_.randomUnitOpen(particle);
+        const double random2 = owner_.randomUnitOpen(particle);
+        PointT velocity = owner_.opacity_->getRandomVelocity(cell, random1, random2);
+        if(owner_.lightSpeed() == units::clight)
+        {
+            return velocity;
+        }
+        const double speed = std::sqrt(ScalarProd(velocity, velocity));
+        if(!(speed > 0.0) || !std::isfinite(speed))
+        {
+            throw StormError("RadiationIMC opacity model returned an invalid random velocity");
+        }
+        return velocity * (owner_.lightSpeed() / speed);
     }
 
-    PointT sampleScatterVelocity(
-        const CellT &cell, MCParticle &particle)
+    PointT sampleScatterVelocity(const CellT &cell, MCParticle &particle)
     {
-
-            const double random1 = owner_.randomUnitOpen(particle);
-            const double random2 = owner_.randomUnitOpen(particle);
-            PointT velocity = owner_.opacity_->getNewScatterVelocity(
-                cell, particle.velocity, particle.frequency, random1, random2);
-            if(owner_.lightSpeed() == units::clight)
-            {
-                return velocity;
-            }
-            const double speed = std::sqrt(ScalarProd(velocity, velocity));
-            if(!(speed > 0.0) || !std::isfinite(speed))
-            {
-                throw StormError(
-                    "RadiationIMC opacity model returned an invalid scattering velocity");
-            }
-            return velocity * (owner_.lightSpeed() / speed);
+        const double random1 = owner_.randomUnitOpen(particle);
+        const double random2 = owner_.randomUnitOpen(particle);
+        PointT velocity = owner_.opacity_->getNewScatterVelocity(
+            cell, particle.velocity, particle.frequency, random1, random2);
+        if(owner_.lightSpeed() == units::clight)
+        {
+            return velocity;
+        }
+        const double speed = std::sqrt(ScalarProd(velocity, velocity));
+        if(!(speed > 0.0) || !std::isfinite(speed))
+        {
+            throw StormError(
+                "RadiationIMC opacity model returned an invalid scattering velocity");
+        }
+        return velocity * (owner_.lightSpeed() / speed);
     }
 
     void resetTransportTallies(std::size_t cellCount)
     {
-
-            owner_.pendingMaterialEnergy_.assign(cellCount, 0.0);
-            owner_.pendingTotalEnergy_.assign(cellCount, 0.0);
-            owner_.pendingMomentum_.assign(cellCount, PointT{});
-            owner_.transportCellVelocities_.assign(cellCount, PointT{});
-            if constexpr(
-                radiation_imc_detail::has_member_velocity<CellT>::value)
+        owner_.pendingMaterialEnergy_.assign(cellCount, 0.0);
+        owner_.pendingTotalEnergy_.assign(cellCount, 0.0);
+        owner_.pendingMomentum_.assign(cellCount, PointT{});
+        owner_.transportCellVelocities_.assign(cellCount, PointT{});
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            for(std::size_t i = 0; i < cellCount; ++i)
             {
-                for(std::size_t i = 0; i < cellCount; ++i)
-                {
-                    owner_.transportCellVelocities_[i] =
-                        owner_.cells_[i].velocity;
-                }
+                owner_.transportCellVelocities_[i] = owner_.cells_[i].velocity;
             }
-            owner_.pendingRadiationEnergy_.assign(cellCount, 0.0);
-            owner_.pendingGroupRadiationEnergy_.assign(
-                cellCount * NumGroups, 0.0);
-            owner_.spectralAbsorptionScale_.assign(cellCount, 0.0);
-            owner_.thermalEmissionCdf_.assign(
-                cellCount * (NumGroups + 1), 0.0);
+        }
+        owner_.pendingRadiationEnergy_.assign(cellCount, 0.0);
+        owner_.pendingGroupRadiationEnergy_.assign(cellCount * NumGroups, 0.0);
+        owner_.spectralAbsorptionScale_.assign(cellCount, 0.0);
+        owner_.thermalEmissionCdf_.assign(cellCount * (NumGroups + 1), 0.0);
     }
 
-    void tallyMaterialEnergy(
-        std::size_t cellIndex, double energy, bool addToTotalEnergy)
+    void tallyMaterialEnergy(std::size_t cellIndex, double energy, bool addToTotalEnergy)
     {
-
-            owner_.pendingMaterialEnergy_[cellIndex] += energy;
-            if(addToTotalEnergy)
-            {
-                owner_.pendingTotalEnergy_[cellIndex] += energy;
-            }
+        owner_.pendingMaterialEnergy_[cellIndex] += energy;
+        if(addToTotalEnergy)
+        {
+            owner_.pendingTotalEnergy_[cellIndex] += energy;
+        }
     }
 
-    void tallyMomentum(
-        std::size_t cellIndex, const PointT &momentum)
+    void tallyMomentum(std::size_t cellIndex, const PointT &momentum)
     {
-
-            owner_.pendingMomentum_[cellIndex] += momentum;
+        owner_.pendingMomentum_[cellIndex] += momentum;
     }
 
-    void tallyRadiationEnergy(
-        std::size_t cellIndex, double integratedEnergy)
+    void tallyRadiationEnergy(std::size_t cellIndex, double integratedEnergy)
     {
-
-            owner_.pendingRadiationEnergy_[cellIndex] += integratedEnergy;
+        owner_.pendingRadiationEnergy_[cellIndex] += integratedEnergy;
     }
 
-    void tallyGroupRadiationEnergy(
-        std::size_t cellIndex, std::size_t group, double integratedEnergy)
+    void tallyGroupRadiationEnergy(std::size_t cellIndex, std::size_t group, double integratedEnergy)
     {
-
-            owner_.pendingGroupRadiationEnergy_[
-                cellIndex * NumGroups + group] += integratedEnergy;
+        owner_.pendingGroupRadiationEnergy_[cellIndex * NumGroups + group] += integratedEnergy;
     }
 
     void applyTransportTallies()
     {
-
-            for(std::size_t i = 0; i < owner_.pendingMaterialEnergy_.size(); ++i)
+        for(std::size_t i = 0; i < owner_.pendingMaterialEnergy_.size(); ++i)
+        {
+            owner_.extensives_[i].internal_energy += owner_.pendingMaterialEnergy_[i];
+            radiation_imc_detail::addTotalEnergyIfPresent(
+                owner_.extensives_[i], owner_.pendingTotalEnergy_[i]);
+            if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
             {
-                owner_.extensives_[i].internal_energy += owner_.pendingMaterialEnergy_[i];
-                radiation_imc_detail::addTotalEnergyIfPresent(
-                    owner_.extensives_[i], owner_.pendingTotalEnergy_[i]);
-                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                owner_.extensives_[i].momentum += owner_.pendingMomentum_[i];
+            }
+            owner_.Erad_time_avg_[i] += owner_.pendingRadiationEnergy_[i];
+            if((owner_.parameters_.withEgTimeAvg ||
+                owner_.parameters_.withCompton) &&
+                owner_.parameters_.withMultigroupOpacity)
+            {
+                for(std::size_t group = 0; group < NumGroups; ++group)
                 {
-                    owner_.extensives_[i].momentum += owner_.pendingMomentum_[i];
-                }
-                owner_.Erad_time_avg_[i] += owner_.pendingRadiationEnergy_[i];
-                if((owner_.parameters_.withEgTimeAvg ||
-                    owner_.parameters_.withCompton) &&
-                   owner_.parameters_.withMultigroupOpacity)
-                {
-                    for(std::size_t group = 0; group < NumGroups; ++group)
-                    {
-                        owner_.Eg_time_avg_[i][group] +=
-                            owner_.pendingGroupRadiationEnergy_[
-                                i * NumGroups + group];
-                    }
+                    owner_.Eg_time_avg_[i][group] +=
+                        owner_.pendingGroupRadiationEnergy_[
+                            i * NumGroups + group];
                 }
             }
-            owner_.pendingMaterialEnergy_.clear();
-            owner_.pendingTotalEnergy_.clear();
-            owner_.pendingMomentum_.clear();
-            owner_.pendingRadiationEnergy_.clear();
-            owner_.pendingGroupRadiationEnergy_.clear();
+        }
+        owner_.pendingMaterialEnergy_.clear();
+        owner_.pendingTotalEnergy_.clear();
+        owner_.pendingMomentum_.clear();
+        owner_.pendingRadiationEnergy_.clear();
+        owner_.pendingGroupRadiationEnergy_.clear();
     }
 
     void setInitialWeightFromWeight(MCParticle &particle) const
     {
-
-            particle.initialWeight = std::abs(particle.weight);
+        particle.initialWeight = std::abs(particle.weight);
     }
 
     double density(std::size_t cellIndex) const
     {
-
-            if constexpr(radiation_imc_detail::has_member_density<CellT>::value)
-            {
-                return owner_.cells_[cellIndex].density;
-            }
-            else
-            {
-                static_assert(radiation_imc_detail::has_member_mass<ExtensivesT>::value,
-                              "RadiationIMC requires CellT::density or ExtensivesT::mass");
-                return owner_.extensives_[cellIndex].mass / owner_.componentGrid().GetVolume(cellIndex);
-            }
+        if constexpr(radiation_imc_detail::has_member_density<CellT>::value)
+        {
+            return owner_.cells_[cellIndex].density;
+        }
+        else
+        {
+            static_assert(radiation_imc_detail::has_member_mass<ExtensivesT>::value,
+                            "RadiationIMC requires CellT::density or ExtensivesT::mass");
+            return owner_.extensives_[cellIndex].mass / owner_.componentGrid().GetVolume(cellIndex);
+        }
     }
 
     double specificInternalEnergy(std::size_t cellIndex) const
     {
-
-            static_assert(radiation_imc_detail::has_member_mass<ExtensivesT>::value,
-                          "RadiationIMC requires ExtensivesT::mass for specific internal energy");
-            return owner_.extensives_[cellIndex].internal_energy / owner_.extensives_[cellIndex].mass;
+        static_assert(radiation_imc_detail::has_member_mass<ExtensivesT>::value,
+                        "RadiationIMC requires ExtensivesT::mass for specific internal energy");
+        return owner_.extensives_[cellIndex].internal_energy / owner_.extensives_[cellIndex].mass;
     }
 
     double totalRadiationEnergy(std::size_t cellIndex) const
     {
-
-            if constexpr(radiation_imc_detail::has_member_radiation_energy<CellT>::value &&
-                         radiation_imc_detail::has_member_density<CellT>::value)
+        if constexpr(radiation_imc_detail::has_member_radiation_energy<CellT>::value &&
+                        radiation_imc_detail::has_member_density<CellT>::value)
+        {
+            return owner_.cells_[cellIndex].Erad * owner_.cells_[cellIndex].density * owner_.componentGrid().GetVolume(cellIndex);
+        }
+        else
+        {
+            const double extensiveRadiation = radiation_imc_detail::radiationEnergyIfPresent(owner_.extensives_[cellIndex]);
+            if(extensiveRadiation > 0.0)
             {
-                return owner_.cells_[cellIndex].Erad * owner_.cells_[cellIndex].density * owner_.componentGrid().GetVolume(cellIndex);
+                return extensiveRadiation;
+            }
+            if constexpr(radiation_imc_detail::has_member_radiation_energy<CellT>::value &&
+                            radiation_imc_detail::has_member_mass<ExtensivesT>::value)
+            {
+                return owner_.cells_[cellIndex].Erad * owner_.extensives_[cellIndex].mass;
             }
             else
             {
-                const double extensiveRadiation = radiation_imc_detail::radiationEnergyIfPresent(owner_.extensives_[cellIndex]);
-                if(extensiveRadiation > 0.0)
-                {
-                    return extensiveRadiation;
-                }
-                if constexpr(radiation_imc_detail::has_member_radiation_energy<CellT>::value &&
-                             radiation_imc_detail::has_member_mass<ExtensivesT>::value)
-                {
-                    return owner_.cells_[cellIndex].Erad * owner_.extensives_[cellIndex].mass;
-                }
-                else
-                {
-                    return 0.0;
-                }
+                return 0.0;
             }
+        }
     }
 
     void throwIfNegativeInternalEnergy(std::size_t cellIndex, const std::string &where)
@@ -966,7 +937,6 @@ public:
                 STORM_PROFILE_REGION("storm/generation/tables");
                 sourceDt = this->preparePreStepTables(context.fullDt);
             }
-            ddmc::RequireHostDeviceSamplingKernelMatch();
             if(context.executor == nullptr && context.executorStorage != nullptr)
             {
                 if(*context.executorStorage == nullptr)

@@ -324,8 +324,12 @@ public:
             comovingTransport,
             depositMomentum,
             owner_.parameters_.staticScatterers);
+        // Only a DDMC-restricted launch may reject IMC packets on the device.
+        // Grey and full-IMC eligibility also enable device transport, so
+        // keying this off DDMC alone forces every IMC packet to host fallback.
         result.ddmcOnlyTransport =
-            this->SharedDDMCKernelEligible() ? 0u : 1u;
+            (owner_.GreyKernelEligible() ||
+             owner_.SharedFullIMCKernelEligible()) ? 0u : 1u;
         return result;
     }
 #endif

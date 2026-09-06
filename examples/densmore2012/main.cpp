@@ -125,7 +125,7 @@ int main(int argc, char *argv[])
                                     DensmoreEOS, G,
                                     STORM::examples::DensmoreOpacity<Vector3D, Grid>>;
 
-    size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 512;
+    size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 1024;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 16;
     size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
     const bool noPopulationControl =

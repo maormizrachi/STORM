@@ -50,7 +50,6 @@
 #include "radiation/Polarization.hpp"
 #include "radiation/RandomWalk.hpp"
 #include "radiation/ddmc/DDMCGeometry.hpp"
-#include "radiation/ddmc/DDMCCoreCheck.hpp"
 #include "radiation/ddmc/DDMCSampling.hpp"
 #include "radiation/ddmc/DDMCTypes.hpp"
 #include "radiation/ddmc/DDMCWollaegerInterface.hpp"
@@ -562,7 +561,7 @@ private:
     {
         const double speed = std::sqrt(
             ScalarProd(particle.velocity, particle.velocity));
-        if(!(speed > 0.0) || !std::isfinite(speed))
+        if(not (speed > 0.0) or not std::isfinite(speed))
         {
             throw StormError("RadiationIMC received an invalid particle speed");
         }
