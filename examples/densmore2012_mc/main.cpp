@@ -159,7 +159,7 @@ int main(int argc, char *argv[])
         std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> population =
             std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(
                 grid, maxPhotonsPerCell, 5.0);
-        STORM::MonteCarloManager<Vector3D, Grid> manager =
+        STORM::MonteCarloManager<Vector3D, Grid, IMC> manager =
             STORM::CreateMonteCarloManager<Vector3D, Grid>(
                 grid, physics, population, boundary);
 
