@@ -1,16 +1,16 @@
 #ifndef STORM_RDMA_SEND_BUFFER_PROTOCOL_HPP
 #define STORM_RDMA_SEND_BUFFER_PROTOCOL_HPP
 
-template<typename T, typename Grid, typename Physics>
-typename RDMAMonteCarloManager<T, Grid, Physics>::RegisteredSendBuffer_t &RDMAMonteCarloManager<T, Grid, Physics>::GetSendBuffer(rank_t rank)
+template<typename T, typename Grid>
+typename RDMACommunicationEngine<T, Grid>::RegisteredSendBuffer_t &RDMACommunicationEngine<T, Grid>::GetSendBuffer(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
     return this->sendBuffers[static_cast<size_t>(rank)];
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::QueueReadySendBuffer(rank_t rank)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::QueueReadySendBuffer(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBufferReadyQueued.size()));
@@ -23,8 +23,8 @@ void RDMAMonteCarloManager<T, Grid, Physics>::QueueReadySendBuffer(rank_t rank)
     this->readySendBufferRanks.push_back(rank);
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::MarkSendBufferEmpty(rank_t rank)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::MarkSendBufferEmpty(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
@@ -39,8 +39,8 @@ void RDMAMonteCarloManager<T, Grid, Physics>::MarkSendBufferEmpty(rank_t rank)
     }
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::ResetSendBuffers(void)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::ResetSendBuffers(void)
 {
     for(rank_t rank : this->sendBufferActiveRanks)
     {
@@ -57,12 +57,11 @@ void RDMAMonteCarloManager<T, Grid, Physics>::ResetSendBuffers(void)
     this->readySendBufferRanks.clear();
     this->readySendBufferCursor = 0;
     this->sendBufferPendingRanks = 0;
-    this->sendBufferCycleCounter = 0;
     this->sendBufferPendingParticles = 0;
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::ReleaseSendBufferRegistrations(void)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::ReleaseSendBufferRegistrations(void)
 {
     for(RegisteredSendBuffer_t &buffer : this->sendBuffers)
     {
@@ -70,8 +69,8 @@ void RDMAMonteCarloManager<T, Grid, Physics>::ReleaseSendBufferRegistrations(voi
     }
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::NoteSendBufferGrowth(rank_t rank, size_t previousSize, const RegisteredSendBuffer_t &buffer, size_t addedParticles)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t previousSize, const RegisteredSendBuffer_t &buffer, size_t addedParticles)
 {
     this->sendBufferPendingParticles += addedParticles;
     if(addedParticles > 0 and previousSize == 0 and not buffer.empty())
@@ -96,41 +95,22 @@ void RDMAMonteCarloManager<T, Grid, Physics>::NoteSendBufferGrowth(rank_t rank, 
     }
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::NoteSendBufferFlush(rank_t rank, size_t flushedParticles)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t flushedParticles)
 {
     assert(this->sendBufferPendingParticles >= flushedParticles);
     this->sendBufferPendingParticles -= flushedParticles;
     this->MarkSendBufferEmpty(rank);
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::FlushSendBuffers(bool flushSmallBuffers)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
 {
-    size_t pendingRanks = this->sendBufferPendingRanks;
-
-    if(pendingRanks > 0)
-    {
-        this->sendBufferCycleCounter++;
-    }
-    else
-    {
-        this->sendBufferCycleCounter = 0;
-    }
-
-    bool allowIdleDrain = flushSmallBuffers;
-    bool heldIdleDrain = false;
-    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
-    if(flushSmallBuffers and this->config.holdSmallIdleFlushes)
-    {
-        size_t holdoffCycles = std::max<size_t>(1, this->config.GetSmallIdleFlushHoldoffCycles());
-        allowIdleDrain = this->sendBufferCycleCounter >= holdoffCycles;
-    }
-
-    if(pendingRanks == 0)
+    if(this->sendBufferPendingRanks == 0)
     {
         return;
     }
+    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
 
     auto flushRankIfReady = [&](rank_t toRank, bool allowIdleFlush)
     {
@@ -150,9 +130,7 @@ void RDMAMonteCarloManager<T, Grid, Physics>::FlushSendBuffers(bool flushSmallBu
             return;
         }
         bool thresholdFlush = particles.size() >= this->config.sendBufferMinSize;
-        bool idleFlush = allowIdleFlush &&
-            (particles.size() >= this->config.sendBufferMinIdleDrainSize ||
-             this->sendBufferCycleCounter >= this->config.sendBufferIdleDrainPatienceCycles);
+        bool idleFlush = allowIdleFlush;
         if(not thresholdFlush and not idleFlush)
         {
             return;
@@ -205,7 +183,7 @@ void RDMAMonteCarloManager<T, Grid, Physics>::FlushSendBuffers(bool flushSmallBu
         this->readySendBufferCursor = 0;
     }
 
-    if(allowIdleDrain)
+    if(flushSmallBuffers)
     {
         for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
         {
@@ -232,27 +210,13 @@ void RDMAMonteCarloManager<T, Grid, Physics>::FlushSendBuffers(bool flushSmallBu
                 this->sendBufferActiveRanks.pop_back();
                 continue;
             }
-            if(flushSmallBuffers)
-            {
-                heldIdleDrain = true;
-            }
             index++;
         }
     }
-    else if(flushSmallBuffers and this->sendBufferPendingRanks > 0)
-    {
-        heldIdleDrain = true;
-    }
-
-    if(this->sendBufferPendingRanks == 0)
-    {
-        this->sendBufferCycleCounter = 0;
-    }
-    (void)heldIdleDrain;
 }
 
-template<typename T, typename Grid, typename Physics>
-void RDMAMonteCarloManager<T, Grid, Physics>::FlushAllSendBuffers(void)
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::FlushAllSendBuffers(void)
 {
     const bool usesAsyncReallocation = this->UsesAsyncReallocation();
     for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
@@ -303,14 +267,10 @@ void RDMAMonteCarloManager<T, Grid, Physics>::FlushAllSendBuffers(void)
         this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
         this->sendBufferActiveRanks.pop_back();
     }
-    if(this->sendBufferPendingRanks == 0)
-    {
-        this->sendBufferCycleCounter = 0;
-    }
 }
 
-template<typename T, typename Grid, typename Physics>
-bool RDMAMonteCarloManager<T, Grid, Physics>::AllSendBuffersEmpty(void) const
+template<typename T, typename Grid>
+bool RDMACommunicationEngine<T, Grid>::AllSendBuffersEmpty(void) const
 {
     if(this->sendBufferPendingParticles == 0)
     {

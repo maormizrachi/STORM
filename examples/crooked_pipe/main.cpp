@@ -480,7 +480,8 @@ void ReportMeshQuality(const Grid &grid, const std::vector<int> &materialFlags, 
     }
 }
 
-bool Rebalance(Grid &grid, STORM::MonteCarloManager<Vector3D, Grid> &manager,
+template<typename Physics>
+bool Rebalance(Grid &grid, STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager,
                std::vector<STORM::RadiationCell> &cells, std::vector<STORM::SimpleExtensives> &extensives,
                std::vector<int> &materialFlags)
 {
@@ -607,7 +608,7 @@ int main(int argc, char *argv[])
             std::shared_ptr<IMC> physics = std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacity, parameters);
             std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> populationControl =
                 std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, options.minPhotonsPerCell, 4.0);
-            STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
+            STORM::MonteCarloManager<Vector3D, Grid, IMC> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
                 grid, physics, populationControl, boundary, options.managerType, options.rdmaEngine);
 
             if(!options.outputProbes.empty() and rank == 0)
@@ -681,6 +682,11 @@ int main(int argc, char *argv[])
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
+    // Release fabric and device resources while MPI is still available.
+    RMAFactory::Finalize(RDMA_Type::AUTO_RDMA);
+#ifdef STORM_WITH_GPU
+    STORM::gpu::KokkosRuntime::Finalize();
+#endif
     MPI_Finalize();
     return 0;
 }

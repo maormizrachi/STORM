@@ -27,15 +27,6 @@ private:
     static constexpr size_t sendBufferTargetParticlesPerFlush = 2048;
     static constexpr double sendBufferHighTransferFraction = 0.20;
     static constexpr double sendBufferLowTransferFraction = 0.08;
-    static constexpr size_t smallIdleFlushHoldoffCyclesMin = 512;
-    static constexpr size_t smallIdleFlushHoldoffCyclesMax = 16384;
-    static constexpr double smallIdleFlushHighCallFraction = 0.80;
-    static constexpr double smallIdleFlushLowCallFraction = 0.50;
-    static constexpr double smallIdleFlushLowParticleFraction = 0.20;
-    static constexpr size_t smallIdleFlushPendingSoftLimitFactor = 512;
-
-    size_t smallIdleFlushHoldoffCycles = smallIdleFlushHoldoffCyclesMin;
-
 public:
     size_t initialBufferSize          = 5000;
     size_t shrinkBuffersCycle         = shrinkBuffersCycleMin;
@@ -55,6 +46,11 @@ public:
     // slowest lane stops, so a long cap makes thin lanes idle behind thick
     // ones; 64 bounds that tail and beat 4096 by ~1.7x on CrookedPipe.
     size_t gpuMaxInnerSteps           = 64;
+    // Progress communication while kernels run; double-buffer remote D2H
+    // copies and deliver the previous wave's remotes during the next kernel.
+    // Opt in: short, imbalanced Densmore runs can pay more scheduling cost
+    // than they hide. Enable after measuring the application's traffic.
+    bool gpuOverlapCommunication      = false;
     // Unused by the resident pool (the whole active set is launched). Kept so
     // callers can still cap a wave later without an ABI break.
     size_t gpuLaunchSize              = 0;
@@ -86,20 +82,7 @@ public:
     double bufferShrinkNeighborFactor = 0.5;
     double shrinkPercent              = 0.25;
     bool retireStaleHandlers          = true;
-    bool holdSmallIdleFlushes = true;
-    size_t sendBufferMinIdleDrainSize = 512;
-    size_t sendBufferIdleDrainPatienceCycles = 16384;
     MonteCarloTransferDiagnosticsLevel transferDiagnosticsLevel = MonteCarloTransferDiagnosticsLevel::StepSummary;
-
-    size_t GetSmallIdleFlushHoldoffCycles(void) const
-    {
-        return this->smallIdleFlushHoldoffCycles;
-    }
-
-    void SyncSmallIdleFlushHoldoffCycles(size_t value)
-    {
-        this->smallIdleFlushHoldoffCycles = std::min<size_t>(smallIdleFlushHoldoffCyclesMax, std::max<size_t>(smallIdleFlushHoldoffCyclesMin, value));
-    }
 
     static MonteCarloConfig Auto(size_t particlesPerRank, size_t numNeighbors)
     {

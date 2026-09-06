@@ -48,7 +48,7 @@
 #ifdef STORM_WITH_MPI
 #include "manager/MonteCarloManagerFactory.hpp"
 #else
-#include "manager/MonteCarloManagerSerial.hpp"
+#include "manager/MonteCarloManager.hpp"
 #endif
 #include "DensmoreOpacity.hpp"
 #include "DensmoreBoundary.hpp"
@@ -60,7 +60,8 @@ class DensmoreEOS
 public:
     DensmoreEOS(double cvPerVolume, double density)
         : cvPerMass_(cvPerVolume / density)
-    {}
+    {
+    }
 
     double dT2cv(double /*density*/, double /*temperature*/,
                  const std::vector<double> &, const std::vector<std::string> &) const
@@ -137,188 +138,197 @@ int main(int argc, char *argv[])
     const bool materializeEachStep =
         argc >= 9 && std::stoul(argv[8]) != 0;
 
-#ifdef STORM_WITH_MPI
     {
-#endif
 
-    double keV_K = units::kev_kelvin;
-    double eV_K = keV_K / 1000.0;
+        double keV_K = units::kev_kelvin;
+        double eV_K = keV_K / 1000.0;
 
-    double domainLength = 3.0;
-    double xStep = 2.0;
-    double T_init = eV_K;
-    double T_boundary = keV_K;
-    double density = 1.0;
-    double cvPerVolume = 1e15 / keV_K;
-    double tf = 1e-9;
-    double dt = 5e-12 * dtScale;
-    size_t iterations = static_cast<size_t>(tf / dt);
-    if(argc >= 6)
-    {
-        iterations = std::stoul(argv[5]);
-        tf = iterations * dt;
-    }
-
-    double Emin = units::kev * 1e-4;
-    double Emax = units::kev * 1e2;
-    std::array<double, G + 1> energyBoundaries{};
-    energyBoundaries[0] = Emin;
-    double ratio = std::pow(Emax / Emin, 1.0 / G);
-    for(size_t g = 0; g < G; ++g)
-    {
-        energyBoundaries[g + 1] = energyBoundaries[g] * ratio;
-    }
-
-    double dy = domainLength / Nx;
-    Vector3D lower(0, 0, 0);
-    Vector3D upper(domainLength, dy, dy);
-
-    Grid grid(lower, upper, Nx, 1, 1);
-
-#ifdef STORM_WITH_MPI
-    std::vector<double> uniformWeights(Nx, 1.0);
-    grid.BuildParallel(uniformWeights);
-#endif
-
-    size_t Ncells = grid.GetPointNo();
-
-    if(rank == 0)
-    {
-#ifdef STORM_WITH_MPI
-        size_t globalCells = 0;
-        MPI_Reduce(&Ncells, &globalCells, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-        std::cout << "Densmore 2012 heterogeneous step-opacity (" << G << "-group MC, "
-                  << nprocs << " ranks, " << globalCells << " global cells)" << std::endl;
-#else
-        std::cout << "Densmore 2012 heterogeneous step-opacity (" << G << "-group MC)" << std::endl;
-#endif
-        std::cout << "Nx=" << Nx << ", domain=[0, " << domainLength << "] cm" << std::endl;
-        std::cout << "new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << std::endl;
-        std::cout << "population_control="
-                  << (noPopulationControl ? "none" : "comb")
-                  << ", opacity_scale=" << opacityScale
-                  << ", materialize_each_step="
-                  << materializeEachStep
-                  << std::endl;
-        std::cout << "dt=" << dt << " s, t_final=" << tf << " s, iterations=" << iterations << std::endl;
-    }
-#ifdef STORM_WITH_MPI
-    else
-    {
-        MPI_Reduce(&Ncells, nullptr, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    }
-#endif
-
-    std::vector<STORM::RadiationCell> cells(Ncells);
-    std::vector<STORM::SimpleExtensives> extensives(Ncells);
-    std::vector<int> regionFlags(Ncells, 0);
-
-    for(size_t i = 0; i < Ncells; i++)
-    {
-        double x = grid.GetCellCM(i).x;
-        double volume = grid.GetVolume(i);
-        regionFlags[i] = (x < xStep) ? 1 : 0;
-        cells[i].temperature = T_init;
-        cells[i].internalEnergy = cvPerVolume * T_init * volume;
-        extensives[i].mass = density * volume;
-        extensives[i].internal_energy = cells[i].internalEnergy;
-    }
-
-    STORM::RadiationIMCParameters<G> imcParams;
-    imcParams.newPhotonsPerCell = newPhotonsPerCell;
-    imcParams.withRandomWalk = true;
-    imcParams.withMultigroupOpacity = true;
-    imcParams.energyBoundaries = energyBoundaries;
-    imcParams.energyBoundariesProvided = true;
-
-    std::shared_ptr<DensmoreEOS> eos = std::make_shared<DensmoreEOS>(cvPerVolume, density);
-    std::shared_ptr<STORM::examples::DensmoreOpacity<Vector3D, Grid>> opacityModel =
-        std::make_shared<STORM::examples::DensmoreOpacity<Vector3D, Grid>>(
-            regionFlags, cells, opacityScale);
-    opacityModel->setGroupBoundaries(energyBoundaries);
-    std::shared_ptr<STORM::examples::DensmoreBoundary<Vector3D, Grid>> boundary =
-        std::make_shared<STORM::examples::DensmoreBoundary<Vector3D, Grid>>(grid, T_boundary, boundaryPhotonsPerCell, energyBoundaries);
-    std::shared_ptr<IMC> physics =
-        std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
-    std::shared_ptr<STORM::PopulationControl<Vector3D, Grid>> popControl;
-    if(noPopulationControl)
-    {
-        popControl =
-            std::make_shared<
-                STORM::NoPopulationControl<Vector3D, Grid>>(grid);
-    }
-    else
-    {
-        popControl =
-            std::make_shared<
-                STORM::CombPopulationControl<Vector3D, Grid>>(
-                    grid, 200, 5.0);
-    }
-
-#ifdef STORM_WITH_MPI
-    STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
-        grid, physics, popControl, boundary);
-#else
-    STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
-#endif
-    manager.getParticles().clear();
-
-    for(size_t step = 0; step < iterations; step++)
-    {
-        manager.step(dt);
-        if(materializeEachStep)
+        double domainLength = 3.0;
+        double xStep = 2.0;
+        double T_init = eV_K;
+        double T_boundary = keV_K;
+        double density = 1.0;
+        double cvPerVolume = 1e15 / keV_K;
+        double tf = 1e-9;
+        double dt = 5e-12 * dtScale;
+        size_t iterations = static_cast<size_t>(tf / dt);
+        if(argc >= 6)
         {
-            (void) manager.getParticles();
+            iterations = std::stoul(argv[5]);
+            tf = iterations * dt;
         }
 
-        if(rank == 0 && (step % 20 == 0 || step + 1 == iterations))
+        double Emin = units::kev * 1e-4;
+        double Emax = units::kev * 1e2;
+        std::array<double, G + 1> energyBoundaries{};
+        energyBoundaries[0] = Emin;
+        double ratio = std::pow(Emax / Emin, 1.0 / G);
+        for(size_t g = 0; g < G; ++g)
         {
-            double maxT = 0;
-            for(size_t i = 0; i < Ncells; i++)
-            {
-                maxT = std::max(maxT, cells[i].temperature);
-            }
-            double fraction = double(step + 1) / iterations;
-            int pct = static_cast<int>(fraction * 100);
-            std::cout << "Step " << step + 1 << "/" << iterations
-                      << " (" << pct << "%)"
-                      << "  particles="
-                      << manager.GetEndParticleCount()
-                      << "  maxT=" << maxT / keV_K << " keV" << std::endl;
+            energyBoundaries[g + 1] = energyBoundaries[g] * ratio;
         }
-    }
 
-    std::vector<double> allX, allT;
+        double dy = domainLength / Nx;
+        Vector3D lower(0, 0, 0);
+        Vector3D upper(domainLength, dy, dy);
+
+        Grid grid(lower, upper, Nx, 1, 1);
 
 #ifdef STORM_WITH_MPI
-    {
-        std::vector<double> localX(Ncells), localT(Ncells);
-        for(size_t i = 0; i < Ncells; i++)
-        {
-            localX[i] = grid.GetMeshPoint(i).x;
-            localT[i] = cells[i].temperature;
-        }
+        std::vector<double> uniformWeights(Nx, 1.0);
+        grid.BuildParallel(uniformWeights);
+#endif
 
-        int localCount = static_cast<int>(Ncells);
-        std::vector<int> recvCounts(nprocs), displacements(nprocs);
-        MPI_Gather(&localCount, 1, MPI_INT, recvCounts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+        size_t Ncells = grid.GetPointNo();
 
         if(rank == 0)
         {
-            displacements[0] = 0;
-            for(int r = 1; r < nprocs; r++)
-            {
-                displacements[r] = displacements[r - 1] + recvCounts[r - 1];
-            }
-            int total = displacements[nprocs - 1] + recvCounts[nprocs - 1];
-            allX.resize(total);
-            allT.resize(total);
+#ifdef STORM_WITH_MPI
+            size_t globalCells = 0;
+            MPI_Reduce(&Ncells, &globalCells, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            std::cout << "Densmore 2012 heterogeneous step-opacity (" << G << "-group MC, "
+                      << nprocs << " ranks, " << globalCells << " global cells)" << std::endl;
+#else
+        std::cout << "Densmore 2012 heterogeneous step-opacity (" << G << "-group MC)" << std::endl;
+#endif
+            std::cout << "Nx=" << Nx << ", domain=[0, " << domainLength << "] cm" << std::endl;
+            std::cout << "new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << std::endl;
+            std::cout << "population_control="
+                      << (noPopulationControl ? "none" : "comb")
+                      << ", opacity_scale=" << opacityScale
+                      << ", materialize_each_step="
+                      << materializeEachStep
+                      << std::endl;
+            std::cout << "dt=" << dt << " s, t_final=" << tf << " s, iterations=" << iterations << std::endl;
         }
-        MPI_Gatherv(localX.data(), localCount, MPI_DOUBLE,
-                     allX.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Gatherv(localT.data(), localCount, MPI_DOUBLE,
-                     allT.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    }
+#ifdef STORM_WITH_MPI
+        else
+        {
+            MPI_Reduce(&Ncells, nullptr, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        }
+#endif
+
+        std::vector<STORM::RadiationCell> cells(Ncells);
+        std::vector<STORM::SimpleExtensives> extensives(Ncells);
+        std::vector<int> regionFlags(Ncells, 0);
+
+        for(size_t i = 0; i < Ncells; i++)
+        {
+            double x = grid.GetCellCM(i).x;
+            double volume = grid.GetVolume(i);
+            regionFlags[i] = (x < xStep) ? 1 : 0;
+            cells[i].temperature = T_init;
+            cells[i].internalEnergy = cvPerVolume * T_init * volume;
+            extensives[i].mass = density * volume;
+            extensives[i].internal_energy = cells[i].internalEnergy;
+        }
+
+        STORM::RadiationIMCParameters<G> imcParams;
+        imcParams.newPhotonsPerCell = newPhotonsPerCell;
+        imcParams.withRandomWalk = true;
+        imcParams.withSlabTransport =
+            std::getenv("STORM_DENSMORE_EXPLICIT_WALLS") == nullptr;
+        if(rank == 0)
+            std::cout << "slab_transport=" << imcParams.withSlabTransport << std::endl;
+        imcParams.withMultigroupOpacity = true;
+        imcParams.energyBoundaries = energyBoundaries;
+        imcParams.energyBoundariesProvided = true;
+
+        std::shared_ptr<DensmoreEOS> eos = std::make_shared<DensmoreEOS>(cvPerVolume, density);
+        std::shared_ptr<STORM::examples::DensmoreOpacity<Vector3D, Grid>> opacityModel =
+            std::make_shared<STORM::examples::DensmoreOpacity<Vector3D, Grid>>(
+                regionFlags, cells, opacityScale);
+        opacityModel->setGroupBoundaries(energyBoundaries);
+        std::shared_ptr<STORM::examples::DensmoreBoundary<Vector3D, Grid>> boundary =
+            std::make_shared<STORM::examples::DensmoreBoundary<Vector3D, Grid>>(grid, T_boundary, boundaryPhotonsPerCell, energyBoundaries);
+        std::shared_ptr<IMC> physics =
+            std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacityModel, imcParams);
+        std::shared_ptr<STORM::PopulationControl<Vector3D, Grid>> popControl;
+        if(noPopulationControl)
+        {
+            popControl =
+                std::make_shared<
+                    STORM::NoPopulationControl<Vector3D, Grid>>(grid);
+        }
+        else
+        {
+            popControl =
+                std::make_shared<
+                    STORM::CombPopulationControl<Vector3D, Grid>>(
+                    grid, 200, 5.0);
+        }
+
+        STORM::MonteCarloConfig transportConfig;
+#ifdef STORM_WITH_GPU
+        transportConfig.gpuOverlapCommunication =
+            std::getenv("STORM_DENSMORE_OVERLAP") != nullptr &&
+            std::getenv("STORM_DENSMORE_NO_OVERLAP") == nullptr;
+#endif
+#ifdef STORM_WITH_MPI
+        STORM::MonteCarloManager<Vector3D, Grid, IMC> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
+            grid, physics, popControl, boundary,
+            STORM::ManagerType::Auto, STORM::RDMAEngine::OFI, transportConfig);
+#else
+        STORM::MonteCarloManager<Vector3D, Grid, IMC> manager(grid, physics, popControl, boundary, transportConfig);
+#endif
+        manager.getParticles().clear();
+
+        for(size_t step = 0; step < iterations; step++)
+        {
+            manager.step(dt);
+            if(materializeEachStep)
+            {
+                (void)manager.getParticles();
+            }
+
+            if(rank == 0 && (step % 20 == 0 || step + 1 == iterations))
+            {
+                double maxT = 0;
+                for(size_t i = 0; i < Ncells; i++)
+                {
+                    maxT = std::max(maxT, cells[i].temperature);
+                }
+                double fraction = double(step + 1) / iterations;
+                int pct = static_cast<int>(fraction * 100);
+                std::cout << "Step " << step + 1 << "/" << iterations
+                          << " (" << pct << "%)"
+                          << "  particles="
+                          << manager.GetEndParticleCount()
+                          << "  maxT=" << maxT / keV_K << " keV" << std::endl;
+            }
+        }
+
+        std::vector<double> allX, allT;
+
+#ifdef STORM_WITH_MPI
+        {
+            std::vector<double> localX(Ncells), localT(Ncells);
+            for(size_t i = 0; i < Ncells; i++)
+            {
+                localX[i] = grid.GetMeshPoint(i).x;
+                localT[i] = cells[i].temperature;
+            }
+
+            int localCount = static_cast<int>(Ncells);
+            std::vector<int> recvCounts(nprocs), displacements(nprocs);
+            MPI_Gather(&localCount, 1, MPI_INT, recvCounts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+            if(rank == 0)
+            {
+                displacements[0] = 0;
+                for(int r = 1; r < nprocs; r++)
+                {
+                    displacements[r] = displacements[r - 1] + recvCounts[r - 1];
+                }
+                int total = displacements[nprocs - 1] + recvCounts[nprocs - 1];
+                allX.resize(total);
+                allT.resize(total);
+            }
+            MPI_Gatherv(localX.data(), localCount, MPI_DOUBLE,
+                        allX.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Gatherv(localT.data(), localCount, MPI_DOUBLE,
+                        allT.data(), recvCounts.data(), displacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        }
 #else
     allX.resize(Ncells);
     allT.resize(Ncells);
@@ -329,86 +339,87 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    if(rank == 0)
-    {
-        size_t totalCells = allX.size();
-        std::vector<size_t> idx(totalCells);
-        std::iota(idx.begin(), idx.end(), 0);
-        std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
-            return allX[a] < allX[b];
-        });
-
-        std::vector<double> simX(totalCells), simT(totalCells);
-        for(size_t i = 0; i < totalCells; i++)
+        if(rank == 0)
         {
-            simX[i] = allX[idx[i]];
-            simT[i] = allT[idx[i]];
-        }
+            size_t totalCells = allX.size();
+            std::vector<size_t> idx(totalCells);
+            std::iota(idx.begin(), idx.end(), 0);
+            std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b)
+                      {
+                          return allX[a] < allX[b];
+                      });
 
-        std::string profilePath = "densmore2012_profile.txt";
-        {
-            std::ofstream out(profilePath);
-            out << "# Densmore2012 gray MC  t=" << tf << "  Nx=" << Nx << "\n";
-            out << "# x(cm)  T(K)\n";
+            std::vector<double> simX(totalCells), simT(totalCells);
             for(size_t i = 0; i < totalCells; i++)
             {
-                out << simX[i] << " " << simT[i] << "\n";
+                simX[i] = allX[idx[i]];
+                simT[i] = allT[idx[i]];
             }
-            std::cout << "\nWrote " << profilePath << std::endl;
-        }
 
-        std::string refPath = std::string(STORM_DATA_DIR) + "/data/densmore2012_fig4_mc.csv";
-        std::vector<RefPoint> ref = LoadCSV(refPath);
-        if(!ref.empty())
-        {
-            double l1sum = 0;
-            size_t count = 0;
-            for(const RefPoint &rp : ref)
+            std::string profilePath = "densmore2012_profile.txt";
             {
-                size_t j = 0;
-                while(j + 1 < totalCells && simX[j + 1] < rp.x)
+                std::ofstream out(profilePath);
+                out << "# Densmore2012 gray MC  t=" << tf << "  Nx=" << Nx << "\n";
+                out << "# x(cm)  T(K)\n";
+                for(size_t i = 0; i < totalCells; i++)
                 {
-                    j++;
+                    out << simX[i] << " " << simT[i] << "\n";
                 }
-                if(j + 1 >= totalCells)
-                {
-                    continue;
-                }
-                double frac = (rp.x - simX[j]) / (simX[j + 1] - simX[j]);
-                double T_interp = simT[j] + frac * (simT[j + 1] - simT[j]);
-                double T_keV = T_interp / keV_K;
-                l1sum += std::abs(T_keV - rp.T_keV);
-                count++;
+                std::cout << "\nWrote " << profilePath << std::endl;
             }
-            double l1 = (count > 0) ? l1sum / count : -1;
-            std::cout << "DENSMORE2012_TGAS_L1 = " << std::scientific << l1 << " keV" << std::endl;
-            if(l1 >= 0 && l1 < 0.10)
+
+            std::string refPath = std::string(STORM_DATA_DIR) + "/data/densmore2012_fig4_mc.csv";
+            std::vector<RefPoint> ref = LoadCSV(refPath);
+            if(!ref.empty())
             {
-                std::cout << "PASS (L1 < 0.10 keV)" << std::endl;
+                double l1sum = 0;
+                size_t count = 0;
+                for(const RefPoint &rp : ref)
+                {
+                    size_t j = 0;
+                    while(j + 1 < totalCells && simX[j + 1] < rp.x)
+                    {
+                        j++;
+                    }
+                    if(j + 1 >= totalCells)
+                    {
+                        continue;
+                    }
+                    double frac = (rp.x - simX[j]) / (simX[j + 1] - simX[j]);
+                    double T_interp = simT[j] + frac * (simT[j + 1] - simT[j]);
+                    double T_keV = T_interp / keV_K;
+                    l1sum += std::abs(T_keV - rp.T_keV);
+                    count++;
+                }
+                double l1 = (count > 0) ? l1sum / count : -1;
+                std::cout << "DENSMORE2012_TGAS_L1 = " << std::scientific << l1 << " keV" << std::endl;
+                if(l1 >= 0 && l1 < 0.10)
+                {
+                    std::cout << "PASS (L1 < 0.10 keV)" << std::endl;
+                }
+                else
+                {
+                    std::cout << "WARN: gray approximation may differ from multigroup reference" << std::endl;
+                }
             }
             else
             {
-                std::cout << "WARN: gray approximation may differ from multigroup reference" << std::endl;
+                std::cout << "No reference data at " << refPath << " — skipping comparison" << std::endl;
             }
-        }
-        else
-        {
-            std::cout << "No reference data at " << refPath << " — skipping comparison" << std::endl;
+
+            {
+                std::string scriptDir = __FILE__;
+                scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
+                std::string cmd = "python3 " + scriptDir + "/plot_densmore.py";
+                std::cout << "Running: " << cmd << std::endl;
+                std::system(cmd.c_str());
+            }
+
+            std::cout << "\nDone." << std::endl;
         }
 
-        {
-            std::string scriptDir = __FILE__;
-            scriptDir = scriptDir.substr(0, scriptDir.rfind('/'));
-            std::string cmd = "python3 " + scriptDir + "/plot_densmore.py";
-            std::cout << "Running: " << cmd << std::endl;
-            std::system(cmd.c_str());
-        }
-
-        std::cout << "\nDone." << std::endl;
     }
-
 #ifdef STORM_WITH_MPI
-    }
     RMAFactory::Finalize(RDMA_Type::AUTO_RDMA);
 #ifdef STORM_WITH_GPU
     STORM::gpu::KokkosRuntime::Finalize();

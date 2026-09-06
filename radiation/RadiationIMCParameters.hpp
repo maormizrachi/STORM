@@ -37,6 +37,9 @@ struct RadiationIMCParameters
     bool staticScatterers = false;
     bool withMultigroupOpacity = false;
     bool withRandomWalk = false;
+    // Opt in only for a static x slab with reflecting transverse box walls.
+    // Fold y/z motion analytically instead of treating each wall as an event.
+    bool withSlabTransport = false;
     double rwMinCellOpticalDepth = 25.0;
     double rwMinParticleOpticalDepth = 5.0;
     bool withDDMC = false;
@@ -100,6 +103,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
     os << "\tstatic scatterers: " << parameters.staticScatterers << '\n';
     os << "\twith multigroup opacity: " << parameters.withMultigroupOpacity << '\n';
     os << "\twith random walk: " << parameters.withRandomWalk << '\n';
+    os << "\twith slab transport: " << parameters.withSlabTransport << '\n';
     os << "\twith DDMC: " << parameters.withDDMC << '\n';
     os << "\tno hydro feedback: " << parameters.noHydroFeedback << '\n';
     os << "\twith group time averages: " << parameters.withEgTimeAvg << '\n';

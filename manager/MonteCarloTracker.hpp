@@ -43,6 +43,10 @@ public:
     {
         std::vector<ParticleT> local = this->GetLocalTrackParticleRoute(id);
 #ifdef STORM_WITH_MPI
+        if(this->comm == MPI_COMM_NULL)
+        {
+            return local;
+        }
         std::vector<ParticleT> global = MPI_All_cast(local, this->comm);
         std::sort(global.begin(), global.end(), [](const ParticleT &first, const ParticleT &second)
         {

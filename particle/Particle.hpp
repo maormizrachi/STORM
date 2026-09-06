@@ -163,7 +163,7 @@ struct Particle : public ParticleTransportData<T>, public ParticleRoutingState<T
     explicit Particle(particle_id_t id_ = std::numeric_limits<particle_id_t>::max(), const T &location_ = T(std::numeric_limits<double>::max()), const T &velocity_ = T(std::numeric_limits<double>::max()), dt_t timeLeft_ = dt_t(std::numeric_limits<double>::max())):
         ParticleTransportData<T>(id_, location_, velocity_, timeLeft_)
     {
-        #ifdef STORM_DEBUG
+        #if defined(STORM_DEBUG) && defined(STORM_WITH_MPI)
         this->checkedHere = true;
         this->ghostIndex = std::numeric_limits<cell_index_t>::max();
         this->newCellValue = T(std::numeric_limits<double>::max());

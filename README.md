@@ -14,7 +14,7 @@ STORM provides a templated Monte Carlo particle transport engine used by the [RI
 - **Pluggable physics** - `MonteCarloPhysics` interface for custom particle interactions
 - **Pluggable boundaries** - rigid, temperature-driven (single/two-sided), or custom BCs
 - **Population control** - comb algorithm for photon packet management
-- **Serial and MPI managers** - scale from laptop to supercomputer
+- **One manager with serial and MPI communication engines** - scale from laptop to supercomputer
 - **Full IMC radiation** - `RadiationIMC` with Random Walk, DDMC, and multigroup support
 - **Benchmark suite** - Hohlraum, Marshak wave (1–4), Densmore 2012, Moving slab, Till-Compton
 - **Header-heavy** - most code is inline in headers for easy integration
@@ -32,7 +32,7 @@ STORM/
 ├── boundary/                   Boundary conditions (rigid, temperature)
 ├── utils/                      RandomOnFace, LinearInterpolation
 ├── population/                 Population control (comb, no-op)
-├── manager/                    Serial + MPI managers
+├── manager/                    Shared manager + communication engines
 ├── examples/                   Standalone examples and benchmarks
 ├── install_deps.sh             Script to clone external dependencies
 └── CMakeLists.txt              Standalone build configuration
@@ -81,7 +81,7 @@ with submodules, or initialize it explicitly with
 
 ## Building with MPI
 
-STORM's MPI build enables distributed-memory parallel transport via the managers in `manager/parallel/` (e.g. `TwoSidedMonteCarloManager`, `RDMAMonteCarloManager`). It compiles additional source files (`utils/RankSync.cpp`, `manager/parallel/ReallocationAgent.cpp`, `mpi_utils/AmountManager.cpp`) and defines `STORM_WITH_MPI`, `MADVORO_WITH_MPI`, `RICH_MPI`, `SPATIAL_DS_WITH_MPI`, and `__WITH_MPI`.
+STORM uses one transport implementation, `MonteCarloManager<T, Grid, Physics>`, with an injected engine from `manager/communication/`. `RDMACommunicationEngine` owns registered queues and reallocation; `P2PCommunicationEngine` owns two-sided MPI buffers; `SerialCommunicationEngine` provides local storage without MPI resources. The shared manager owns particle-count completion through `AmountManager`; completion is independent of the selected communication engine. `MonteCarloManager<T, Grid, Physics>` is the public manager itself; its factory returns it directly and selects only the communication engine while preserving the concrete physics type. It compiles additional source files (`utils/RankSync.cpp`, `manager/parallel/ReallocationAgent.cpp`, `mpi_utils/AmountManager.cpp`) and defines `STORM_WITH_MPI`, `MADVORO_WITH_MPI`, `RICH_MPI`, `SPATIAL_DS_WITH_MPI`, and `__WITH_MPI`.
 
 ```bash
 cmake .. -DSTORM_BUILD_EXAMPLES=ON -DSTORM_WITH_MPI=ON
@@ -90,7 +90,7 @@ make -j$(nproc)
 
 The MPI build requires the `mpi_utils`, `MeshDecomposer3D`, and `EasyRMA` dependencies (all cloned by `install_deps.sh`).
 
-`RDMAMonteCarloManager` uses OFI/libfabric as the default native one-sided RDMA backend. On Slingshot it selects hardware providers such as CXI; on InfiniBand it uses the OFI verbs provider rather than the older direct IBV implementation. Software transports such as TCP or sockets are rejected for the native RDMA path. If OFI is unavailable, the high-level auto factory falls back to two-sided MPI transport.
+`RDMACommunicationEngine` uses OFI/libfabric as the default native one-sided RDMA backend. On Slingshot it selects hardware providers such as CXI; on InfiniBand it uses the OFI verbs provider rather than the older direct IBV implementation. Software transports such as TCP or sockets are rejected for the native RDMA path. If OFI is unavailable, the high-level auto factory falls back to two-sided MPI transport.
 
 ### CMake Options
 
@@ -218,3 +218,9 @@ For questions, suggestions, or help getting started, feel free to reach out - I'
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE) for details.
+
+### CPU and GPU transport
+
+CPU/GPU execution belongs to the common manager and physics implementation, independently of communication. P2P and RDMA use the same GPU source generation, resident transport, host fallbacks, and deferred census materialization. Pass concrete physics to `CreateMonteCarloManager` to retain its device capabilities. GPU packets are staged through host memory for both engines; GPU-aware MPI is not required.
+
+Communication engines own outgoing packets until transmission completes and transfer received batches to the manager. Completion combines particle creation/retirement accounting with local host/device idleness and pending communication; census retained for the next step does not count as active transport. Legacy manager selection uses the modern RDMA engine and no longer runs the old transport algorithm.

@@ -13,6 +13,7 @@
 #include "DeviceParticle.hpp"
 #include "GreyIMCKernel.hpp"
 #include "ProfileRegion.hpp"
+#include "ExecutionEvent.hpp"
 
 namespace STORM
 {
@@ -114,19 +115,25 @@ struct TransportExecutorMetrics
     std::size_t splitCreatedCount = 0;
     std::size_t maxIngestCount = 0;
     std::size_t maxActiveCount = 0;
+    std::size_t progressPollCount = 0;
+    std::size_t pipelinedRemoteCount = 0;
 };
 
 class KokkosLocalTransportExecutor
 {
 #if defined(KOKKOS_ENABLE_HIP)
     using PinnedHostSpace = Kokkos::HIPHostPinnedSpace;
+#elif defined(KOKKOS_ENABLE_CUDA)
+    using PinnedHostSpace = Kokkos::CudaHostPinnedSpace;
 #else
     using PinnedHostSpace = Kokkos::HostSpace;
 #endif
 
 public:
-    explicit KokkosLocalTransportExecutor(std::size_t maximumInnerSteps)
+    explicit KokkosLocalTransportExecutor(std::size_t maximumInnerSteps,
+                                          bool overlapCommunication = false)
         : maximumInnerSteps_(std::max<std::size_t>(1, maximumInnerSteps)),
+          overlapCommunication_(overlapCommunication),
           hostPackets_("storm_transport_host_packets", 0),
           hostColdPackets_("storm_transport_host_cold_packets", 0),
           packets_("storm_transport_packets", 0),
@@ -145,11 +152,24 @@ public:
           censusCellCounts_("storm_transport_census_cell_counts", 0),
           hostEventTransports_("storm_transport_host_events", 0),
           hostRemoteTransports_("storm_transport_host_remotes", 0),
-          waveCounters_("storm_transport_wave_counters")
+          waveCounters_("storm_transport_wave_counters"),
+          hostWaveCounters_("storm_transport_host_wave_counters"),
+          remoteCopySpace_(Kokkos::Experimental::partition_space(
+              Kokkos::DefaultExecutionSpace{}, 1).front())
     {}
+
+    ~KokkosLocalTransportExecutor()
+    {
+        // Includes exception unwinding: NIC-facing host spans and device
+        // source buffers must outlive any outstanding D2H operation.
+        remoteCopySpace_.fence("STORM remote copy teardown");
+        Kokkos::DefaultExecutionSpace{}.fence("STORM transport teardown");
+    }
 
     void Reset()
     {
+        if(this->HasPendingRemoteCopy())
+            throw std::runtime_error("Cannot reset transport with undelivered remotes");
         this->activeCount_ = 0;
         this->pendingRemoteCount_ = 0;
         this->pendingCensusCount_ = 0;
@@ -206,8 +226,10 @@ public:
 
     bool DeviceBusy() const
     {
-        return this->activeCount_ > 0 or this->pendingRemoteCount_ > 0;
+        return this->activeCount_ > 0 or this->pendingRemoteCount_ > 0 or this->HasPendingRemoteCopy();
     }
+
+    bool HasPendingRemoteCopy() const { return this->inFlightRemoteCount_ != 0; }
 
     const TransportExecutorMetrics &Metrics() const
     {
@@ -248,7 +270,7 @@ public:
 
     void PromotePendingCensus(const dt_t fullDt)
     {
-        if(this->activeCount_ != 0 || this->pendingRemoteCount_ != 0)
+        if(this->DeviceBusy())
         {
             throw std::logic_error(
                 "Cannot promote census while device transport is active");
@@ -399,10 +421,14 @@ public:
         {
             PackParticle(arrivals[i], this->hostPackets_(i), this->hostColdPackets_(i));
         }
-        Kokkos::deep_copy(Kokkos::subview(this->packets_, std::pair<std::size_t, std::size_t>(offset, required)),
+        const Kokkos::DefaultExecutionSpace execution;
+        Kokkos::deep_copy(execution, Kokkos::subview(this->packets_, std::pair<std::size_t, std::size_t>(offset, required)),
                             Kokkos::subview(this->hostPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
-        Kokkos::deep_copy(Kokkos::subview(this->coldPackets_, std::pair<std::size_t, std::size_t>(offset, required)),
+        Kokkos::deep_copy(execution, Kokkos::subview(this->coldPackets_, std::pair<std::size_t, std::size_t>(offset, required)),
                             Kokkos::subview(this->hostColdPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
+        // Reusing the pinned ingest buffer needs only this stream, not the
+        // independent outbound-copy stream.
+        execution.fence("STORM ingest staging reuse");
         this->activeCount_ = required;
         this->metrics_.h2dBytes += incoming *
             (sizeof(DeviceParticle) + sizeof(DeviceParticleCold));
@@ -453,6 +479,8 @@ public:
                                        const std::size_t maxRemoteHolds,
                                        const bool force)
     {
+        if(this->HasPendingRemoteCopy())
+            throw std::logic_error("Drain pipelined remotes with their AdvanceWave completion consumer");
         CompletedBatch completed;
         this->FlushRemotesIfNeeded(completed, minRemoteCopy, maxRemoteHolds, force);
         return completed;
@@ -471,10 +499,26 @@ public:
                                const std::size_t minRemoteCopy,
                                const std::size_t maxRemoteHolds)
     {
+        // Compatibility callers consume all results on return.
+        if(this->HasPendingRemoteCopy())
+            throw std::logic_error("Cannot discard the completion consumer of a pipelined wave");
+        return this->AdvanceWave(views, progress, minRemoteCopy, maxRemoteHolds,
+                                 [](CompletedBatch &) {}, false);
+    }
+
+    template<typename ProgressFunction, typename CompletionFunction>
+    CompletedBatch AdvanceWave(const GreyIMCViews<DeviceVec3> &views,
+                               ProgressFunction progress,
+                               const std::size_t minRemoteCopy,
+                               const std::size_t maxRemoteHolds,
+                               CompletionFunction consumeRemotes,
+                               const bool pipelineRemotes = true)
+    {
         STORM_PROFILE_REGION("storm/transport/wave");
         CompletedBatch completed;
         if(this->activeCount_ == 0)
         {
+            this->ConsumeRemoteCopy(completed, progress, consumeRemotes);
             this->FlushRemotesIfNeeded(completed, minRemoteCopy, maxRemoteHolds, true);
             return completed;
         }
@@ -495,23 +539,28 @@ public:
         this->ReserveForWave(launchCount, remoteOffset, censusOffset, true);
 
         const std::chrono::steady_clock::time_point deviceStart = std::chrono::steady_clock::now();
-        Kokkos::deep_copy(this->waveCounters_, WaveCounters{});
+        const Kokkos::DefaultExecutionSpace execution;
+        Kokkos::deep_copy(execution, this->waveCounters_, WaveCounters{});
         {
             STORM_PROFILE_REGION("storm/transport/kernel");
             this->LaunchGreyIMCTransport(views, launchCount, remoteOffset);
             this->CompactSurvivors(launchCount);
         }
 
-        const std::chrono::steady_clock::time_point progressStart = std::chrono::steady_clock::now();
+        Kokkos::deep_copy(execution, this->hostWaveCounters_, this->waveCounters_);
+        this->kernelReady_.Record(execution);
+        // The previous wave's remote buffer is independent of this kernel's
+        // output buffer. Apply/send those packets while this wave computes.
+        this->ConsumeRemoteCopy(completed, progress, consumeRemotes);
+        if(this->overlapCommunication_)
         {
-            STORM_PROFILE_REGION("storm/transport/progress");
-            progress();
+            this->WaitWithProgress(this->kernelReady_, progress, completed);
         }
-
-        completed.progressSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - progressStart).count();
-
-        WaveCounters counters;
-        Kokkos::deep_copy(counters, this->waveCounters_);
+        else
+        {
+            execution.fence("STORM transport counters");
+        }
+        const WaveCounters counters = this->hostWaveCounters_();
         ++this->metrics_.synchronizationCount;
         if(counters.overflow != 0)
         {
@@ -581,7 +630,12 @@ public:
         {
             STORM_PROFILE_REGION("storm/copy_back");
             this->CopyFinishedToHost(completed, counters.terminal, counters.fallback);
-            this->FlushRemotesIfNeeded(completed, minRemoteCopy, maxRemoteHolds, this->activeCount_ == 0);
+            // Queue a device-to-pinned-host copy without waiting. The next
+            // wave delivers it; the empty-wave path explicitly drains it.
+            if(this->overlapCommunication_ && pipelineRemotes)
+                this->QueueRemoteCopy(minRemoteCopy, maxRemoteHolds, this->activeCount_ == 0);
+            else
+                this->FlushRemotesIfNeeded(completed, minRemoteCopy, maxRemoteHolds, this->activeCount_ == 0);
         }
         return completed;
     }
@@ -631,6 +685,79 @@ public:
     }
 
 private:
+    template<typename ProgressFunction>
+    void WaitWithProgress(const ExecutionEvent &event, ProgressFunction progress,
+                          CompletedBatch &completed)
+    {
+        STORM_PROFILE_REGION("storm/transport/progress");
+        auto nextProgress = std::chrono::steady_clock::time_point::min();
+        while(!event.Ready())
+        {
+            const auto start = std::chrono::steady_clock::now();
+            // A tight loop can issue millions of empty OFI progress calls
+            // per step and contend with useful communication on other ranks.
+            // Keep querying device completion, but bound network polling to
+            // one pass per 20 us (long callbacks naturally run less often).
+            if(start < nextProgress) continue;
+            progress();
+            completed.progressSeconds += std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - start).count();
+            nextProgress = start + std::chrono::microseconds(20);
+            ++this->metrics_.progressPollCount;
+        }
+    }
+
+    template<typename ProgressFunction, typename CompletionFunction>
+    void ConsumeRemoteCopy(CompletedBatch &completed, ProgressFunction progress,
+                           CompletionFunction consume)
+    {
+        if(!this->HasPendingRemoteCopy()) return;
+        this->WaitWithProgress(this->remoteReady_, progress, completed);
+        CompletedBatch remotes;
+        remotes.remotes = {this->inFlightHostRemotes_.data(), this->inFlightRemoteCount_};
+        consume(remotes);
+        // The consumer owns MPI serialization. It must finish reading the
+        // borrowed span before returning; only then may these buffers swap.
+        this->inFlightRemoteCount_ = 0;
+    }
+
+    void QueueRemoteCopy(const std::size_t minRemoteCopy,
+                         const std::size_t maxRemoteHolds, const bool force)
+    {
+        if(this->pendingRemoteCount_ == 0)
+        {
+            this->remoteHoldSkips_ = 0;
+            return;
+        }
+        if(!force && minRemoteCopy > this->pendingRemoteCount_ &&
+           !(maxRemoteHolds > 0 && this->remoteHoldSkips_ >= maxRemoteHolds))
+        {
+            ++this->remoteHoldSkips_;
+            return;
+        }
+        if(this->HasPendingRemoteCopy())
+            throw std::runtime_error("Remote copy buffer is still in use");
+        this->remoteHoldSkips_ = 0;
+        // Preallocate the alternate pair before starting the copy. During
+        // steady state neither pair is resized while a copy owns it.
+        this->EnsureCapacity(this->inFlightDeviceRemotes_, this->pendingRemotes_.extent(0));
+        this->EnsureCapacity(this->inFlightHostRemotes_, this->hostRemoteTransports_.extent(0));
+        std::swap(this->inFlightDeviceRemotes_, this->pendingRemotes_);
+        std::swap(this->inFlightHostRemotes_, this->hostRemoteTransports_);
+        this->inFlightRemoteCount_ = this->pendingRemoteCount_;
+        this->pendingRemoteCount_ = 0;
+        const auto range = std::make_pair(std::size_t(0), this->inFlightRemoteCount_);
+        Kokkos::deep_copy(this->remoteCopySpace_,
+            Kokkos::subview(this->inFlightHostRemotes_, range),
+            Kokkos::subview(this->inFlightDeviceRemotes_, range));
+        this->remoteReady_.Record(this->remoteCopySpace_);
+        const std::size_t bytes = this->inFlightRemoteCount_ * sizeof(CompletedTransport);
+        this->metrics_.d2hBytes += bytes;
+        this->metrics_.eliminatedHostCopyBytes += bytes;
+        this->metrics_.remoteCount += this->inFlightRemoteCount_;
+        this->metrics_.pipelinedRemoteCount += this->inFlightRemoteCount_;
+    }
+
     void LaunchGreyIMCTransport(const GreyIMCViews<DeviceVec3> &views, const std::size_t launchCount, const std::size_t remoteOffset)
     {
         const std::size_t maximumInnerSteps = this->maximumInnerSteps_;
@@ -1043,6 +1170,8 @@ private:
             this->hostEventTransports_(i).particle = hostPackets(i);
             this->hostEventTransports_(i).cold = hostCold(i);
             this->hostEventTransports_(i).result = TransportResult{};
+            // The dedicated census pool contains completed packets only.
+            this->hostEventTransports_(i).result.step.change = MonteCarloParticleStatus::DONE;
         }
         completed.census = CompletedTransportSpan{this->hostEventTransports_.data(), count};
         this->metrics_.censusCopyCount += this->pendingCensusCount_;
@@ -1054,6 +1183,7 @@ private:
     }
 
     std::size_t maximumInnerSteps_;
+    bool overlapCommunication_ = false;
     std::size_t poolReservedActiveCapacity_ = 0;
     std::size_t poolReservedHostIngest_ = 0;
     std::size_t activeCount_ = 0;
@@ -1078,6 +1208,12 @@ private:
     Kokkos::View<CompletedTransport*, PinnedHostSpace> hostEventTransports_;
     Kokkos::View<CompletedTransport*, PinnedHostSpace> hostRemoteTransports_;
     Kokkos::View<WaveCounters> waveCounters_;
+    Kokkos::View<WaveCounters, PinnedHostSpace> hostWaveCounters_;
+    Kokkos::DefaultExecutionSpace remoteCopySpace_;
+    ExecutionEvent kernelReady_, remoteReady_;
+    Kokkos::View<CompletedTransport*> inFlightDeviceRemotes_;
+    Kokkos::View<CompletedTransport*, PinnedHostSpace> inFlightHostRemotes_;
+    std::size_t inFlightRemoteCount_ = 0;
     TransportExecutorMetrics metrics_;
 };
 

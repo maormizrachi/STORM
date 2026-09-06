@@ -13,7 +13,7 @@
 #include "MadVoro/Voronoi3D.hpp"
 #include <units/units.hpp>
 
-#include "manager/MonteCarloManagerSerial.hpp"
+#include "manager/MonteCarloManager.hpp"
 #include "population/CombPopulationControl.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "radiation/RadiationIMC.hpp"
@@ -33,7 +33,8 @@ class DensmoreEOS
 public:
     DensmoreEOS(double cvPerVolume, double density)
         : cvPerMass_(cvPerVolume / density)
-    {}
+    {
+    }
 
     double dT2cv(double, double, const std::vector<double> &,
                  const std::vector<std::string> &) const
@@ -129,7 +130,7 @@ int main()
         std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> population =
             std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(
                 grid, maxPhotonsPerCell, 5.0);
-        STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(
+        STORM::MonteCarloManager<Vector3D, Grid> manager(
             grid, physics, population, boundary);
 
         std::cout << "Densmore 2012 heterogeneous step-opacity"
@@ -146,8 +147,7 @@ int main()
             if(step % 10 == 0 || step + 1 == iterations)
             {
                 std::cout << "Cycle " << step + 1 << "/" << iterations
-                          << " (" << static_cast<int>(
-                              100.0 * (step + 1) / iterations)
+                          << " (" << static_cast<int>(100.0 * (step + 1) / iterations)
                           << "%)" << std::endl;
             }
         }

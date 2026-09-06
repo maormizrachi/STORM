@@ -320,6 +320,13 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
     particle.location.x += particle.velocity.x * dt;
     particle.location.y += particle.velocity.y * dt;
     particle.location.z += particle.velocity.z * dt;
+    if(views.grid.slabTransport)
+    {
+        gpu::FoldSlabCoordinate(particle.location.y, particle.velocity.y,
+                               views.grid.slabLowerY, views.grid.slabUpperY);
+        gpu::FoldSlabCoordinate(particle.location.z, particle.velocity.z,
+                               views.grid.slabLowerZ, views.grid.slabUpperZ);
+    }
 
     if(views.depositMaterialEnergy)
     {

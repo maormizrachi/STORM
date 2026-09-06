@@ -114,8 +114,9 @@ static bool IsMaterial(double x, double r)
 using Grid = MadVoro::Voronoi3D<Vector3D>;
 using ParticleT = STORM::Particle<Vector3D>;
 
+template<typename Physics>
 static bool Rebalance(Grid &grid,
-                      STORM::MonteCarloManager<Vector3D, Grid> &manager,
+                      STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager,
                       std::vector<STORM::RadiationCell> &cells,
                       std::vector<STORM::SimpleExtensives> &extensives,
                       std::vector<int> &materialFlags,
@@ -500,7 +501,7 @@ int main(int argc, char *argv[])
     std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> popControl =
         std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(grid, minPhotonsPerCell, 6.0);
 
-    STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
+    STORM::MonteCarloManager<Vector3D, Grid, IMC> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
         grid, physics, popControl, boundary);
 
     manager.getParticles().clear();

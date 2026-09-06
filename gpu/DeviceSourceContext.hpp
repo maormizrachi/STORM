@@ -23,6 +23,7 @@ struct DeviceSourceContext
     KokkosLocalTransportExecutor *executor = nullptr;
     std::unique_ptr<KokkosLocalTransportExecutor> *executorStorage = nullptr;
     std::size_t gpuMaxInnerSteps = 1;
+    bool gpuOverlapCommunication = false;
     GreyIMCData *gpuData = nullptr;
     const source::Plan *plan = nullptr;
     std::uint64_t particleRngSeed = 0;

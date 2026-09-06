@@ -174,8 +174,9 @@ static void SyncParticleCellIDs(const std::vector<MovingSlabCell> &cells,
 // Rebalance: redistribute cells across MPI ranks
 // ============================================================
 
+template<typename Physics>
 static bool Rebalance(Grid &grid,
-                      STORM::MonteCarloManager<Vector3D, Grid> &manager,
+                      STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager,
                       std::vector<MovingSlabCell> &cells,
                       std::vector<MovingSlabExtensives> &extensives,
                       std::vector<STORM::Particle<Vector3D>> &particles,
@@ -252,12 +253,13 @@ static bool Rebalance(Grid &grid,
 // Remesh: move points with the slab, rebuild tessellation
 // ============================================================
 
+template<typename Physics>
 static void Remesh(Grid &grid, double vSlab, double L_slab, double xSym,
                    double prevTime, double nowTime,
                    std::vector<MovingSlabCell> &cells,
                    std::vector<MovingSlabExtensives> &extensives,
                    std::vector<STORM::Particle<Vector3D>> &particles,
-                   STORM::MonteCarloManager<Vector3D, Grid> &manager)
+                   STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager)
 {
     double slabFrontOld = L_slab + vSlab * prevTime;
     double slabFrontNew = L_slab + vSlab * nowTime;
@@ -330,9 +332,10 @@ struct SimulationResult
     double wallTimeSeconds;
 };
 
+template<typename Physics>
 static SimulationResult RunSimulation(
     Grid &grid,
-    STORM::MonteCarloManager<Vector3D, Grid> &manager,
+    STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager,
     std::vector<MovingSlabCell> &cells,
     std::vector<MovingSlabExtensives> &extensives,
     double vSlab, double L_slab, double xSym, double tO,
@@ -641,7 +644,7 @@ int main(int argc, char *argv[])
 
     SimulationResult result;
     {
-        STORM::MonteCarloManager<Vector3D, Grid> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
+        STORM::MonteCarloManager<Vector3D, Grid, IMC> manager = STORM::CreateMonteCarloManager<Vector3D, Grid>(
             grid, physics, popControl, boundary,
             STORM::ManagerType::RDMA, STORM::RDMAEngine::OFI);
         manager.getParticles().clear();

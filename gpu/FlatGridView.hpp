@@ -4,6 +4,8 @@
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 
 #include "KokkosTypes.hpp"
 #include "../types.hpp"
@@ -25,7 +27,48 @@ struct FlatGridView
     const std::uint8_t *boundaryCrossings = nullptr;
     const std::uint8_t *deviceBoundaryBehaviors = nullptr;
     std::size_t cellCount = 0;
+    std::uint8_t slabTransport = 0;
+    double slabLowerY = 0.0, slabUpperY = 0.0;
+    double slabLowerZ = 0.0, slabUpperZ = 0.0;
 };
+
+// Triangle-wave folding is the exact specular trajectory through any number
+// of transverse reflections. At a wall, choose the inward outgoing velocity.
+STORM_GPU_INLINE_FUNCTION
+void FoldSlabCoordinate(double &position, double &velocity,
+                        const double lower, const double upper)
+{
+    const double width = upper - lower;
+    const double unfolded = position - lower;
+    const double magnitude = unfolded < 0.0 ? -unfolded : unfolded;
+    const double tolerance = 16.0 * std::numeric_limits<double>::epsilon() *
+                             (magnitude > width ? magnitude : width);
+#ifdef STORM_WITH_GPU
+    double offset = Kokkos::fmod(position - lower, 2.0 * width);
+#else
+    double offset = std::fmod(position - lower, 2.0 * width);
+#endif
+    if(offset < 0.0) offset += 2.0 * width;
+    if(offset >= width)
+    {
+        position = upper - (offset - width);
+        velocity = -velocity;
+    }
+    else
+    {
+        position = lower + offset;
+    }
+    if(position - lower <= tolerance)
+    {
+        position = lower;
+        if(velocity < 0.0) velocity = -velocity;
+    }
+    if(upper - position <= tolerance)
+    {
+        position = upper;
+        if(velocity > 0.0) velocity = -velocity;
+    }
+}
 
 struct Intersection
 {
@@ -46,6 +89,9 @@ Intersection FindIntersection(const ParticleT &particle, const FlatGridView<Poin
     {
         return result;
     }
+    // A direction parallel to the slab has no axial intersection. It still
+    // has a valid scattering/census event, possibly at DBL_MAX face time.
+    result.valid = grid.slabTransport;
 
     const double velocityTolerance = 1.0e-12 * speed;
     const std::size_t begin = grid.cellFaceOffsets[cellIndex];
@@ -54,6 +100,10 @@ Intersection FindIntersection(const ParticleT &particle, const FlatGridView<Poin
     for(std::size_t directedFace = begin; directedFace < end; ++directedFace)
     {
         const PointT &normal = grid.normals[directedFace];
+        if(grid.slabTransport && normal.x == 0.0)
+        {
+            continue;
+        }
         const double normalVelocity = normal.x * particle.velocity.x +
                                       normal.y * particle.velocity.y +
                                       normal.z * particle.velocity.z;

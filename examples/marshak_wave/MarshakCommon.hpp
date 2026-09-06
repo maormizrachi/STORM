@@ -18,12 +18,14 @@
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/RadiationCell.hpp"
 #include "population/CombPopulationControl.hpp"
-#include "manager/MonteCarloManagerSerial.hpp"
+#include "manager/MonteCarloManager.hpp"
 #include "MarshakOpacity.hpp"
 #include "MarshakBoundary.hpp"
 
-namespace STORM {
-namespace examples {
+namespace STORM
+{
+namespace examples
+{
 
 using MarshakGrid = MadCart::CartesianMesh3D<Vector3D>;
 
@@ -58,59 +60,59 @@ inline ProblemParams GetProblemParams(int problem)
 
     switch(problem)
     {
-        case 1:
-            p.domainLength = 0.2;
-            p.kappaP0 = 0.1;
-            p.kappaR0 = 100.0;
-            p.alpha = 3.0;
-            p.betaRho = 0.0;
-            p.f_eos = 6.860085e14 / std::pow(keV_K, 4.0);
-            p.eosBeta = 4.0;
-            p.eosMu = 0.0;
-            p.T_bath_coeff = 1.008038;
-            p.T_bath_exponent = 1.0 / 3.0;
-            break;
-        case 2:
-            p.domainLength = 0.2;
-            p.kappaP0 = 100.0;
-            p.kappaR0 = 100.0;
-            p.alpha = 3.0;
-            p.betaRho = 0.0;
-            p.f_eos = 6.860085e14 / std::pow(keV_K, 4.0);
-            p.eosBeta = 4.0;
-            p.eosMu = 0.0;
-            p.T_bath_coeff = 1.014565;
-            p.T_bath_exponent = 1.0 / 3.0;
-            break;
-        case 3:
-            p.domainLength = 1.0;
-            p.kappaP0 = 0.1;
-            p.kappaR0 = 40.0;
-            p.alpha = 1.5;
-            p.betaRho = 1.2;
-            p.f_eos = 1e14 / std::pow(keV_K, 3.4);
-            p.eosBeta = 3.4;
-            p.eosMu = 0.14;
-            p.T_bath_coeff = 1.0470478;
-            p.T_bath_exponent = 86.0 / 57.0;
-            break;
-        case 4:
-            p.domainLength = 1.0;
-            p.xOffset = 1e-5;
-            p.kappaP0 = 0.001;
-            p.kappaR0 = 2.0;
-            p.alpha = 4.5;
-            p.betaRho = 1.9;
-            p.f_eos = 1e14 / std::pow(keV_K, 6.0);
-            p.eosBeta = 6.0;
-            p.eosMu = 0.3;
-            p.T_bath_coeff = 1.01008116;
-            p.T_bath_exponent = 14.0 / 139.0;
-            p.initialDt = 1e-17;
-            break;
-        default:
-            std::cerr << "Unknown problem number: " << problem << " (must be 1-4)" << std::endl;
-            exit(1);
+    case 1:
+        p.domainLength = 0.2;
+        p.kappaP0 = 0.1;
+        p.kappaR0 = 100.0;
+        p.alpha = 3.0;
+        p.betaRho = 0.0;
+        p.f_eos = 6.860085e14 / std::pow(keV_K, 4.0);
+        p.eosBeta = 4.0;
+        p.eosMu = 0.0;
+        p.T_bath_coeff = 1.008038;
+        p.T_bath_exponent = 1.0 / 3.0;
+        break;
+    case 2:
+        p.domainLength = 0.2;
+        p.kappaP0 = 100.0;
+        p.kappaR0 = 100.0;
+        p.alpha = 3.0;
+        p.betaRho = 0.0;
+        p.f_eos = 6.860085e14 / std::pow(keV_K, 4.0);
+        p.eosBeta = 4.0;
+        p.eosMu = 0.0;
+        p.T_bath_coeff = 1.014565;
+        p.T_bath_exponent = 1.0 / 3.0;
+        break;
+    case 3:
+        p.domainLength = 1.0;
+        p.kappaP0 = 0.1;
+        p.kappaR0 = 40.0;
+        p.alpha = 1.5;
+        p.betaRho = 1.2;
+        p.f_eos = 1e14 / std::pow(keV_K, 3.4);
+        p.eosBeta = 3.4;
+        p.eosMu = 0.14;
+        p.T_bath_coeff = 1.0470478;
+        p.T_bath_exponent = 86.0 / 57.0;
+        break;
+    case 4:
+        p.domainLength = 1.0;
+        p.xOffset = 1e-5;
+        p.kappaP0 = 0.001;
+        p.kappaR0 = 2.0;
+        p.alpha = 4.5;
+        p.betaRho = 1.9;
+        p.f_eos = 1e14 / std::pow(keV_K, 6.0);
+        p.eosBeta = 6.0;
+        p.eosMu = 0.3;
+        p.T_bath_coeff = 1.01008116;
+        p.T_bath_exponent = 14.0 / 139.0;
+        p.initialDt = 1e-17;
+        break;
+    default:
+        std::cerr << "Unknown problem number: " << problem << " (must be 1-4)" << std::endl;
+        exit(1);
     }
     return p;
 }
@@ -119,10 +121,15 @@ inline double ComputeDensity(int problem, double x)
 {
     switch(problem)
     {
-        case 1: case 2: return 1.0;
-        case 3: return std::pow(std::max(x, 1e-30), 20.0 / 19.0);
-        case 4: return std::pow(std::max(x, 1e-30), -40.0 / 139.0);
-        default: return 1.0;
+    case 1:
+    case 2:
+        return 1.0;
+    case 3:
+        return std::pow(std::max(x, 1e-30), 20.0 / 19.0);
+    case 4:
+        return std::pow(std::max(x, 1e-30), -40.0 / 139.0);
+    default:
+        return 1.0;
     }
 }
 
@@ -152,7 +159,10 @@ inline double BathTemperature(const ProblemParams &p, double t)
 class MarshakEOS
 {
 public:
-    MarshakEOS(const ProblemParams &params) : params_(params) {}
+    MarshakEOS(const ProblemParams &params)
+        : params_(params)
+    {
+    }
 
     double dT2cv(double density, double temperature,
                  const std::vector<double> &, const std::vector<std::string> &) const
@@ -194,7 +204,7 @@ inline std::vector<ReferencePoint> LoadReference(const std::string &path)
 }
 
 inline double ComputeL1(const std::vector<double> &simX, const std::vector<double> &simT,
-                         const std::vector<ReferencePoint> &ref, bool useGas)
+                        const std::vector<ReferencePoint> &ref, bool useGas)
 {
     if(ref.empty() or simX.empty())
     {
@@ -236,7 +246,7 @@ inline std::vector<double> BuildGeometricMeshEdges(double xOffset, double xMax)
 
     std::vector<double> edges;
     edges.push_back(xOffset);
-    for(size_t i = 1; ; ++i)
+    for(size_t i = 1;; ++i)
     {
         double xi = xOffset + scale * (std::pow(ratio, static_cast<double>(i)) - 1.0);
         if(xi >= xMax)
@@ -331,7 +341,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     std::shared_ptr<CombPopulationControl<Vector3D, MarshakGrid>> popControl =
         std::make_shared<CombPopulationControl<Vector3D, MarshakGrid>>(grid, 15, 6.0);
 
-    MonteCarloManagerSerial<Vector3D, MarshakGrid> manager(grid, physics, popControl, boundary);
+    MonteCarloManager<Vector3D, MarshakGrid> manager(grid, physics, popControl, boundary);
     manager.getParticles().clear();
 
     double dt = params.initialDt;
@@ -376,9 +386,10 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     std::vector<double> simX(Ncells), simT(Ncells), simTrad(Ncells);
     std::vector<size_t> idx(Ncells);
     std::iota(idx.begin(), idx.end(), 0);
-    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
-        return grid.GetMeshPoint(a).x < grid.GetMeshPoint(b).x;
-    });
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b)
+              {
+                  return grid.GetMeshPoint(a).x < grid.GetMeshPoint(b).x;
+              });
     for(size_t i = 0; i < Ncells; i++)
     {
         size_t k = idx[i];

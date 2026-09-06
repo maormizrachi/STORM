@@ -943,7 +943,8 @@ public:
                 {
                     *context.executorStorage =
                         std::make_unique<gpu::KokkosLocalTransportExecutor>(
-                            context.gpuMaxInnerSteps);
+                            context.gpuMaxInnerSteps,
+                            context.gpuOverlapCommunication);
                 }
                 context.executor = context.executorStorage->get();
             }

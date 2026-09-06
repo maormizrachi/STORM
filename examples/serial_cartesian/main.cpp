@@ -7,7 +7,7 @@
 #include "physics/NoPhysics.hpp"
 #include "boundary/RigidBoundary.hpp"
 #include "population/NoPopulationControl.hpp"
-#include "manager/MonteCarloManagerSerial.hpp"
+#include "manager/MonteCarloManager.hpp"
 
 int main()
 {
@@ -22,7 +22,7 @@ int main()
     auto physics = std::make_shared<STORM::NoPhysics<Vector3D, Grid>>(grid, boundary);
     auto popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
 
-    STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, popControl, boundary);
+    STORM::MonteCarloManager<Vector3D, Grid> manager(grid, physics, popControl, boundary);
 
     {
         std::vector<STORM::Particle<Vector3D>> &particles =

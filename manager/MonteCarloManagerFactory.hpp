@@ -14,11 +14,12 @@
 #include "../population/PopulationControl.hpp"
 #include "../boundary/BoundaryCondition.hpp"
 #include "MonteCarloConfig.hpp"
-#include "parallel/MonteCarloManagerLegacy.hpp"
-#include "parallel/RDMAMonteCarloManager.hpp"
-#include "parallel/TwoSidedMonteCarloManager.hpp"
+#include "MonteCarloManager.hpp"
+#include "communication/RDMACommunicationEngine.hpp"
+#include "communication/P2PCommunicationEngine.hpp"
 
-namespace STORM {
+namespace STORM
+{
 
 enum class ManagerType
 {
@@ -36,94 +37,74 @@ enum class RDMAEngine
     Auto
 };
 
-template<typename T, typename Grid>
-class MonteCarloManager
-{
-    using MCParticle = Particle<T>;
-
-    struct Concept
-    {
-        virtual ~Concept() = default;
-        virtual void step(dt_t fullDt) = 0;
-        virtual std::vector<MCParticle> &getParticles() = 0;
-        virtual const std::vector<MCParticle> &getParticles() const = 0;
-        virtual std::vector<size_t> &GetCellsStepsCounters() = 0;
-        virtual const std::vector<size_t> &GetCellsStepsCounters() const = 0;
-        virtual std::vector<size_t> &GetBeginningParticleCount() = 0;
-        virtual const std::vector<size_t> &GetBeginningParticleCount() const = 0;
-        virtual size_t GetEndParticleCount() const = 0;
-    };
-
-    template<typename Impl>
-    struct Model : Concept
-    {
-        Impl impl;
-
-        template<typename... Args>
-        explicit Model(Args &&...args) : impl(std::forward<Args>(args)...) {}
-
-        void step(dt_t fullDt) override
-        {
-            impl.step(fullDt);
-        }
-        std::vector<MCParticle> &getParticles() override { return impl.getParticles(); }
-        const std::vector<MCParticle> &getParticles() const override { return impl.getParticles(); }
-        std::vector<size_t> &GetCellsStepsCounters() override { return impl.GetCellsStepsCounters(); }
-        const std::vector<size_t> &GetCellsStepsCounters() const override { return impl.GetCellsStepsCounters(); }
-        std::vector<size_t> &GetBeginningParticleCount() override { return impl.GetBeginningParticleCount(); }
-        const std::vector<size_t> &GetBeginningParticleCount() const override { return impl.GetBeginningParticleCount(); }
-        size_t GetEndParticleCount() const override { return impl.GetEndParticleCount(); }
-    };
-
-    std::unique_ptr<Concept> impl_;
-
-public:
-    MonteCarloManager() = default;
-    MonteCarloManager(MonteCarloManager &&) = default;
-    MonteCarloManager &operator=(MonteCarloManager &&) = default;
-
-    template<typename Impl, typename... Args>
-    static MonteCarloManager Create(Args &&...args)
-    {
-        MonteCarloManager mgr;
-        mgr.impl_ = std::make_unique<Model<Impl>>(std::forward<Args>(args)...);
-        return mgr;
-    }
-
-    /// Advances the owned particle census. References returned by
-    /// getParticles() are invalidated by this call.
-    void step(dt_t fullDt)
-    {
-        impl_->step(fullDt);
-    }
-
-    std::vector<MCParticle> &getParticles() { return impl_->getParticles(); }
-    const std::vector<MCParticle> &getParticles() const
-    {
-        return static_cast<const Concept &>(*impl_).getParticles();
-    }
-
-    std::vector<size_t> &GetCellsStepsCounters() { return impl_->GetCellsStepsCounters(); }
-    const std::vector<size_t> &GetCellsStepsCounters() const { return impl_->GetCellsStepsCounters(); }
-    std::vector<size_t> &GetBeginningParticleCount() { return impl_->GetBeginningParticleCount(); }
-    const std::vector<size_t> &GetBeginningParticleCount() const { return impl_->GetBeginningParticleCount(); }
-    size_t GetEndParticleCount() const { return impl_->GetEndParticleCount(); }
-};
-
 inline RDMA_Type ToRDMAType(RDMAEngine engine)
 {
     switch(engine)
     {
-        case RDMAEngine::IBV:  return RDMA_Type::IBV_RDMA;
-        case RDMAEngine::OFI:  return RDMA_Type::OFI_RDMA;
-        case RDMAEngine::MPI:  return RDMA_Type::MPI_RMA;
-        case RDMAEngine::Auto: return RDMA_Type::AUTO_RDMA;
+    case RDMAEngine::IBV:
+        return RDMA_Type::IBV_RDMA;
+    case RDMAEngine::OFI:
+        return RDMA_Type::OFI_RDMA;
+    case RDMAEngine::MPI:
+        return RDMA_Type::MPI_RMA;
+    case RDMAEngine::Auto:
+        return RDMA_Type::AUTO_RDMA;
     }
     return RDMA_Type::AUTO_RDMA;
 }
 
+template<class T, class Grid>
+std::unique_ptr<CommunicationEngine<T>> CreateCommunicationEngine(
+    const Grid &grid, ManagerType managerType, RDMAEngine rdmaEngine,
+    const MonteCarloConfig &config, MPI_Comm comm)
+{
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+
+    auto log = [&](const std::string &msg)
+    {
+        if(rank == 0)
+        {
+            std::cout << "[MonteCarloManager] " << msg << std::endl;
+        }
+    };
+
+    std::unique_ptr<CommunicationEngine<T>> engine;
+    switch(managerType)
+    {
+    case ManagerType::Auto:
+        try
+        {
+            engine = std::make_unique<RDMACommunicationEngine<T, Grid>>(grid, config, comm, RDMA_Type::OFI_RDMA);
+            log("Using RDMA with OFI (libfabric)");
+            break;
+        }
+        catch(const std::exception &e)
+        {
+            log(std::string("RDMA+OFI unavailable: ") + e.what());
+            engine = std::make_unique<P2PCommunicationEngine<T, Grid>>(grid, config, comm);
+            log("Using P2P (two-sided MPI)");
+        }
+        break;
+    case ManagerType::P2P:
+        engine = std::make_unique<P2PCommunicationEngine<T, Grid>>(grid, config, comm);
+        log("Using P2P (two-sided MPI)");
+        break;
+    case ManagerType::Legacy:
+        log("Legacy manager is deprecated; using the unified manager with RDMA");
+        engine = std::make_unique<RDMACommunicationEngine<T, Grid>>(grid, config, comm, ToRDMAType(rdmaEngine));
+        break;
+    case ManagerType::RDMA:
+        engine = std::make_unique<RDMACommunicationEngine<T, Grid>>(grid, config, comm, ToRDMAType(rdmaEngine));
+        break;
+    default:
+        throw std::runtime_error("Unknown ManagerType");
+    }
+    return engine;
+}
+
 template<typename T, typename Grid, typename Physics>
-MonteCarloManager<T, Grid> CreateMonteCarloManager(
+MonteCarloManager<T, Grid, Physics> CreateMonteCarloManager(
     const Grid &grid,
     const std::shared_ptr<Physics> &physics,
     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
@@ -136,60 +117,11 @@ MonteCarloManager<T, Grid> CreateMonteCarloManager(
     static_assert(std::is_base_of<MonteCarloPhysics<T, Grid>, Physics>::value,
                   "Physics must derive from MonteCarloPhysics<T, Grid>");
 
-    int rank = 0;
-    MPI_Comm_rank(comm, &rank);
-
-    auto log = [&](const std::string &msg)
-    {
-        if(rank == 0)
-        {
-            std::cout << "[MonteCarloManager] " << msg << std::endl;
-        }
-    };
-
-    switch(managerType)
-    {
-        case ManagerType::Auto:
-        {
-            // Fallback chain: (1) native RDMA through OFI/libfabric -> (2) P2P.
-            // The old IBV backend is kept for explicit requests only.
-            try
-            {
-                log("Trying RDMA with OFI (libfabric)...");
-                auto mgr = MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid, Physics>>(
-                    grid, physics, populationControl, boundaryCondition, config, comm, RDMA_Type::OFI_RDMA);
-                log("Using RDMA with OFI (libfabric)");
-                return mgr;
-            }
-            catch(const std::exception &e)
-            {
-                log(std::string("RDMA+OFI unavailable: ") + e.what());
-            }
-
-            log("Falling back to P2P (two-sided MPI)...");
-            auto mgr = MonteCarloManager<T, Grid>::template Create<TwoSidedMonteCarloManager<T, Grid>>(
-                grid, physics, populationControl, boundaryCondition, comm);
-            log("Using P2P (two-sided MPI)");
-            return mgr;
-        }
-
-        case ManagerType::RDMA:
-            return MonteCarloManager<T, Grid>::template Create<RDMAMonteCarloManager<T, Grid, Physics>>(
-                grid, physics, populationControl, boundaryCondition, config, comm, ToRDMAType(rdmaEngine));
-
-        case ManagerType::Legacy:
-            return MonteCarloManager<T, Grid>::template Create<MonteCarloManagerLegacy<T, Grid>>(
-                grid, physics, populationControl, boundaryCondition, config, comm, ToRDMAType(rdmaEngine));
-
-        case ManagerType::P2P:
-            return MonteCarloManager<T, Grid>::template Create<TwoSidedMonteCarloManager<T, Grid>>(
-                grid, physics, populationControl, boundaryCondition, comm);
-    }
-    throw std::runtime_error("Unknown ManagerType");
+    std::unique_ptr<CommunicationEngine<T>> engine = CreateCommunicationEngine<T>(grid, managerType, rdmaEngine, config, comm);
+    return MonteCarloManager<T, Grid, Physics>(
+        grid, physics, populationControl, boundaryCondition, config, std::move(engine));
 }
 
 } // namespace STORM
-
 #endif // STORM_WITH_MPI
-
 #endif // STORM_MONTE_CARLO_MANAGER_FACTORY_HPP

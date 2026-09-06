@@ -33,6 +33,7 @@ public:
     // no-op, keeping the lifecycle process independent of Kokkos headers.
     void prepareStep()
     {
+        this->PrepareSlabTransport();
         ddmcThermalSamplingEligible_ = this->ThermalSamplingSnapshotEligible();
         const bool ddmcEventKernelEligible = this->SharedDDMCEventKernelEligible();
         if(ddmcEventKernelEligible)
@@ -102,10 +103,10 @@ public:
         {
             STORM_PROFILE_REGION("storm/upload/grid");
             const auto &gridData = owner_.componentGridData();
-            std::vector<cell_id_t> cellIDs(
-                owner_.cells_.size());
-            for(std::size_t i = 0;
-                i < owner_.cells_.size(); ++i)
+            // RICH can retain ghost material cells beyond the owned geometry.
+            // Device transport indexes only the owned cells in this snapshot.
+            std::vector<cell_id_t> cellIDs(gridData.cellCenters.size());
+            for(std::size_t i = 0; i < cellIDs.size(); ++i)
             {
                 cellIDs[i] = static_cast<cell_id_t>(
                     radiation_imc_detail::ddmcStableCellID(
@@ -330,6 +331,7 @@ public:
         result.ddmcOnlyTransport =
             (owner_.GreyKernelEligible() ||
              owner_.SharedFullIMCKernelEligible()) ? 0u : 1u;
+        this->SetSlabView(result.grid);
         return result;
     }
 #endif
@@ -372,6 +374,7 @@ public:
         result.grid.boundaryCrossings = gridData.boundaryCrossings.data();
         result.grid.deviceBoundaryBehaviors = gridData.deviceBoundaryBehaviors.data();
         result.grid.cellCount = owner_.componentGrid().GetPointNo();
+        this->SetSlabView(result.grid);
         result.absorptionOpacities = owner_.planckOpacities_.data();
         result.scatteringOpacities = owner_.scatteringOpacities_.data();
         result.fleckFactors = owner_.factorFleck_.data();
@@ -488,6 +491,72 @@ public:
     }
 
 private:
+    void PrepareSlabTransport()
+    {
+        slabTransport_ = owner_.parameters_.withSlabTransport;
+        if(!slabTransport_) return;
+        if(owner_.parameters_.withHydro || owner_.parameters_.withDDMC ||
+           owner_.parameters_.withCompton || owner_.parameters_.postProcess.enabled ||
+           owner_.observer_ || owner_.polarizationEnabled() ||
+           !(owner_.GreyKernelEligible() || owner_.SharedFullIMCKernelEligible()))
+        {
+            throw StormError("Slab transport requires static shared IMC without DDMC, observers, or polarization");
+        }
+        const auto &data = owner_.componentGridData();
+        // Validate the opt-in against the actual mesh, including every local
+        // transverse face. Interior y/z interfaces or non-box walls cannot
+        // be skipped. A zero-cell rank never launches transport.
+        for(std::size_t cell = 0; cell < owner_.componentGrid().GetPointNo(); ++cell)
+        {
+            unsigned seen = 0;
+            for(std::size_t face = data.cellFaceOffsets[cell];
+                face < data.cellFaceOffsets[cell + 1]; ++face)
+            {
+                const auto &normal = data.normals[face];
+                const double components[] = {normal.x, normal.y, normal.z};
+                int axis = -1;
+                for(int d = 0; d < 3; ++d)
+                {
+                    if(components[d] != 0.0)
+                    {
+                        if(axis != -1 || std::abs(components[d]) != 1.0)
+                            throw StormError("Slab transport requires axis-aligned box cells");
+                        axis = d;
+                    }
+                }
+                if(axis < 0) throw StormError("Slab transport encountered an invalid face normal");
+                const bool upper = components[axis] < 0.0;
+                const unsigned bit = 1u << (2 * axis + unsigned(upper));
+                if(seen & bit) throw StormError("Slab transport requires six distinct box faces");
+                seen |= bit;
+                if(axis == 0) continue;
+                if(!data.boundaryCrossings[face] ||
+                   data.deviceBoundaryBehaviors[face] !=
+                       static_cast<std::uint8_t>(DeviceBoundaryFaceBehavior::ReflectingRigid))
+                    throw StormError("Slab transport requires reflecting external y/z faces");
+                const std::size_t index = 2 * (axis - 1) + unsigned(upper);
+                const double bound = data.facePlaneOffsets[face] / components[axis];
+                if(cell == 0) slabBounds_[index] = bound;
+                else if(std::abs(bound - slabBounds_[index]) >
+                        1e-12 * std::max(1.0, std::abs(bound)))
+                    throw StormError("Slab transport requires common transverse bounds");
+            }
+            if(seen != 63u || !(slabBounds_[1] > slabBounds_[0]) ||
+               !(slabBounds_[3] > slabBounds_[2]))
+                throw StormError("Slab transport requires nondegenerate box cells");
+        }
+    }
+
+    template<typename P>
+    void SetSlabView(gpu::FlatGridView<P> &grid) const
+    {
+        grid.slabTransport = slabTransport_;
+        grid.slabLowerY = slabBounds_[0];
+        grid.slabUpperY = slabBounds_[1];
+        grid.slabLowerZ = slabBounds_[2];
+        grid.slabUpperZ = slabBounds_[3];
+    }
+
     bool ThermalSamplingSnapshotEligible() const
     {
         if(not owner_.parameters_.withDDMC or not owner_.parameters_.withMultigroupOpacity)
@@ -528,6 +597,8 @@ private:
 
     ddmc::HostSnapshot<PointT> ddmcSnapshot_;
     bool ddmcThermalSamplingEligible_ = true;
+    bool slabTransport_ = false;
+    double slabBounds_[4] = {};
 #ifdef STORM_WITH_GPU
     std::unique_ptr<gpu::KokkosRuntime> gpuRuntime_;
     std::unique_ptr<gpu::GreyIMCData> gpuData_;

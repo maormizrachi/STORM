@@ -43,7 +43,7 @@
 #error "Till-Compton example requires the MadCart CartesianMesh3D header"
 #endif
 #include "boundary/RigidBoundary.hpp"
-#include "manager/MonteCarloManagerSerial.hpp"
+#include "manager/MonteCarloManager.hpp"
 #include "population/CombPopulationControl.hpp"
 #include "radiation/RadiationIMC.hpp"
 #include <units/units.hpp>
@@ -56,7 +56,8 @@
 
 namespace fs = std::filesystem;
 
-namespace {
+namespace
+{
 
 constexpr std::size_t groups = 32;
 constexpr double protonMass = 1.6726231e-24;
@@ -85,7 +86,8 @@ class TillEOS
 public:
     TillEOS()
         : cvPerMass_(1.3 * 3.0 * units::k_boltz / protonMass)
-    {}
+    {
+    }
 
     double dT2cv(double, double, const std::vector<double> &,
                  const std::vector<std::string> &) const
@@ -218,11 +220,17 @@ RuntimeOptions parseOptions(int argc, char **argv)
         }
         else if(consumeValue(argument, "--tf=", value))
         {
-            if(const auto parsed = parsePositive<double>(value)) options.tf = *parsed;
+            if(const auto parsed = parsePositive<double>(value))
+            {
+                options.tf = *parsed;
+            }
         }
         else if(consumeValue(argument, "--new-photons=", value))
         {
-            if(const auto parsed = parsePositive<std::size_t>(value)) options.newPhotonsPerCell = *parsed;
+            if(const auto parsed = parsePositive<std::size_t>(value))
+            {
+                options.newPhotonsPerCell = *parsed;
+            }
         }
         else if(consumeValue(argument, "--initial-photons=", value))
         {
@@ -237,11 +245,17 @@ RuntimeOptions parseOptions(int argc, char **argv)
         }
         else if(consumeValue(argument, "--matrix-samples=", value))
         {
-            if(const auto parsed = parsePositive<std::size_t>(value)) options.matrixSamples = *parsed;
+            if(const auto parsed = parsePositive<std::size_t>(value))
+            {
+                options.matrixSamples = *parsed;
+            }
         }
         else if(consumeValue(argument, "--output-dir=", value))
         {
-            if(!value.empty()) options.outputDir = std::string(value);
+            if(!value.empty())
+            {
+                options.outputDir = std::string(value);
+            }
         }
         else if(const auto parsed = parsePositive<double>(argument))
         {
@@ -281,7 +295,10 @@ std::vector<ReferencePoint> loadReference(const fs::path &path)
     std::string line;
     while(std::getline(input, line))
     {
-        if(line.empty() || line.front() == '#') continue;
+        if(line.empty() || line.front() == '#')
+        {
+            continue;
+        }
         std::istringstream row(line);
         ReferencePoint point;
         if(row >> point.time >> point.gasTemperature >> point.radiationTemperature)
@@ -296,9 +313,18 @@ double interpolate(const std::vector<double> &x,
                    const std::vector<double> &y,
                    double query)
 {
-    if(x.empty() || y.empty() || x.size() != y.size()) return std::numeric_limits<double>::quiet_NaN();
-    if(query <= x.front()) return y.front();
-    if(query >= x.back()) return y.back();
+    if(x.empty() || y.empty() || x.size() != y.size())
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    if(query <= x.front())
+    {
+        return y.front();
+    }
+    if(query >= x.back())
+    {
+        return y.back();
+    }
     const auto upper = std::upper_bound(x.begin(), x.end(), query);
     const std::size_t right = static_cast<std::size_t>(upper - x.begin());
     const std::size_t left = right - 1;
@@ -325,7 +351,10 @@ bool compareProfile(const fs::path &referencePath,
     std::size_t compared = 0;
     for(const ReferencePoint &point : reference)
     {
-        if(point.time > time.back()) break;
+        if(point.time > time.back())
+        {
+            break;
+        }
         const double gas = interpolate(time, gasTemperature, point.time);
         const double radiation = interpolate(time, radiationTemperatureValues, point.time);
         gasError += std::abs(gas - point.gasTemperature) /
@@ -344,8 +373,9 @@ bool compareProfile(const fs::path &referencePath,
     gasError /= static_cast<double>(compared);
     radiationError /= static_cast<double>(compared);
     const double energyDrift = initialEnergy != 0.0
-        ? (energy.back() - initialEnergy) /
-            std::max(std::abs(initialEnergy), 1.0) : 0.0;
+                                   ? (energy.back() - initialEnergy) /
+                                         std::max(std::abs(initialEnergy), 1.0)
+                                   : 0.0;
 
     std::cout << std::scientific
               << "TILL_COMPTON_TGAS_REL_L1 = " << gasError << '\n'
@@ -354,7 +384,7 @@ bool compareProfile(const fs::path &referencePath,
               << "Compared reference points = " << compared << '\n';
     constexpr double temperatureErrorLimit = 0.25;
     bool const accepted = gasError <= temperatureErrorLimit &&
-        radiationError <= temperatureErrorLimit;
+                          radiationError <= temperatureErrorLimit;
     std::cout << "TILL_COMPTON_REFERENCE_PASS = " << accepted << '\n';
     return accepted;
 }
@@ -385,7 +415,7 @@ int main(int argc, char **argv)
         const double density = 1.0;
         const double cvPerMass = 1.3 * 3.0 * units::k_boltz / protonMass;
         const double initialRadiationPerMass = units::arad *
-            std::pow(radiationInitialTemperature, 4) / density;
+                                               std::pow(radiationInitialTemperature, 4) / density;
 
         std::array<double, groups + 1> energyBoundaries{};
         const double minimumEnergy = units::kev * 1e-4;
@@ -421,7 +451,8 @@ int main(int argc, char **argv)
                 const double groupEnergy =
                     planck_integral::planck_energy_density_group_integral(
                         energyBoundaries[group], energyBoundaries[group + 1],
-                        radiationInitialTemperature) / density;
+                        radiationInitialTemperature) /
+                    density;
                 cell.Eg[group] = std::max(groupEnergy, cell.Erad * 1e-8);
                 extensive.Eg[group] = cell.Eg[group] * extensive.mass;
             }
@@ -430,7 +461,7 @@ int main(int argc, char **argv)
         using Opacity = STORM::examples::TillComptonOpacity<
             Vector3D, Grid, TillCell, groups>;
         using IMC = STORM::RadiationIMC<Vector3D, Grid, TillCell, TillExtensives,
-                                       TillEOS, groups, Opacity>;
+                                        TillEOS, groups, Opacity>;
 
         STORM::RadiationIMCParameters<groups> parameters;
         parameters.newPhotonsPerCell = options.newPhotonsPerCell;
@@ -454,7 +485,7 @@ int main(int argc, char **argv)
         auto populationControl =
             std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(
                 grid, options.newPhotonsPerCell);
-        STORM::MonteCarloManagerSerial<Vector3D, Grid> manager(grid, physics, populationControl, boundary);
+        STORM::MonteCarloManager<Vector3D, Grid> manager(grid, physics, populationControl, boundary);
 
         std::cout << "Running case: Till MC (STORM)\n"
                   << "T_mat = 1 keV, T_rad = 10 keV, Compton = ON, absorption = ON\n"
@@ -484,7 +515,10 @@ int main(int argc, char **argv)
         while(time.back() < options.tf)
         {
             const double stepDt = std::min(timestep, options.tf - time.back());
-            if(!(stepDt > 0.0)) break;
+            if(!(stepDt > 0.0))
+            {
+                break;
+            }
             manager.step(stepDt);
             time.push_back(time.back() + stepDt);
             gasTemperature.push_back(cells.front().temperature);
@@ -527,8 +561,9 @@ int main(int argc, char **argv)
                 "Till Compton temperature curve exceeded the reference tolerance");
         }
         double const totalEnergyDrift = initialEnergy != 0.0
-            ? (energy.back() - initialEnergy) /
-                std::max(std::abs(initialEnergy), 1.0) : 0.0;
+                                            ? (energy.back() - initialEnergy) /
+                                                  std::max(std::abs(initialEnergy), 1.0)
+                                            : 0.0;
         if(!std::isfinite(totalEnergyDrift) ||
            std::abs(totalEnergyDrift) > 1e-8)
         {

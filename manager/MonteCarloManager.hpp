@@ -1,7 +1,5 @@
-#ifndef RDMA_MONTE_CARLO_MANAGER_HPP
-#define RDMA_MONTE_CARLO_MANAGER_HPP
-
-#ifdef STORM_WITH_MPI
+#ifndef STORM_MONTE_CARLO_MANAGER_HPP
+#define STORM_MONTE_CARLO_MANAGER_HPP
 
 #include <cassert>
 #include <algorithm>
@@ -12,25 +10,21 @@
 #include <limits>
 #include <string>
 #include <boost/container/flat_set.hpp>
-#include <mpi_utils/mpi_commands.hpp>
-#include <mpi_utils/AmountManager.hpp>
-#include "../../particle/Particle.hpp"
-#include "../../physics/MonteCarloPhysics.hpp"
-#include "../../population/PopulationControl.hpp"
-#include "../../boundary/BoundaryCondition.hpp"
-#include "../../utils/GhostMap.hpp"
-#include "../../utils/RankSync.hpp"
-#include "../LocalTransportExecutor.hpp"
-#include "../MonteCarloTransportCore.hpp"
-#include "../../gpu/ProfileRegion.hpp"
+
+#include "../particle/Particle.hpp"
+#include "../physics/MonteCarloPhysics.hpp"
+#include "../population/PopulationControl.hpp"
+#include "../boundary/BoundaryCondition.hpp"
+#include "../utils/GhostMap.hpp"
+#include "../gpu/ProfileRegion.hpp"
 #ifdef STORM_WITH_GPU
-#include "../../gpu/KokkosLocalTransportExecutor.hpp"
-#include "../../gpu/DevicePopulationContext.hpp"
-#include "../../gpu/DeviceSourceContext.hpp"
+#include "../gpu/KokkosLocalTransportExecutor.hpp"
+#include "../gpu/DevicePopulationContext.hpp"
+#include "../gpu/DeviceSourceContext.hpp"
 #endif // STORM_WITH_GPU
-#include "RankHandler2.hpp"
-#include "RegisteredSendBuffer.hpp"
-#include "ReallocationAgent.hpp"
+#include "communication/CommunicationEngine.hpp"
+#include "communication/SerialCommunicationEngine.hpp"
+
 #ifdef MEMORY_DEBUG
 #include "misc/memory_debug.hpp"
 #else
@@ -38,32 +32,30 @@
 #define MEMORY_DEBUG_PRINT(label) ((void)0)
 #endif
 #endif
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
-#include <iostream>
 #include <iterator>
-#include <limits>
 #include <memory>
 #include <random>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
+#ifdef STORM_WITH_MPI
 #include <mpi.h>
-#include "../MonteCarloConfig.hpp"
-#include "../MonteCarloParticleInitialization.hpp"
-#include "../MonteCarloStepState.hpp"
-#include "../MonteCarloTracker.hpp"
-#include "../../elementary/PointOps.hpp"
+#include <mpi_utils/AmountManager.hpp>
+#endif
+#include "MonteCarloConfig.hpp"
+#include "MonteCarloTracker.hpp"
+#include "../elementary/PointOps.hpp"
 
-namespace STORM {
+namespace STORM
+{
 
 using namespace STORM::fallback;
 
-#define RW_PROGRESS_TAG 9941
 #define MC_PROGRESS_COUNTERS 6
 
 enum MCProgressCounterIndex : size_t
@@ -113,58 +105,29 @@ void ComputeBoxDriftDiagnostics(const T &location, const T &boxLL, const T &boxU
     maxAxisRelativeDrift = MaxAxisRelativeDrift(drift, boxSize);
 }
 
-template<typename Grid>
-std::vector<rank_t> GetNeighborList2(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
-{
-    size_t N = tess.GetPointNo();
-    boost::container::flat_set<rank_t> ranks;
-
-    std::vector<size_t> allNeighboringGhosts;
-    for(size_t i = 0; i < N; i++)
-    {
-        for(size_t ghostIdx : tess.GetNeighbors(i))
-        {
-            if(ghostIdx >= N)
-            {
-                auto it = ghostsMap.find(ghostIdx);
-                if(it != ghostsMap.end())
-                {
-                    rank_t ownerRank = (*it).second.first;
-                    ranks.insert(ownerRank);
-                }
-            }
-        }
-    }
-
-    return std::vector<rank_t>(ranks.cbegin(), ranks.cend());
-}
-
 template<typename T, typename Grid, typename Physics = MonteCarloPhysics<T, Grid>>
-class RDMAMonteCarloManager
+class MonteCarloManager
 {
-    static_assert(std::is_base_of<MonteCarloPhysics<T, Grid>, Physics>::value,
-                  "Physics must derive from MonteCarloPhysics<T, Grid>");
+    static_assert(std::is_base_of<MonteCarloPhysics<T, Grid>, Physics>::value, "Physics must derive from MonteCarloPhysics<T, Grid>");
 
     using MCParticle = MonteCarloParticle<T>;
-    using RankHandler_t = RankHandler2<T, Grid>;
 
 public:
-    using MonteCarloStepFinalData = MonteCarloStepState<MCParticle>;
+    struct MonteCarloStepFinalData
+    {
+        std::vector<MCParticle> remaining;
+        size_t leavingCount = 0;
+    };
+
     using Tracker = MonteCarloTracker<MCParticle>;
 
-    RDMAMonteCarloManager(const Grid &grid, const std::shared_ptr<Physics> &physics,
-                    const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
-                    const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
-                    const MonteCarloConfig &config = MonteCarloConfig(),
-                    const MPI_Comm &comm = MPI_COMM_WORLD, RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
+    MonteCarloManager(const Grid &grid, const std::shared_ptr<Physics> &physics,
+                          const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
+                          const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
+                          const MonteCarloConfig &config = MonteCarloConfig(),
+                          std::unique_ptr<CommunicationEngine<T>> engine = std::make_unique<SerialCommunicationEngine<T>>());
 
-    ~RDMAMonteCarloManager();
-
-    void ClearCommunicator(void);
-
-    void TransferParticles(rank_t rankBuffer, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num);
-
-    void TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks);
+    ~MonteCarloManager() = default;
 
     inline size_t GetStepCounter(void) const
     {
@@ -254,44 +217,43 @@ public:
     }
 
 private:
-    using RegisteredSendBuffer_t = RegisteredSendBuffer<MCParticle, RankHandler_t>;
-    using TransportCore = MonteCarloTransportCore<HostLocalTransportExecutor<MCParticle>>;
+    using Reduction = typename CommunicationEngine<T>::Reduction;
+    using CompletionCounter = long long;
 
     const Grid &grid;
     MonteCarloConfig config;
-    MPI_Comm comm_world;
-    rank_t rank_world, size_world;
-    size_t Ncells;
+#ifdef STORM_WITH_MPI
+    MPI_Comm commWorld;
+#endif
+    rank_t rankWorld, sizeWorld;
+    size_t nCells;
     // std::shared_ptr<ProgressCounter> progress;
-    typename AmountManager::counter_t localDecrementAmount;
-    std::vector<MPI_Comm> communicators;
-    std::vector<rank_t> ranksOrder;
-    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
-    std::vector<RankHandler_t*> rankHandlers;
+    CompletionCounter localDecrementAmount;
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranksGhostMap;
     T ll, ur;
     std::shared_ptr<Physics> physics;
     std::shared_ptr<PopulationControl<T, Grid>> populationControl;
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
     Tracker tracker;
-    std::shared_ptr<ReallocationAgent> reallocationAgent;
     mutable size_t myIDCounter;
     size_t currentStep;
     size_t allStepsCounter;
     size_t transfersCounter;
-    std::chrono::high_resolution_clock::time_point progressStartTime_;
-    double lastProgressPrintTime_ = 0.0;
-    int64_t progressStartParticles_ = 0;
-    size_t progressRemovedCount_ = 0;
+    std::chrono::high_resolution_clock::time_point progressStartTime;
+    double lastProgressPrintTime = 0.0;
+    int64_t progressStartParticles = 0;
+    size_t progressRemovedCount = 0;
+
 public:
-    const void *progressCellsPtr_ = nullptr;
-    const void *progressOpacityPtr_ = nullptr;
+    const void *progressCellsPtr = nullptr;
+    const void *progressOpacityPtr = nullptr;
+
 private:
     std::vector<rank_t> neighbors;
     std::vector<size_t> cellsStepsCounters;
     std::vector<size_t> cellsParticleCounters;
     size_t iteration;
     size_t dynamicallyAdded;
-    RDMA_Type rdma_type;
     size_t lastBuildGeneration;
     size_t startParticleCount = 0;
     size_t endParticleCount = 0;
@@ -303,25 +265,17 @@ private:
     mutable bool hostParticlesValid = true;
     bool particlesChanged = false;
     bool deviceCensusValid = false;
-    std::uint64_t populationActivationEpoch_ = 0;
+    std::uint64_t populationActivationEpoch = 0;
 
-    std::vector<RegisteredSendBuffer_t> sendBuffers;
-    std::vector<rank_t> sendBufferActiveRanks;
-    std::vector<rank_t> readySendBufferRanks;
-    std::vector<unsigned char> sendBufferActive;
-    std::vector<unsigned char> sendBufferListed;
-    std::vector<unsigned char> sendBufferReadyQueued;
+    std::unique_ptr<CommunicationEngine<T>> engine;
+#ifdef STORM_WITH_MPI
+    std::unique_ptr<AmountManager> amountManager;
+#endif
+    CompletionCounter completionRemaining = 0;
+    bool completionDone = false;
     std::vector<std::vector<MCParticle>> detachedRankParticles;
-    std::vector<rank_t> activeRanks;
-    std::vector<rank_t> nextActiveRanks;
-    size_t readySendBufferCursor;
-    size_t sendBufferPendingRanks;
-    size_t sendBufferCycleCounter;
-    size_t sendBufferPendingParticles;
-    size_t activeRankScanCursor;
-    size_t activeRankScanRemaining;
-    HostLocalTransportExecutor<MCParticle> localTransportExecutor;
-    TransportCore transportCore;
+    std::vector<rank_t> activeRanks, nextActiveRanks;
+    size_t activeRankScanCursor = 0, activeRankScanRemaining = 0;
 #ifdef STORM_WITH_GPU
     std::unique_ptr<gpu::KokkosLocalTransportExecutor> gpuTransportExecutor;
     double gpuPackSeconds = 0.0;
@@ -337,16 +291,18 @@ private:
     unsigned long long gpuElidedRemovalCount = 0;
     mutable std::size_t gpuDeferredD2HBytes = 0;
     size_t gpuHoldSkips = 0;
-    std::size_t gpuLastStepMaxActive_ = 0;
+    std::size_t gpuLastStepMaxActive = 0;
 #endif // STORM_WITH_GPU
 
     // Reused across transport rounds so the merge does not reallocate and
     // page-fault the whole local population on every iteration.
     std::vector<MCParticle> mergedParticleBuffer;
     std::vector<MCParticle> mergeScratchBuffer;
+    std::vector<MCParticle> particlesToAdd;
+    size_t progressStepCounter = 0;
 
     // Splits the transport loop time that the GPU phase timers do not cover.
-    double loopRmaSeconds = 0.0;
+    double loopCommunicationSeconds = 0.0;
     double loopAmountSeconds = 0.0;
     double loopHandleSeconds = 0.0;
     double loopMergeSeconds = 0.0;
@@ -382,9 +338,15 @@ private:
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
-    bool HaveParticlesChanged(void) const { return this->particlesChanged; }
+    bool HaveParticlesChanged(void) const
+    {
+        return this->particlesChanged;
+    }
 
-    void ClearParticlesChanged(void) { this->particlesChanged = false; }
+    void ClearParticlesChanged(void)
+    {
+        this->particlesChanged = false;
+    }
 
     void MaterializeDeviceCensus(void) const
     {
@@ -393,7 +355,7 @@ private:
         {
             return;
         }
-        const std::size_t assigned = this->gpuTransportExecutor->AssignPendingCensusIdentities(this->rank_world, static_cast<particle_id_t>(this->myIDCounter));
+        const std::size_t assigned = this->gpuTransportExecutor->AssignPendingCensusIdentities(this->rankWorld, static_cast<particle_id_t>(this->myIDCounter));
         this->myIDCounter += assigned;
         const std::size_t d2hBefore = this->gpuTransportExecutor->Metrics().d2hBytes;
         gpu::CompletedBatch census = this->gpuTransportExecutor->SnapshotPendingCensus();
@@ -418,7 +380,8 @@ private:
     bool TransportResidentOnDevice(std::vector<MCParticle> &arrivals, MonteCarloStepFinalData &stepData, bool &isEmpty);
 
     void ApplyDeviceCompletions(gpu::CompletedBatch &completed,
-                                MonteCarloStepFinalData &stepData);
+                                MonteCarloStepFinalData &stepData,
+                                bool transportInFlight = false);
 
     void DrainDeviceCensus(MonteCarloStepFinalData &stepData);
 #endif // STORM_WITH_GPU
@@ -427,57 +390,14 @@ private:
 
     void StageLocalParticlesForDevice(std::vector<MCParticle> &&particles, bool assignNewIDs);
 
-    void PrepareHandlers(void);
-
-    void RetireStaleHandlers(void);
-
-    void FreeHandlers(void);
-
     void AddParticles(const std::vector<MCParticle> &particles);
-
-    void ResetAllBuffers(void);
-
-    void ShrinkBuffers(void);
-
-    RegisteredSendBuffer_t &GetSendBuffer(rank_t rank);
-
-    void QueueReadySendBuffer(rank_t rank);
-
-    void MarkSendBufferEmpty(rank_t rank);
-
-    void ResetSendBuffers(void);
-
-    void ReleaseSendBufferRegistrations(void);
-
-    void NoteSendBufferGrowth(rank_t rank, size_t previousSize, const RegisteredSendBuffer_t &buffer, size_t addedParticles);
-
-    void NoteSendBufferFlush(rank_t rank, size_t flushedParticles);
-
-    bool UsesAsyncReallocation(void) const;
-
-    void PumpRMAProgress(void);
-
-    void ProgressReallocations(void);
-
-    void MakeRDMAProgress(void);
-
-    void FlushSendBuffers(bool flushSmallBuffers);
-
-    void FlushAllSendBuffers(void);
-
-    bool AllSendBuffersEmpty(void) const;
 
     void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
 };
 
-#include "RDMAManagerOperations.hpp"
-#include "RDMARankHandlerLifecycle.hpp"
-#include "RDMASendBufferProtocol.hpp"
-#include "RDMAMonteCarloTransport.hpp"
-#include "RDMAStepLifecycle.hpp"
+#include "MonteCarloTransport.hpp"
+#include "MonteCarloLifecycle.hpp"
 
 } // namespace STORM
 
-#endif // STORM_WITH_MPI
-
-#endif // RDMA_MONTE_CARLO_MANAGER_HPP
+#endif // STORM_MONTE_CARLO_MANAGER_HPP

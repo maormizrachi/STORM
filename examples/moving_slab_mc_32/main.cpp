@@ -355,10 +355,11 @@ std::vector<Vector3D> BuildAllPoints(double time, double slabVelocity,
     return points;
 }
 
+template<typename Physics>
 void ExchangeCellData(
     Grid &grid, std::vector<MovingSlabCell> &cells,
     std::vector<MovingSlabExtensives> &extensives,
-    STORM::MonteCarloManager<Vector3D, Grid> &manager)
+    STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager)
 {
     STORM::MPI_exchange_data(grid, cells, false);
     STORM::MPI_exchange_data(grid, extensives, false);
@@ -366,12 +367,13 @@ void ExchangeCellData(
     STORM::MPI_exchange_data(grid, manager.GetBeginningParticleCount(), false);
 }
 
+template<typename Physics>
 void Remesh(
     Grid &grid, double slabVelocity, double slabLength, double symmetryPoint,
     double previousTime, double currentTime,
     std::vector<MovingSlabCell> &cells,
     std::vector<MovingSlabExtensives> &extensives,
-    STORM::MonteCarloManager<Vector3D, Grid> &manager)
+    STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager)
 {
     double oldFront = slabLength + slabVelocity * previousTime;
     double newFront = slabLength + slabVelocity * currentTime;
@@ -422,8 +424,9 @@ void Remesh(
         particles.end());
 }
 
+template<typename Physics>
 bool Rebalance(
-    Grid &grid, STORM::MonteCarloManager<Vector3D, Grid> &manager,
+    Grid &grid, STORM::MonteCarloManager<Vector3D, Grid, Physics> &manager,
     std::vector<MovingSlabCell> &cells,
     std::vector<MovingSlabExtensives> &extensives, int rank)
 {
@@ -602,7 +605,7 @@ int main(int argc, char *argv[])
             grid, boundary, cells, extensives, eos, opacity, parameters);
         std::shared_ptr<STORM::NoPopulationControl<Vector3D, Grid>> population =
             std::make_shared<STORM::NoPopulationControl<Vector3D, Grid>>(grid);
-        STORM::MonteCarloManager<Vector3D, Grid> manager =
+        STORM::MonteCarloManager<Vector3D, Grid, IMC> manager =
             STORM::CreateMonteCarloManager<Vector3D, Grid>(
                 grid, physics, population, boundary);
 
