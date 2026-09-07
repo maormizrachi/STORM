@@ -1062,7 +1062,8 @@ void SamplePlanckBandFrequency(ParticleT &particle,
                                const std::size_t cellIndex,
                                const double kT,
                                const std::size_t beginGroup,
-                               const std::size_t endGroup)
+                               const std::size_t endGroup,
+                               ThermalFrequencyLaw thermalLaw = ThermalFrequencyLaw::LinearInGroup)
 {
     if(boundaries == nullptr || beginGroup >= endGroup || endGroup > groupCount)
     {
@@ -1099,7 +1100,7 @@ void SamplePlanckBandFrequency(ParticleT &particle,
             }
             particle.frequency = SampleFrequencyInGroupFromCellCdf(
                 boundaries, thermalEmissionCdf, groupCount,
-                cellIndex, group, localRandom);
+                cellIndex, group, localRandom, thermalLaw, kT);
             return;
         }
         remaining -= groupMass;
@@ -1563,7 +1564,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             const double kT = boltzmannConstant * ddmc.cellTemperature[cellIndex];
             SamplePlanckBandFrequency(
                 particle, views.energyBoundaries, views.thermalEmissionCdf,
-                views.groupCount, cellIndex, kT, 0, groupCutoff);
+                views.groupCount, cellIndex, kT, 0, groupCutoff, views.thermalFrequencyLaw);
             const double upperBand = views.energyBoundaries[groupCutoff];
             if(particle.frequency > NextUp(upperBand) ||
                particle.frequency >= upperBand)
@@ -1581,7 +1582,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
                 views.thermalEmissionCdf,
                 views.groupCount,
                 cellIndex,
-                CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++));
+                CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++),
+                views.thermalFrequencyLaw, views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
             particle.frequency = ClampFrequency(
                 views.energyBoundaries, views.groupCount, particle.frequency);
         }
@@ -1629,7 +1631,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         }
         particle.frequency = SampleFrequencyFromCellCdf(
             views.energyBoundaries, views.thermalEmissionCdf,
-            views.groupCount, cellIndex, opacityCdfCoordinate);
+            views.groupCount, cellIndex, opacityCdfCoordinate, views.thermalFrequencyLaw, views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
         SampleRandomVelocity(particle, views.speedOfLight);
         LorentzToLab(particle, views, cellIndex);
@@ -1773,7 +1775,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             : 0.0;
         SamplePlanckBandFrequency(
             particle, views.energyBoundaries, views.thermalEmissionCdf,
-            views.groupCount, cellIndex, kT, beginGroup, groupCutoff);
+            views.groupCount, cellIndex, kT, beginGroup, groupCutoff, views.thermalFrequencyLaw);
         particle.frequency = ClampFrequency(
             views.energyBoundaries, views.groupCount, particle.frequency);
     }

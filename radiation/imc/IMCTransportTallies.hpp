@@ -24,6 +24,8 @@ struct IMCTransportTallies
     std::vector<PointT> pendingMomentum_;
     std::vector<PointT> transportCellVelocities_;
     std::vector<double> spectralAbsorptionScale_;
+    std::vector<double> groupAbsorptionOpacities_;
+    std::vector<double> thermalKT_;
     std::vector<double> thermalEmissionCdf_;
     std::vector<double> pendingRadiationEnergy_;
     std::vector<double> pendingGroupRadiationEnergy_;

@@ -21,6 +21,11 @@ template<typename PointT, typename GridT>
 class DensmoreOpacity final : public RadiationOpacityModel<PointT, GridT, RadiationCell, N_DENSMORE_GROUPS>
 {
 public:
+    STORM::PortableAbsorptionLaw GetPortableAbsorptionLaw() const override
+    { return STORM::PortableAbsorptionLaw::InverseCube; }
+    STORM::ThermalFrequencyLaw GetPortableThermalFrequencyLaw() const override
+    { return STORM::ThermalFrequencyLaw::BoseEinstein0; }
+
     using Base = RadiationOpacityModel<PointT, GridT, RadiationCell, N_DENSMORE_GROUPS>;
     using GroupArray = typename Base::GroupArray;
     using GroupBoundaries = typename Base::GroupBoundaries;

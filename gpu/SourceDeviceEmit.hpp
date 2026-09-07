@@ -83,6 +83,9 @@ inline void EmitSourcesOnDevice(DeviceSourceContext &context)
     sampleViews.thermalEmissionCdf = views.thermalEmissionCdf;
     sampleViews.energyBoundaries = views.energyBoundaries;
     sampleViews.cellVelocities = views.cellVelocities;
+    sampleViews.thermalKT = views.thermalKT;
+    sampleViews.thermalFrequencyLaw = views.thermalFrequencyLaw;
+    sampleViews.fullDt = context.fullDt;
     sampleViews.cellCount = views.grid.cellCount;
     sampleViews.groupCount = views.groupCount;
     sampleViews.speedOfLight = context.speedOfLight;
@@ -101,7 +104,6 @@ inline void EmitSourcesOnDevice(DeviceSourceContext &context)
 #ifdef STORM_WITH_MPI
     const rank_t rank = context.rank;
 #endif
-    const dt_t fullDt = context.fullDt;
 
     Kokkos::parallel_for(
         "storm_emit_thermal_sources",
@@ -128,7 +130,7 @@ inline void EmitSourcesOnDevice(DeviceSourceContext &context)
             particle.location = location;
             particle.velocity = velocity;
             particle.cellIndex = scalars.cellIndex;
-            particle.timeLeft = fullDt;
+            particle.timeLeft = scalars.timeLeft;
             particle.weight = scalars.weight;
             particle.initialWeight = scalars.initialWeight;
             particle.frequency = scalars.frequency;

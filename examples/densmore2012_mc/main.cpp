@@ -75,6 +75,21 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
+    bool useDDMC = false;
+    if(argc == 2 && std::string(argv[1]) == "--ddmc")
+    {
+        useDDMC = true;
+    }
+    else if(argc != 1)
+    {
+        if(rank == 0)
+        {
+            std::cerr << "Usage: " << argv[0] << " [--ddmc]" << std::endl;
+        }
+        MPI_Finalize();
+        return 2;
+    }
+
     try
     {
         constexpr size_t newPhotonsPerCell = 50;
@@ -135,14 +150,15 @@ int main(int argc, char *argv[])
         STORM::RadiationIMCParameters<G> parameters;
         parameters.newPhotonsPerCell = newPhotonsPerCell;
         parameters.withMultigroupOpacity = true;
-        parameters.withRandomWalk = false;
+        // DDMC and random walk are alternative optically-thick transport
+        // accelerators.  Select DDMC at runtime so both regressions use the
+        // same executable and physics setup.
+        parameters.withRandomWalk = !useDDMC;
         parameters.withEgTimeAvg = true;
         parameters.energyBoundaries = energyBoundaries;
         parameters.energyBoundariesProvided = true;
-#ifdef STORM_DENSMORE_MC_DDMC_REGRESSION
-        parameters.withDDMC = true;
-        parameters.withMultigroupDDMC = true;
-#endif
+        parameters.withDDMC = useDDMC;
+        parameters.withMultigroupDDMC = useDDMC;
 
         std::shared_ptr<DensmoreEOS> eos =
             std::make_shared<DensmoreEOS>(eosModel);
@@ -166,11 +182,8 @@ int main(int argc, char *argv[])
         if(rank == 0)
         {
             std::cout << "Densmore 2012 heterogeneous step-opacity"
-#ifdef STORM_DENSMORE_MC_DDMC_REGRESSION
-                      << " (MC regression, DDMC)"
-#else
-                      << " (MC regression)"
-#endif
+                      << (useDDMC ? " (MC regression, DDMC)"
+                                  : " (MC regression, random walk)")
                       << "\n  Nx=" << densmore2012_mesh::cellCount
                       << ", G=" << G << ", new/cell=" << newPhotonsPerCell
                       << ", max/cell=" << maxPhotonsPerCell
@@ -231,11 +244,8 @@ int main(int argc, char *argv[])
                 profile[i] = {allX[i], allTemperature[i]};
             }
             std::sort(profile.begin(), profile.end());
-            std::ofstream output("densmore2012_mc"
-#ifdef STORM_DENSMORE_MC_DDMC_REGRESSION
-                                 "_ddmc"
-#endif
-                                 "_profile.txt");
+            std::ofstream output(useDDMC ? "densmore2012_mc_ddmc_profile.txt"
+                                         : "densmore2012_mc_profile.txt");
             output << "# Densmore2012 MC regression  t=" << finalTime
                    << "  Nx=" << densmore2012_mesh::cellCount << "\n";
             output << "# x(cm)  T(K)\n";

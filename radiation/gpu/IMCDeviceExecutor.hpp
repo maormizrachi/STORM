@@ -82,7 +82,7 @@ public:
             ddmcEventKernelEligible &&
             owner_.parameters_.ddmcGpuEnable;
         gpuTransportEnabled_ = owner_.GreyKernelEligible() or
-                               owner_.SharedFullIMCKernelEligible() or
+                               (owner_.SharedFullIMCKernelEligible() && this->PortableSpectralEligible()) or
                                ddmcDeviceEligible;
         if(!gpuTransportEnabled_)
         {
@@ -162,7 +162,9 @@ public:
             gpuData_->UploadSpectral(
                 energyBoundaries,
                 owner_.spectralAbsorptionScale_,
-                owner_.thermalEmissionCdf_);
+                owner_.thermalEmissionCdf_,
+                owner_.groupAbsorptionOpacities_, owner_.thermalKT_,
+                owner_.opacity_->GetPortableThermalFrequencyLaw());
         }
         else
             gpuData_->DisableSpectral();
@@ -197,17 +199,14 @@ public:
 #endif
     }
 
-    bool copyCensusTallies(
-        std::vector<double> &radiationEnergy,
-        std::vector<double> &groupRadiationEnergy)
+    bool copyCensusTallies(std::vector<double> &radiationEnergy, std::vector<double> &groupRadiationEnergy)
     {
 #ifdef STORM_WITH_GPU
         if(!this->SupportsDeviceCensusTallies())
         {
             return false;
         }
-        gpuData_->CopyCensusTallies(
-            radiationEnergy, groupRadiationEnergy);
+        gpuData_->CopyCensusTallies(radiationEnergy, groupRadiationEnergy);
         return true;
 #else
         (void) radiationEnergy;
@@ -298,7 +297,7 @@ public:
                !owner_.adaptiveSourceCellGroupScoresEnabled_ &&
                !owner_.postProcessExternalSourceMode_ &&
                (owner_.GreyKernelEligible() ||
-                owner_.SharedFullIMCKernelEligible() ||
+                (owner_.SharedFullIMCKernelEligible() && this->PortableSpectralEligible()) ||
                 owner_.SharedDDMCKernelEligible());
     }
 
@@ -318,19 +317,11 @@ public:
                               !owner_.parameters_.diffusionPressureGradient &&
                               !owner_.parameters_.noHydroFeedback;
         }
-        gpu::GreyIMCViews<gpu::DeviceVec3> result =
-            gpuData_->Views(
-            owner_.lightSpeed(),
-            !owner_.parameters_.noHydroFeedback,
-            comovingTransport,
-            depositMomentum,
-            owner_.parameters_.staticScatterers);
+        gpu::GreyIMCViews<gpu::DeviceVec3> result = gpuData_->Views(owner_.lightSpeed(), !owner_.parameters_.noHydroFeedback, comovingTransport, depositMomentum, owner_.parameters_.staticScatterers);
         // Only a DDMC-restricted launch may reject IMC packets on the device.
         // Grey and full-IMC eligibility also enable device transport, so
         // keying this off DDMC alone forces every IMC packet to host fallback.
-        result.ddmcOnlyTransport =
-            (owner_.GreyKernelEligible() ||
-             owner_.SharedFullIMCKernelEligible()) ? 0u : 1u;
+        result.ddmcOnlyTransport = (owner_.GreyKernelEligible() or owner_.SharedFullIMCKernelEligible())? 0u : 1u;
         this->SetSlabView(result.grid);
         return result;
     }
@@ -355,6 +346,7 @@ public:
     bool SharedRandomWalkKernelEligible() const
     {
         return owner_.parameters_.withRandomWalk &&
+               this->ThermalSamplingSnapshotEligible() &&
                !owner_.parameters_.withCompton &&
                !owner_.parameters_.withHydro &&
                !(owner_.parameters_.postProcess.enabled &&
@@ -404,6 +396,9 @@ public:
         result.energyBoundaries = owner_.energyBoundaries_.data();
         result.spectralAbsorptionScale = owner_.spectralAbsorptionScale_.data();
         result.thermalEmissionCdf = owner_.thermalEmissionCdf_.data();
+        result.groupAbsorptionOpacities = owner_.groupAbsorptionOpacities_.empty() ? nullptr : owner_.groupAbsorptionOpacities_.data();
+        result.thermalKT = owner_.thermalKT_.data();
+        result.thermalFrequencyLaw = owner_.opacity_->GetPortableThermalFrequencyLaw();
         result.pendingGroupRadiationEnergy = (owner_.parameters_.withEgTimeAvg and not owner_.pendingGroupRadiationEnergy_.empty())?
                                                 owner_.pendingGroupRadiationEnergy_.data() : nullptr;
         result.groupCount = NumGroups;
@@ -472,7 +467,7 @@ public:
                !owner_.parameters_.postProcess.enabled &&
                !owner_.observer_ &&
                !owner_.polarizationEnabled() &&
-               ddmcThermalSamplingEligible_;
+               ddmcThermalSamplingEligible_ && this->PortableSpectralEligible();
 #endif
     }
 
@@ -486,7 +481,7 @@ public:
                (!owner_.parameters_.postProcess.enabled ||
                 owner_.postProcessExternalSourceMode_) &&
                !owner_.polarizationEnabled() &&
-               ddmcThermalSamplingEligible_;
+               ddmcThermalSamplingEligible_ && this->PortableSpectralEligible();
 #endif
     }
 
@@ -557,42 +552,16 @@ private:
         grid.slabUpperZ = slabBounds_[3];
     }
 
+    bool PortableSpectralEligible() const
+    {
+        return !owner_.parameters_.withMultigroupOpacity ||
+            (owner_.opacity_->GetPortableAbsorptionLaw() != PortableAbsorptionLaw::Unsupported &&
+             owner_.opacity_->GetPortableThermalFrequencyLaw() != ThermalFrequencyLaw::Unsupported);
+    }
+
     bool ThermalSamplingSnapshotEligible() const
     {
-        if(not owner_.parameters_.withDDMC or not owner_.parameters_.withMultigroupOpacity)
-        {
-            return true;
-        }
-        const std::size_t cellCount = owner_.cells_.size();
-        if(cellCount == 0)
-        {
-            return true;
-        }
-        if(owner_.thermalEmissionCdf_.size() != cellCount * (NumGroups + 1))
-        {
-            return false;
-        }
-        constexpr std::size_t maximumCheckedCells = 8;
-        const std::size_t checkedCells = std::min(cellCount, maximumCheckedCells);
-        constexpr double randomValues[] = {0.25, 0.75};
-        for(std::size_t sample = 0; sample < checkedCells; ++sample)
-        {
-            const std::size_t cellIndex = (checkedCells == 1)? 0 : sample * (cellCount - 1) / (checkedCells - 1);
-            for(std::size_t group = 0; group < NumGroups; ++group)
-            {
-                for(const double random : randomValues)
-                {
-                    const double snapshot = ddmc::SampleFrequencyInGroupFromCellCdf(owner_.energyBoundaries_.data(), owner_.thermalEmissionCdf_.data(), NumGroups, cellIndex, group, random);
-                    const double opacity = owner_.opacity_->SampleThermalEnergyInGroup(owner_.cells_[cellIndex], group, random, owner_.energyBoundaries_);
-                    const double scale = std::max(1.0, std::max(std::abs(snapshot), std::abs(opacity)));
-                    if(not std::isfinite(snapshot) or not std::isfinite(opacity) or std::abs(snapshot - opacity) > 1.0e-11 * scale)
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
+        return not owner_.parameters_.withMultigroupOpacity or (owner_.opacity_->GetPortableThermalFrequencyLaw() != ThermalFrequencyLaw::Unsupported);
     }
 
     ddmc::HostSnapshot<PointT> ddmcSnapshot_;

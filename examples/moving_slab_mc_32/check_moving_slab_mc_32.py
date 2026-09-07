@@ -55,6 +55,35 @@ def RelativeL1(code, reference, floorFraction=1.0e-4):
     return float(np.sum(np.abs(code[mask] - reference[mask])) / np.sum(reference[mask]))
 
 
+def ValidationErrors(code, reference, lower, upper, maxFerror=0.30, maxL1=0.30, maxBandL1=0.50):
+    arrays = (code, reference, lower, upper)
+    if any(not np.all(np.isfinite(array)) for array in arrays):
+        return ["spectrum contains non-finite values"]
+    if np.any(code < 0) or np.any(reference < 0) or np.any(lower <= 0) or np.any(upper <= lower):
+        return ["spectrum contains negative energy or invalid group bounds"]
+    if not np.any(reference > 0):
+        return ["reference has no positive energy"]
+    errors = []
+    fError = EnergyWeightedFractionalError(code, reference)
+    l1 = RelativeL1(code, reference)
+    if not np.isfinite(fError) or fError > maxFerror:
+        errors.append(f"F-error {fError:.6f} exceeds threshold {maxFerror}")
+    if not np.isfinite(l1) or l1 > maxL1:
+        errors.append(f"L1 {l1:.6f} exceeds threshold {maxL1}")
+    centers = np.sqrt(lower * upper)
+    widths = upper - lower
+    significant = reference > 1e-4 * np.max(reference)
+    # Check each energy decade independently; missing low-energy radiation
+    # must not be hidden by agreement around the peak. Integrate with dE.
+    for band in range(int(np.floor(np.log10(lower[0]))), int(np.ceil(np.log10(upper[-1])))):
+        mask = significant & (centers >= 10.0**band) & (centers < 10.0**(band+1))
+        if np.any(mask):
+            bandL1 = np.sum(np.abs(code[mask]-reference[mask])*widths[mask]) / np.sum(reference[mask]*widths[mask])
+            if bandL1 > maxBandL1:
+                errors.append(f"band [{10.0**band:g}, {10.0**(band+1):g}) keV L1 {bandL1:.6f} exceeds threshold {maxBandL1}")
+    return errors
+
+
 def WritePlots(plotDirectory, groupLower, groupUpper, opacity, code, reference, fError, l1):
     try:
         import matplotlib
@@ -108,6 +137,8 @@ def Main():
     parser = argparse.ArgumentParser(description="Moving slab MC 32-group spectrum check")
     parser.add_argument("--spectrum", required=True, help="Path to moving_slab_mc_32_spectrum.txt")
     parser.add_argument("--max-ferror", type=float, default=0.30, help="Maximum allowed energy-weighted fractional error")
+    parser.add_argument("--max-l1", type=float, default=0.30)
+    parser.add_argument("--max-band-l1", type=float, default=0.50)
     parser.add_argument("--plot-dir", default=None, help="Directory for plots (default: same as spectrum)")
     parser.add_argument("--no-plots", action="store_true", help="Skip comparison plot generation")
     arguments = parser.parse_args()
@@ -141,8 +172,10 @@ def Main():
     if not arguments.no_plots:
         WritePlots(arguments.plot_dir or os.path.dirname(arguments.spectrum), groupLower, groupUpper, opacity, code, reference, fError, l1)
 
-    if fError > arguments.max_ferror:
-        print(f"FAIL: F-error {fError:.6f} exceeds threshold {arguments.max_ferror}")
+    errors = ValidationErrors(code, reference, groupLower, groupUpper,
+                              arguments.max_ferror, arguments.max_l1, arguments.max_band_l1)
+    if errors:
+        print("FAIL: " + "; ".join(errors))
         return 1
     print("PASS")
     return 0

@@ -8,6 +8,7 @@
 #include "../../utils/CounterRNG.hpp"
 #include "../../types.hpp"
 #include "../transport/TransportPortability.hpp"
+#include "../ddmc/DDMCSampling.hpp"
 
 #ifdef STORM_WITH_GPU
 #include "../../gpu/KokkosTypes.hpp"
@@ -47,6 +48,9 @@ struct SampleViews
     const PointT *cellVelocities = nullptr;
     std::size_t cellCount = 0;
     std::size_t groupCount = 0;
+    const double *thermalKT = nullptr;
+    ThermalFrequencyLaw thermalFrequencyLaw = ThermalFrequencyLaw::LinearInGroup;
+    double fullDt = 0.0;
     double speedOfLight = 0.0;
     double invClight2 = 0.0;
     std::uint8_t sampleFrequency = 0;
@@ -55,6 +59,7 @@ struct SampleViews
 
 struct EmittedScalars
 {
+    double timeLeft = 0.0;
     double frequency = 0.0;
     double weight = 0.0;
     double initialWeight = 0.0;
@@ -167,27 +172,7 @@ STORM_SOURCE_INLINE PointT SampleIsotropicDirection(const std::uint64_t rngKey, 
 STORM_SOURCE_INLINE
 double SampleFrequencyFromCdf(const double *boundaries, const double *cdf, const std::size_t groupCount, const std::size_t cellIndex, const double random)
 {
-    if(boundaries == nullptr or cdf == nullptr or groupCount == 0)
-    {
-        return 0.0;
-    }
-    const double *cellCdf = cdf + cellIndex * (groupCount + 1);
-    const double total = cellCdf[groupCount];
-    if(not (total > 0.0) or not transport::IsFinite(total))
-    {
-        return 0.5 * (boundaries[0] + boundaries[groupCount]);
-    }
-    const double target = random * total;
-    std::size_t group = 0;
-    while(group + 1 < groupCount and cellCdf[group + 1] < target)
-    {
-        ++group;
-    }
-    const double lower = cellCdf[group];
-    const double upper = cellCdf[group + 1];
-    const double width = upper - lower;
-    const double fraction = (width > 0.0)? (target - lower) / width : 0.5;
-    return boundaries[group] + fraction * (boundaries[group + 1] - boundaries[group]);
+    return ddmc::SampleFrequencyFromCellCdf(boundaries, cdf, groupCount, cellIndex, random);
 }
 
 template<typename PointT>
@@ -269,10 +254,12 @@ STORM_SOURCE_INLINE void EmitThermalPacket(const SampleViews<PointT> &views, con
         LorentzBoostToLab(velocity, scalars.frequency, scalars.weight, views.cellVelocities[cellIndex], views.invClight2, views.speedOfLight);
     }
 
+    scalars.timeLeft = views.fullDt * CounterRNG::unitOpen(rngKey, scalars.rngCounter++);
+
     if(views.sampleFrequency != 0)
     {
         const double random = CounterRNG::unitOpen(rngKey, scalars.rngCounter++);
-        const double freqCo = SampleFrequencyFromCdf(views.energyBoundaries, views.thermalEmissionCdf, views.groupCount, cellIndex, random);
+        const double freqCo = ddmc::SampleFrequencyFromCellCdf(views.energyBoundaries, views.thermalEmissionCdf, views.groupCount, cellIndex, random, views.thermalFrequencyLaw, views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
         if(views.applyLabFrame != 0 and views.cellVelocities != nullptr)
         {
             const double doppler = DopplerShift(velocity, views.cellVelocities[cellIndex], views.invClight2);

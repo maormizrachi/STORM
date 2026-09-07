@@ -5,6 +5,7 @@
 #include <limits>
 
 #include "../transport/TransportPortability.hpp"
+#include "../PortableOpacity.hpp"
 
 namespace STORM::ddmc {
 
@@ -164,12 +165,16 @@ double SampleFrequencyInGroup(const double *boundaries,
 }
 
 STORM_TRANSPORT_INLINE
+double SampleBoseEinstein0FrequencyInGroup(const double *boundaries,
+    std::size_t groupCount, std::size_t group, double kT, double random);
+
+STORM_TRANSPORT_INLINE
 double SampleFrequencyInGroupFromCellCdf(const double *boundaries,
                                          const double *cdf,
                                          const std::size_t groupCount,
                                          const std::size_t cellIndex,
                                          const std::size_t group,
-                                         double random)
+                                         double random, ThermalFrequencyLaw law = ThermalFrequencyLaw::LinearInGroup, double kT = 0.0)
 {
     if(boundaries == nullptr || cdf == nullptr || group >= groupCount)
     {
@@ -192,6 +197,10 @@ double SampleFrequencyInGroupFromCellCdf(const double *boundaries,
     }
     const double target = lower + random * (upper - lower);
     const double fraction = (target - lower) / (upper - lower);
+    if(law == ThermalFrequencyLaw::BoseEinstein0)
+    {
+        return SampleBoseEinstein0FrequencyInGroup(boundaries, groupCount, group, kT, fraction);
+    }
     return SampleFrequencyInGroup(boundaries, groupCount, group, fraction);
 }
 
@@ -322,7 +331,7 @@ double SamplePlanckFrequencyInGroup(const double *boundaries,
 }
 
 STORM_TRANSPORT_INLINE
-double SampleFrequencyFromCellCdf(const double *boundaries, const double *cdf, const std::size_t groupCount, const std::size_t cellIndex, const double random)
+double SampleFrequencyFromCellCdf(const double *boundaries, const double *cdf, const std::size_t groupCount, const std::size_t cellIndex, const double random, ThermalFrequencyLaw law = ThermalFrequencyLaw::LinearInGroup, double kT = 0.0)
 {
     if(boundaries == nullptr || cdf == nullptr || groupCount == 0)
     {
@@ -345,7 +354,7 @@ double SampleFrequencyFromCellCdf(const double *boundaries, const double *cdf, c
     const double width = upper - lower;
     const double fraction = width > 0.0 ? (target - lower) / width : 0.5;
     return SampleFrequencyInGroupFromCellCdf(
-        boundaries, cdf, groupCount, cellIndex, group, fraction);
+        boundaries, cdf, groupCount, cellIndex, group, fraction, law, kT);
 }
 
 } // namespace STORM::ddmc

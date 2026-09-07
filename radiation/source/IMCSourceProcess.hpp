@@ -72,6 +72,8 @@ public:
         views.cellCount = owner_.componentGrid().GetPointNo();
         views.groupCount = owner_.parameters_.withMultigroupOpacity
             ? NumGroups : 0;
+        views.thermalKT = owner_.thermalKT_.data();
+        views.thermalFrequencyLaw = owner_.opacity_->GetPortableThermalFrequencyLaw();
         views.speedOfLight = owner_.lightSpeed();
         views.invClight2 = owner_.inverseLightSpeedSquared();
         views.sampleFrequency =
@@ -95,13 +97,14 @@ public:
 
     void emitPlanToHost(
         const source::Plan &plan,
-        std::vector<MCParticle> &newParticles)
+        std::vector<MCParticle> &newParticles, double fullDt)
     {
         if(plan.totalPhotons == 0)
         {
             return;
         }
-        const source::SampleViews<PointT> views = this->hostSampleViews();
+        source::SampleViews<PointT> views = this->hostSampleViews();
+        views.fullDt = fullDt;
         newParticles.resize(plan.totalPhotons);
         for(std::size_t slot = 0; slot < plan.totalPhotons; ++slot)
         {
@@ -137,7 +140,7 @@ public:
                 owner_.cells_[cellIndex]);
             particle.sourceCellID = particle.cellID;
             particle.id = std::numeric_limits<std::size_t>::max();
-            particle.timeLeft = 0.0;
+            particle.timeLeft = scalars.timeLeft;
             particle.steps = 0;
 #ifdef MONTECARLO_POLARIZATION
             if(owner_.polarizationEnabled())
@@ -558,12 +561,14 @@ public:
 
         const bool useSharedThermalEmit =
             !owner_.postProcessExternalSourceMode_ &&
-            !owner_.adaptiveSourceCellGroupScoresEnabled_;
+            !owner_.adaptiveSourceCellGroupScoresEnabled_ &&
+            (!owner_.parameters_.withMultigroupOpacity ||
+             owner_.opacity_->GetPortableThermalFrequencyLaw() != ThermalFrequencyLaw::Unsupported);
         if(useSharedThermalEmit)
         {
             if(materializeHost)
             {
-                this->emitPlanToHost(plan, newParticles);
+                this->emitPlanToHost(plan, newParticles, fullDt);
             }
             return newParticles;
         }

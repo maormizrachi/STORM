@@ -110,23 +110,24 @@ class IMCTransportProcess final : public IMCComponentBase<Owner>
         template<typename ParticleU, typename ViewsU>
         STORM_TRANSPORT_INLINE
         void TallyGroupRadiation(
-            const ParticleU &,
+            const ParticleU &particle,
             const ViewsU &,
             const std::size_t cellIndex,
-            const transport::IMCOpacityState &opacityState,
+            const transport::IMCOpacityState &,
             const double integratedEnergy) const
         {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
             (void) cellIndex;
-            (void) opacityState;
+            (void) particle;
             (void) integratedEnergy;
 #else
+            const std::size_t group = this->owner->opacity_->findGroup(particle.frequency, this->owner->energyBoundaries_);
             if(this->owner->parameters_.withEgTimeAvg &&
-               opacityState.group < NumGroups)
+               group < NumGroups)
             {
                 STORM_TRANSPORT_ACCUMULATE(
                     this->owner->pendingGroupRadiationEnergy_[
-                        cellIndex * NumGroups + opacityState.group],
+                        cellIndex * NumGroups + group],
                     integratedEnergy);
             }
 #endif
@@ -265,6 +266,11 @@ public:
             checkScalar("tally.material", sharedTally.material, legacyTally.material);
             checkScalar("tally.radiation", sharedTally.radiation, legacyTally.radiation);
             checkScalar("tally.total", sharedTally.total, legacyTally.total);
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                const std::string name = "tally.group[" + std::to_string(group) + "]";
+                checkScalar(name.c_str(), sharedTally.group[group], legacyTally.group[group]);
+            }
             if(mismatch.empty() &&
                sharedParticle.rngCounter != legacyParticle.rngCounter)
             {

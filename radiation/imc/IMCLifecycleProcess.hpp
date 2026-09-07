@@ -349,6 +349,8 @@ public:
         owner_.pendingRadiationEnergy_.assign(cellCount, 0.0);
         owner_.pendingGroupRadiationEnergy_.assign(cellCount * NumGroups, 0.0);
         owner_.spectralAbsorptionScale_.assign(cellCount, 0.0);
+        owner_.groupAbsorptionOpacities_.clear();
+        owner_.thermalKT_.assign(cellCount, 0.0);
         owner_.thermalEmissionCdf_.assign(cellCount * (NumGroups + 1), 0.0);
     }
 
@@ -768,12 +770,11 @@ public:
                 }
             }
 
-            if(owner_.SharedFullIMCKernelEligible() ||
-               (owner_.parameters_.withDDMC &&
-                owner_.parameters_.withMultigroupOpacity) ||
-               (owner_.SharedRandomWalkKernelEligible() &&
-                owner_.parameters_.withMultigroupOpacity))
+            if(owner_.parameters_.withMultigroupOpacity && !owner_.parameters_.withCompton)
             {
+                const bool tabulated = owner_.opacity_->GetPortableAbsorptionLaw() == PortableAbsorptionLaw::PiecewiseConstant;
+                if(tabulated)
+                    owner_.groupAbsorptionOpacities_.resize(Ncells * NumGroups);
                 const double referenceEnergy =
                     owner_.energyBoundaries_[0];
                 const double referenceEnergyCubed =
@@ -785,6 +786,15 @@ public:
                             owner_.cells_[i], referenceEnergy);
                     owner_.spectralAbsorptionScale_[i] =
                         absorption * referenceEnergyCubed;
+                    owner_.thermalKT_[i] = units::k_boltz * owner_.cells_[i].temperature;
+                    if(tabulated)
+                    {
+                        for(std::size_t group = 0; group < NumGroups; ++group)
+                        {
+                            const double energy = 0.5 * (owner_.energyBoundaries_[group] + owner_.energyBoundaries_[group + 1]);
+                            owner_.groupAbsorptionOpacities_[i * NumGroups + group] = owner_.opacity_->CalcAbsorptionOpacity(owner_.cells_[i], energy);
+                        }
+                    }
                     const GroupArray upper =
                         owner_.opacity_->GetCumulativeOpacity(
                             owner_.cells_[i], owner_.energyBoundaries_);

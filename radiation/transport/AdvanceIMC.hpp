@@ -115,10 +115,12 @@ struct SpectralTableOpacityPolicy
         double energy = transportFrequency;
         if(views.energyBoundaries != nullptr)
         {
-            energy = (transportFrequency > views.energyBoundaries[0])? transportFrequency : views.energyBoundaries[0];
+            energy = ddmc::ClampFrequency(views.energyBoundaries, views.groupCount, transportFrequency);
         }
         const double energyCubed = energy * energy * energy;
         result.absorption = (views.spectralAbsorptionScale != nullptr and energyCubed > 0.0)? views.spectralAbsorptionScale[cellIndex] / energyCubed : views.absorptionOpacities[cellIndex];
+        if(views.groupAbsorptionOpacities != nullptr)
+            result.absorption = views.groupAbsorptionOpacities[cellIndex * views.groupCount + result.group];
         result.scattering = views.scatteringOpacities[cellIndex];
         result.fleck = views.fleckFactors[cellIndex];
         return result;
@@ -138,24 +140,26 @@ struct SpectralTableOpacityPolicy
         particle.velocity.z = mu * views.speedOfLight;
 
         particle.frequency *= dopplerShift;
+        particle.frequency = ddmc::ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
         if(not effectiveScatter or views.thermalEmissionCdf == nullptr or views.energyBoundaries == nullptr or views.groupCount == 0)
         {
             return;
         }
 
         const double reemitRandom = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
-        particle.frequency = ddmc::SampleFrequencyFromCellCdf(views.energyBoundaries, views.thermalEmissionCdf, views.groupCount, cellIndex, reemitRandom);
+        particle.frequency = ddmc::SampleFrequencyFromCellCdf(views.energyBoundaries, views.thermalEmissionCdf, views.groupCount, cellIndex, reemitRandom, views.thermalFrequencyLaw, views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
     }
 
     template<typename ParticleT, typename ViewsT>
     STORM_TRANSPORT_INLINE
-    void TallyGroupRadiation(const ParticleT &, const ViewsT &views, const std::size_t cellIndex, const IMCOpacityState &opacityState, const double integratedEnergy) const
+    void TallyGroupRadiation(const ParticleT &particle, const ViewsT &views, const std::size_t cellIndex, const IMCOpacityState &, const double integratedEnergy) const
     {
-        if(views.pendingGroupRadiationEnergy == nullptr or opacityState.group >= views.groupCount)
+        const std::size_t group = FindGroup(views, particle.frequency);
+        if(views.pendingGroupRadiationEnergy == nullptr or group >= views.groupCount)
         {
             return;
         }
-        STORM_TRANSPORT_ACCUMULATE(views.pendingGroupRadiationEnergy[cellIndex * views.groupCount + opacityState.group], integratedEnergy);
+        STORM_TRANSPORT_ACCUMULATE(views.pendingGroupRadiationEnergy[cellIndex * views.groupCount + group], integratedEnergy);
     }
 };
 

@@ -249,7 +249,10 @@ public:
     void UploadSpectral(
         const std::vector<double> &energyBoundaries,
         const std::vector<double> &absorptionScale,
-        const std::vector<double> &thermalEmissionCdf)
+        const std::vector<double> &thermalEmissionCdf,
+        const std::vector<double> &groupAbsorption = {},
+        const std::vector<double> &thermalKT = {},
+        ThermalFrequencyLaw thermalLaw = ThermalFrequencyLaw::LinearInGroup)
     {
         if(absorptionScale.size() != this->cellCount_)
         {
@@ -260,6 +263,12 @@ public:
         {
             throw std::runtime_error("GreyIMCData::UploadSpectral: CDF size mismatch");
         }
+        if((!groupAbsorption.empty() && groupAbsorption.size() != this->cellCount_ * groupCount) ||
+           (!thermalKT.empty() && thermalKT.size() != this->cellCount_))
+            throw std::runtime_error("GreyIMCData::UploadSpectral: spectral snapshot size mismatch");
+        CopyToDevice(groupAbsorption, this->groupAbsorptionOpacities_);
+        CopyToDevice(thermalKT, this->thermalKT_);
+        this->thermalFrequencyLaw_ = thermalLaw;
         CopyToDevice(energyBoundaries, this->energyBoundaries_);
         CopyToDevice(absorptionScale, this->spectralAbsorptionScale_);
         CopyToDevice(thermalEmissionCdf, this->thermalEmissionCdf_);
@@ -277,6 +286,8 @@ public:
         Resize(this->energyBoundaries_, 0);
         Resize(this->spectralAbsorptionScale_, 0);
         Resize(this->thermalEmissionCdf_, 0);
+        Resize(this->groupAbsorptionOpacities_, 0);
+        Resize(this->thermalKT_, 0);
         Resize(this->pendingGroupRadiationEnergy_, 0);
     }
 
@@ -563,8 +574,7 @@ public:
             std::memcpy(host + n, scatteringOpacities.data(), n * sizeof(double));
             std::memcpy(host + 2 * n, fleckFactors.data(), n * sizeof(double));
         }
-        this->cellTables_.modify_host();
-        this->cellTables_.sync_device();
+        SyncToDevice(this->cellTables_);
 
         Resize(this->pendingMaterialEnergy_, n);
         Resize(this->pendingRadiationEnergy_, n);
@@ -792,6 +802,9 @@ public:
             this->spectralAbsorptionScale_.d_view.data();
         result.thermalEmissionCdf =
             this->thermalEmissionCdf_.d_view.data();
+        result.groupAbsorptionOpacities = this->groupAbsorptionOpacities_.extent(0) ? this->groupAbsorptionOpacities_.d_view.data() : nullptr;
+        result.thermalKT = this->thermalKT_.extent(0) ? this->thermalKT_.d_view.data() : nullptr;
+        result.thermalFrequencyLaw = this->thermalFrequencyLaw_;
         result.pendingGroupRadiationEnergy =
             this->pendingGroupRadiationEnergy_.d_view.data();
         result.censusRadiationEnergy =
@@ -974,6 +987,10 @@ private:
     template<typename T>
     static void SyncToDevice(Kokkos::DualView<T*> &view)
     {
+        // Every caller has replaced the complete host snapshot. resize() may
+        // mark the device copy newer; explicitly discard that old sync state
+        // before declaring the replacement host data authoritative.
+        view.clear_sync_state();
         view.modify_host();
         view.sync_device();
     }
@@ -1013,6 +1030,9 @@ private:
     Kokkos::DualView<double*> energyBoundaries_;
     Kokkos::DualView<double*> spectralAbsorptionScale_;
     Kokkos::DualView<double*> thermalEmissionCdf_;
+    Kokkos::DualView<double*> groupAbsorptionOpacities_{"storm_group_absorption", 0};
+    Kokkos::DualView<double*> thermalKT_{"storm_thermal_kT", 0};
+    ThermalFrequencyLaw thermalFrequencyLaw_ = ThermalFrequencyLaw::LinearInGroup;
     Kokkos::DualView<std::uint8_t*> ddmcCellEligible_;
     Kokkos::DualView<double*> ddmcSigmaEnergyAbs_;
     Kokkos::DualView<double*> ddmcTotalLeakRate_;

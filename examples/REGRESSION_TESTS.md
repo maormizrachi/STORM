@@ -30,6 +30,7 @@ Defaults in parentheses.
 | `TAGS` | **Required.** `"serial"` or `"mpi"` |
 | `CHECK_FUNCTION` | **Required.** Validation function from `regression_checks.sh` |
 | `BUILD_TARGET` | CMake target name (directory name) |
+| `BINARY` | Executable path when a test reuses another target |
 | `RUN_COMMAND` | Command to run (binary for serial, `mpirun` for mpi) |
 | `TIMEOUT` | Max runtime in seconds (3600) |
 | `MPI_NP` | Number of MPI ranks (4) |

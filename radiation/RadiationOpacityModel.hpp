@@ -9,6 +9,7 @@
 #include <random>
 
 #include "elementary/PointOps.hpp"
+#include "PortableOpacity.hpp"
 #include <units/units.hpp>
 
 namespace STORM {
@@ -26,6 +27,13 @@ public:
     using GroupBoundaries = std::array<double, NumGroups + 1>;
 
     virtual ~RadiationOpacityModel() = default;
+
+    // Opting in also promises isotropic scattering and frequency-independent
+    // scattering opacity, as required by the portable transport policy.
+    virtual PortableAbsorptionLaw GetPortableAbsorptionLaw() const
+    { return PortableAbsorptionLaw::Unsupported; }
+    virtual ThermalFrequencyLaw GetPortableThermalFrequencyLaw() const
+    { return ThermalFrequencyLaw::Unsupported; }
 
     virtual double CalcPlanckOpacity(const CellT &cell) = 0;
 

@@ -29,6 +29,22 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
   get_filename_component(_storm_example_dir "${_storm_info_file}" DIRECTORY)
   get_filename_component(_storm_example_name "${_storm_example_dir}" NAME)
 
+  # Runtime regression variants may reuse a target built from another example
+  # directory.  This keeps one source of truth for cases that differ only by
+  # command-line arguments, such as IMC and DDMC.
+  file(STRINGS "${_storm_info_file}" _storm_build_target_lines
+    REGEX "^[ \\t]*BUILD_TARGET[ \\t]*=")
+  if(_storm_build_target_lines)
+    list(GET _storm_build_target_lines 0 _storm_build_target_line)
+    string(REGEX REPLACE
+      "^[^=]*=[ \\t]*[\"']?([^\"' \\t]+)[\"']?.*$" "\\1"
+      _storm_build_target "${_storm_build_target_line}")
+    if(TARGET "${_storm_build_target}")
+      message(STATUS "STORM regression example: ${_storm_example_name} reuses ${_storm_build_target}")
+      continue()
+    endif()
+  endif()
+
   # REGRESSION_INFO is shell-sourceable, but CMake only needs the TAGS value
   # to decide whether an MPI-only example is available in this build.
   file(STRINGS "${_storm_info_file}" _storm_tags_lines

@@ -814,7 +814,11 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
                         ++progressStepCounter;
                         if((progressStepCounter % communicationProgressInterval) == 0)
                         {
-                            this->engine->Poll();
+                            // Histories in opaque material can outlast an entire
+                            // batch. Progress queued sends and reallocations as
+                            // well as completion queues while they are running.
+                            this->engine->Progress();
+                            this->engine->Flush(false);
                         }
                         if((progressStepCounter % stuckParticleWarnInterval) == 0 && particle.steps > 100000)
                         {

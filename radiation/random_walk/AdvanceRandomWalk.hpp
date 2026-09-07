@@ -322,7 +322,10 @@ RandomWalkResult TryAdvanceRandomWalk(ParticleT &particle, const ViewsT &views)
             const double cdfUpper = cdf[group + 1];
             const double width = cdfUpper - cdfLower;
             const double fraction = width > 0.0 ? (target - cdfLower) / width : 0.5;
-            particle.frequency = views.energyBoundaries[group] + fraction * (views.energyBoundaries[group + 1] - views.energyBoundaries[group]);
+            particle.frequency = ddmc::SampleFrequencyInGroupFromCellCdf(
+                views.energyBoundaries, views.thermalEmissionCdf, views.groupCount,
+                cellIndex, group, fraction, views.thermalFrequencyLaw,
+                views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
         }
         else
         {

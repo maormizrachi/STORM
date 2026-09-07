@@ -69,6 +69,7 @@ struct MovingSlabExtensives
 class MovingSlabEOS
 {
 public:
+
     MovingSlabEOS(double cvSlab, double cvVac, double rhoSlab, double rhoVac)
         : cvPerMassSlab_(cvSlab / rhoSlab), cvPerMassVac_(cvVac / rhoVac),
           rhoSlab_(rhoSlab)
@@ -145,6 +146,11 @@ class MovingSlabOpacity32 final
     : public STORM::RadiationOpacityModel<Vector3D, Grid, MovingSlabCell, G>
 {
 public:
+    STORM::PortableAbsorptionLaw GetPortableAbsorptionLaw() const override
+    { return STORM::PortableAbsorptionLaw::PiecewiseConstant; }
+    STORM::ThermalFrequencyLaw GetPortableThermalFrequencyLaw() const override
+    { return STORM::ThermalFrequencyLaw::LinearInGroup; }
+
     using Base = STORM::RadiationOpacityModel<Vector3D, Grid, MovingSlabCell, G>;
     using GroupArray = typename Base::GroupArray;
     using GroupBoundaries = typename Base::GroupBoundaries;

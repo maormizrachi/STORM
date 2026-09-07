@@ -86,6 +86,11 @@ template<typename PointT, typename GridT, typename CellT>
 class MovingSlabOpacity final : public RadiationOpacityModel<PointT, GridT, CellT, N_OPACITY_GROUPS>
 {
 public:
+    STORM::PortableAbsorptionLaw GetPortableAbsorptionLaw() const override
+    { return STORM::PortableAbsorptionLaw::PiecewiseConstant; }
+    STORM::ThermalFrequencyLaw GetPortableThermalFrequencyLaw() const override
+    { return STORM::ThermalFrequencyLaw::LinearInGroup; }
+
     using Base = RadiationOpacityModel<PointT, GridT, CellT, N_OPACITY_GROUPS>;
     using GroupArray = typename Base::GroupArray;
     using GroupBoundaries = typename Base::GroupBoundaries;

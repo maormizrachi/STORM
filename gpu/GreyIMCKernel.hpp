@@ -32,6 +32,9 @@ struct GreyIMCViews
     transport::RandomWalkView randomWalk;
     const double *energyBoundaries = nullptr;
     const double *spectralAbsorptionScale = nullptr;
+    const double *groupAbsorptionOpacities = nullptr;
+    const double *thermalKT = nullptr;
+    ThermalFrequencyLaw thermalFrequencyLaw = ThermalFrequencyLaw::LinearInGroup;
     const double *thermalEmissionCdf = nullptr;
     double *pendingGroupRadiationEnergy = nullptr;
     double *censusRadiationEnergy = nullptr;

@@ -577,38 +577,7 @@ public:
         }
         if(counters.appended > 0)
         {
-            STORM_PROFILE_REGION("storm/transport/splits");
-            this->EnsureCapacity(this->nextPackets_, totalSurvivors);
-            this->EnsureCapacity(this->nextColdPackets_, totalSurvivors);
-            auto expandedPackets = this->nextPackets_;
-            auto expandedColdPackets = this->nextColdPackets_;
-            auto splitCounts = this->survivorSplitCounts_;
-            const std::size_t primarySurvivors = counters.survivor;
-            Kokkos::parallel_scan("storm_expand_ddmc_interface_splits",
-                Kokkos::RangePolicy<>(0, primarySurvivors),
-                KOKKOS_LAMBDA(const std::size_t survivor, std::size_t &splitOffset, const bool final)
-                {
-                    const std::size_t copies = splitCounts(survivor);
-                    if(final && copies > 0)
-                    {
-                        const DeviceParticle primary =
-                            expandedPackets(survivor);
-                        DeviceParticleCold splitCold =
-                            expandedColdPackets(survivor);
-                        splitCold.id =
-                            std::numeric_limits<particle_id_t>::max();
-                        const std::size_t output =
-                            primarySurvivors + splitOffset;
-                        for(std::size_t copy = 0; copy < copies; ++copy)
-                        {
-                            expandedPackets(output + copy) = primary;
-                            expandedColdPackets(output + copy) = splitCold;
-                        }
-                    }
-                    splitOffset += copies;
-                });
-            Kokkos::fence("KokkosLocalTransportExecutor split expansion");
-            ++this->metrics_.synchronizationCount;
+            this->ExpandInterfaceSplits(totalSurvivors, counters.survivor);
         }
         completed.deviceSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - deviceStart).count();
         completed.launchCount = 1 + (counters.appended > 0 ? 1 : 0);
@@ -757,6 +726,45 @@ private:
         this->metrics_.remoteCount += this->inFlightRemoteCount_;
         this->metrics_.pipelinedRemoteCount += this->inFlightRemoteCount_;
     }
+
+public:
+    // NVCC must be able to name the enclosing function of an extended lambda.
+    // Only the kernel launch helpers are public; executor state remains private.
+    void ExpandInterfaceSplits(const std::size_t totalSurvivors,
+                               const std::size_t primarySurvivors)
+    {
+        STORM_PROFILE_REGION("storm/transport/splits");
+        this->EnsureCapacity(this->nextPackets_, totalSurvivors);
+        this->EnsureCapacity(this->nextColdPackets_, totalSurvivors);
+        auto expandedPackets = this->nextPackets_;
+        auto expandedColdPackets = this->nextColdPackets_;
+        auto splitCounts = this->survivorSplitCounts_;
+        Kokkos::parallel_scan("storm_expand_ddmc_interface_splits",
+            Kokkos::RangePolicy<>(0, primarySurvivors),
+            KOKKOS_LAMBDA(const std::size_t survivor, std::size_t &splitOffset, const bool final)
+            {
+                const std::size_t copies = splitCounts(survivor);
+                if(final && copies > 0)
+                {
+                    const DeviceParticle primary =
+                        expandedPackets(survivor);
+                    DeviceParticleCold splitCold =
+                        expandedColdPackets(survivor);
+                    splitCold.id =
+                        std::numeric_limits<particle_id_t>::max();
+                    const std::size_t output =
+                        primarySurvivors + splitOffset;
+                    for(std::size_t copy = 0; copy < copies; ++copy)
+                    {
+                        expandedPackets(output + copy) = primary;
+                        expandedColdPackets(output + copy) = splitCold;
+                    }
+                }
+                splitOffset += copies;
+            });
+        Kokkos::fence("KokkosLocalTransportExecutor split expansion");
+        ++this->metrics_.synchronizationCount;
+        }
 
     void LaunchGreyIMCTransport(const GreyIMCViews<DeviceVec3> &views, const std::size_t launchCount, const std::size_t remoteOffset)
     {
@@ -919,6 +927,7 @@ private:
             this->compactedSurvivorSplitCounts_);
     }
 
+private:
     template<typename ViewT>
     void EnsureCapacity(ViewT &view, std::size_t required)
     {
@@ -929,6 +938,7 @@ private:
         }
     }
 
+public:
     void CompactCappedWave(const std::size_t launchCount, const std::size_t totalSurvivors, const std::size_t previousActiveCount)
     {
         const std::size_t leftoverCount = previousActiveCount - launchCount;
@@ -1019,6 +1029,7 @@ private:
             });
     }
 
+private:
     void ReserveForIngest(const std::size_t incoming)
     {
         const std::size_t required = this->activeCount_ + incoming;
