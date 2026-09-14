@@ -30,9 +30,36 @@ public:
           photonsPerFace_(photonsPerFace)
     {}
 
+    // Energy ledger. Removed energy is classified by where the packet left: the source
+    // disc, the pipe exit disc, any other box face, or nowhere near a box face at all --
+    // the last would be a packet silently dropped at an interior face.
+    struct Ledger
+    {
+        double injected = 0.0, sourceDisc = 0.0, exitDisc = 0.0, sideWall = 0.0, interior = 0.0;
+        std::size_t interiorCount = 0;
+    };
+    const Ledger &ledger() const { return ledger_; }
+    void resetLedger() { ledger_ = Ledger{}; }
+
+    void tallyRemoval(const Particle<PointT> &particle)
+    {
+        const auto &[lower, upper] = this->grid.GetBoxCoordinates();
+        const double radius = std::sqrt(particle.location.y * particle.location.y +
+                                        particle.location.z * particle.location.z);
+        constexpr double tolerance = 1.0e-5;
+        const bool onLowerX = std::abs(particle.location.x - lower.x) < tolerance;
+        const bool onUpperX = std::abs(particle.location.x - upper.x) < tolerance;
+        const bool onSide = std::abs(std::abs(particle.location.y) - upper.y) < tolerance or
+                            std::abs(std::abs(particle.location.z) - upper.z) < tolerance;
+        if(onLowerX and radius < 0.5) ledger_.sourceDisc += particle.weight;
+        else if(onUpperX and radius < 0.5) ledger_.exitDisc += particle.weight;
+        else if(onLowerX or onUpperX or onSide) ledger_.sideWall += particle.weight;
+        else { ledger_.interior += particle.weight; ++ledger_.interiorCount; }
+    }
+
     ParticleStatus apply(Particle<PointT> &particle) override
     {
-        (void) particle;
+        tallyRemoval(particle);
         return ParticleStatus::REMOVE;
     }
 
@@ -74,6 +101,7 @@ public:
 
                 double particleEnergy = units::sigma_sb * temperatureFourth * this->grid.GetArea(faceIndex) * fullDt /
                                         static_cast<double>(photonsPerFace_);
+                ledger_.injected += particleEnergy * static_cast<double>(photonsPerFace_);
                 for(std::size_t j = 0; j < photonsPerFace_; ++j)
                 {
                     particles.emplace_back();
@@ -107,6 +135,7 @@ public:
     }
 
 private:
+    Ledger ledger_;
     const std::vector<int> &materialFlags_;
     double driveTemperature_;
     std::size_t photonsPerFace_;

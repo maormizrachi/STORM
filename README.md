@@ -74,6 +74,7 @@ Executables are placed inside each example's subdirectory. Each example has its 
 | [`densmore2012`](examples/densmore2012/) | Densmore et al. (2012) step-opacity benchmark | Cartesian | Serial / MPI |
 | [`moving_slab`](examples/moving_slab/) | McClarren & Gentile (2021) 124-group moving slab | Voronoi | MPI |
 | [`till_compton_mc`](examples/till_compton_mc/) | Till, McGraw & Warsa Compton equilibration | Cartesian | Serial |
+| [`crooked_pipe`](examples/crooked_pipe/) | Graziani crooked-pipe IMC (Steinberg & Heizler 2022) | Voronoi | MPI |
 
 The Till-Compton example uses the CMMC submodule at `deps/CMMC`. Clone STORM
 with submodules, or initialize it explicitly with

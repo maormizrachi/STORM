@@ -14,14 +14,15 @@ template<typename PointT, typename GridT>
 class CrookedPipeOpacity : public RadiationOpacityModel<PointT, GridT, RadiationCell, 1>
 {
 public:
-    CrookedPipeOpacity(const std::vector<int> &materialFlags, const std::vector<RadiationCell> &cells)
-        : materialFlags_(materialFlags), cells_(&cells)
+    CrookedPipeOpacity(const std::vector<int> &materialFlags, const std::vector<RadiationCell> &cells,
+                       double thickOpacity = 2000.0, double thinOpacity = 0.2)
+        : materialFlags_(materialFlags), cells_(&cells), thickOpacity_(thickOpacity), thinOpacity_(thinOpacity)
     {}
 
     double CalcPlanckOpacity(const RadiationCell &cell) override
     {
         std::size_t cellIndex = static_cast<std::size_t>(&cell - cells_->data());
-        return materialFlags_[cellIndex] == 0 ? 2000.0 : 0.2;
+        return materialFlags_[cellIndex] == 0 ? thickOpacity_ : thinOpacity_;
     }
 
     double CalcScatteringOpacity(const RadiationCell &) override
@@ -32,6 +33,8 @@ public:
 private:
     const std::vector<int> &materialFlags_;
     const std::vector<RadiationCell> *cells_;
+    double thickOpacity_;
+    double thinOpacity_;
 };
 
 } // namespace examples
