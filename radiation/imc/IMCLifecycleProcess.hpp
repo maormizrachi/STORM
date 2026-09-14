@@ -335,6 +335,7 @@ public:
 
     void resetTransportTallies(std::size_t cellCount)
     {
+        owner_.deviceExecutor_->InvalidateHostTransportViews();
         owner_.pendingMaterialEnergy_.assign(cellCount, 0.0);
         owner_.pendingTotalEnergy_.assign(cellCount, 0.0);
         owner_.pendingMomentum_.assign(cellCount, PointT{});

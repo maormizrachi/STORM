@@ -370,6 +370,7 @@ public:
     }
     void setObserver(std::shared_ptr<Observer> observer)
     {
+        this->deviceExecutor_->InvalidateHostTransportViews();
         this->observer_ = std::move(observer);
         if(this->observer_)
         {
@@ -499,7 +500,9 @@ public:
     bool SharedRandomWalkKernelEligible() const;
     bool SharedDDMCKernelEligible() const;
     bool SharedDDMCEventKernelEligible() const;
-    gpu::GreyIMCViews<PointT> GetHostTransportViews();
+    // Non-owning view, valid for transport after preStep and until the next
+    // preStep. Do not retain it across changes to geometry or material data.
+    const gpu::GreyIMCViews<PointT> &GetHostTransportViews();
 
     // Set while the differential harness replays a step through the legacy
     // event code so both paths can be compared on identical input.
@@ -538,6 +541,7 @@ public:
     };
 
 private:
+    std::size_t sourceGridBuildGeneration_ = std::numeric_limits<std::size_t>::max();
 
     std::vector<MCParticle> generateParticles(double fullDt);
     void validateGridSizedState() const;

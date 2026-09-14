@@ -104,9 +104,17 @@ template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
                   TraitsT, PositionSamplerT>::updateGridData(void)
 {
+    if(this->deviceExecutor_)
+        this->deviceExecutor_->InvalidateHostTransportViews();
     Base::updateGridData();
     auto &data = this->gridData;
     const std::size_t Ncells = this->grid.GetPointNo();
+    const std::size_t buildGeneration = this->grid.GetBuildGeneration();
+    if(this->sourceGridBuildGeneration_ == buildGeneration && data.tetOffsets.size() == Ncells + 1)
+        return;
+
+    // Source tetrahedra depend only on geometry, just like the face data
+    // cached by the base class. Rebuild after mesh movement or redistribution.
     const auto &verts = this->grid.GetFacePoints();
     data.vertices.assign(verts.begin(), verts.end());
     data.tetOffsets.assign(Ncells + 1, 0);
@@ -129,6 +137,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
         }
         data.tetOffsets[i + 1] = data.tetCumVolumes.size();
     }
+    this->sourceGridBuildGeneration_ = buildGeneration;
 }
 
 #ifdef STORM_WITH_GPU
@@ -235,7 +244,7 @@ bool RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
          typename EOST, std::size_t NumGroups, typename OpacityT,
          typename TraitsT, typename PositionSamplerT>
-gpu::GreyIMCViews<PointT>
+const gpu::GreyIMCViews<PointT> &
 RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
              TraitsT, PositionSamplerT>::GetHostTransportViews()
 {

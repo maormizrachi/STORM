@@ -28,11 +28,17 @@ public:
     explicit IMCDeviceExecutor(Owner &owner) : Base(owner)
     {}
 
+    void InvalidateHostTransportViews()
+    {
+        hostTransportViewsValid_ = false;
+    }
+
     // Build/synchronize the device-side transport data for a completed
-    // pre-step.  The CPU configuration intentionally compiles this as a
-    // no-op, keeping the lifecycle process independent of Kokkos headers.
+    // pre-step. Host views are rebuilt lazily after all pre-step allocations;
+    // device synchronization additionally runs when GPU support is enabled.
     void prepareStep()
     {
+        this->InvalidateHostTransportViews();
         this->PrepareSlabTransport();
         ddmcThermalSamplingEligible_ = this->ThermalSamplingSnapshotEligible();
         const bool ddmcEventKernelEligible = this->SharedDDMCEventKernelEligible();
@@ -354,7 +360,23 @@ public:
                !owner_.polarizationEnabled();
     }
 
-    gpu::GreyIMCViews<PointT> GetHostTransportViews()
+    const gpu::GreyIMCViews<PointT> &GetHostTransportViews()
+    {
+        // Geometry, material tables, DDMC snapshots and tally storage are
+        // fixed during transport. prepareStep invalidates these pointers on
+        // every step, including after mesh changes or vector reallocations.
+        // The differential harness can toggle kernel eligibility mid-step.
+        if(!hostTransportViewsValid_ || hostViewsForceLegacy_ != owner_.imcDiffForceLegacy_)
+        {
+            hostTransportViews_ = this->BuildHostTransportViews();
+            hostViewsForceLegacy_ = owner_.imcDiffForceLegacy_;
+            hostTransportViewsValid_ = true;
+        }
+        return hostTransportViews_;
+    }
+
+private:
+    gpu::GreyIMCViews<PointT> BuildHostTransportViews()
     {
         gpu::GreyIMCViews<PointT> result;
         const auto &gridData = owner_.componentGridData();
@@ -435,6 +457,7 @@ public:
         return result;
     }
 
+public:
     bool SharedFullIMCKernelEligible() const
     {
 #if STORM_DEBUG
@@ -565,6 +588,9 @@ private:
     }
 
     ddmc::HostSnapshot<PointT> ddmcSnapshot_;
+    gpu::GreyIMCViews<PointT> hostTransportViews_;
+    bool hostTransportViewsValid_ = false;
+    bool hostViewsForceLegacy_ = false;
     bool ddmcThermalSamplingEligible_ = true;
     bool slabTransport_ = false;
     double slabBounds_[4] = {};

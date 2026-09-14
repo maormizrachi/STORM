@@ -180,7 +180,7 @@ public:
 
             if(owner_.SharedRandomWalkKernelEligible())
             {
-                gpu::GreyIMCViews<PointT> views =
+                const gpu::GreyIMCViews<PointT> &views =
                     owner_.GetHostTransportViews();
                 transport::RandomWalkResult result =
                     transport::TryAdvanceRandomWalk(particle, views);
