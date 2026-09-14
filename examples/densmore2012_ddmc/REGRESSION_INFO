@@ -1,0 +1,10 @@
+# Densmore 2012 DDMC variant of the primary structured-grid example.
+TEST_ID="densmore2012_ddmc"
+TAGS="mpi"
+CATEGORY="physics"
+BUILD_TARGET="densmore2012"
+BINARY="{project_root}/examples/densmore2012/densmore2012"
+MPI_NP=4
+RUN_ARGS=["--ddmc"]
+CHECK_FUNCTION="check_densmore2012_ddmc_case"
+TIMEOUT=1800

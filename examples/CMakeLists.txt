@@ -1,4 +1,4 @@
-# Build one executable for every regression example.
+# Build regression examples, with a second target for dual-mode examples.
 #
 # REGRESSION_INFO is deliberately the source of truth here as well as for
 # regression_tests/run_all.sh.  A new example therefore only needs a
@@ -56,7 +56,9 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
     set(_storm_example_requires_mpi OFF)
   endif()
 
-  if(_storm_example_requires_mpi AND NOT STORM_WITH_MPI AND NOT MPI)
+  file(STRINGS "${_storm_info_file}" _storm_dual_mode
+    REGEX "^DUAL_MODE=1$")
+  if(_storm_example_requires_mpi AND NOT _storm_dual_mode AND NOT STORM_WITH_MPI AND NOT MPI)
     message(STATUS
       "Skipping ${_storm_example_name}: REGRESSION_INFO marks it as MPI "
       "but this build has MPI disabled")
@@ -120,6 +122,21 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
     "STORM_DATA_DIR=\"${_storm_example_dir}\"")
   set_target_properties("${_storm_example_name}" PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${_storm_example_dir}")
+
+  # Keep a stable serial target name in both MPI and standalone serial builds.
+  # Both targets share the main source and reference-data directory.
+  if(_storm_dual_mode)
+    add_executable("${_storm_example_name}_serial"
+      ${_storm_example_sources} ${_storm_example_extra_sources})
+    target_link_libraries("${_storm_example_name}_serial" PRIVATE storm)
+    target_include_directories("${_storm_example_name}_serial" PRIVATE ${_storm_example_include_dirs})
+    target_compile_definitions("${_storm_example_name}_serial" PRIVATE
+      "STORM_DATA_DIR=\"${_storm_example_dir}\"")
+    target_compile_options("${_storm_example_name}_serial" PRIVATE
+      -USTORM_WITH_MPI -UMADVORO_WITH_MPI -URICH_MPI -USPATIAL_DS_WITH_MPI -U__WITH_MPI)
+    set_target_properties("${_storm_example_name}_serial" PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${_storm_example_dir}")
+  endif()
 
   if(NOT _storm_example_requires_mpi AND STORM_WITH_MPI)
     target_compile_options("${_storm_example_name}" PRIVATE

@@ -51,6 +51,10 @@ Serial runs disable network overlap because there are no remote ranks.
 - `new_per_cell` -- photon packets per cell per step (default 50)
 - `boundary_per_cell` -- boundary source photon packets per cell (default 100)
 
+Pass `--ddmc` to select multigroup DDMC instead of random walk. The regression
+matrix reuses this executable for the normal four-rank MPI case, the four-rank
+DDMC case, and the one-rank non-MPI case.
+
 ## Parameters you can modify
 
 | Parameter | Location | Description |
@@ -80,3 +84,5 @@ python3 plot_densmore.py
 ## Example output
 
 <img src="densmore2012.png?raw=true" alt="Densmore 2012 temperature profile comparison" width="600"/>
+
+THUNDER discovers both `densmore2012` (MPI) and `densmore2012_serial` (serial) from this directory through `DUAL_MODE=1`. Both targets compile this `main.cpp` and use this `data/` directory. The serial executable is written here as `densmore2012_serial`; there is no separate serial source directory. Each test runs in its own campaign artifact directory.

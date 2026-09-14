@@ -20,8 +20,8 @@
  * Supports both serial and MPI-parallel execution.
  *
  * Usage:
- *   Serial:       ./densmore2012 [Nx] [new_per_cell] [boundary_per_cell] [comb|none] [iterations] [dt_scale] [opacity_scale] [materialize_each_step]
- *   MPI parallel: mpirun -np N ./densmore2012 [Nx] [new_per_cell] [boundary_per_cell] [comb|none] [iterations] [dt_scale] [opacity_scale] [materialize_each_step]
+ *   Serial:       ./densmore2012 [--ddmc] [Nx] [new_per_cell] [boundary_per_cell] [comb|none] [iterations] [dt_scale] [opacity_scale] [materialize_each_step]
+ *   MPI parallel: mpirun -np N ./densmore2012 [--ddmc] [Nx] [new_per_cell] [boundary_per_cell] [comb|none] [iterations] [dt_scale] [opacity_scale] [materialize_each_step]
  */
 
 #include <iostream>
@@ -126,17 +126,34 @@ int main(int argc, char *argv[])
                                     DensmoreEOS, G,
                                     STORM::examples::DensmoreOpacity<Vector3D, Grid>>;
 
-    size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 512;
-    size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 16;
-    size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
+    // THUNDER runs MPI and serial targets built from this shared source.
+    bool useDDMC = false;
+    std::vector<std::string> positionalArgs;
+    positionalArgs.reserve(static_cast<size_t>(argc));
+    for(int argIndex = 1; argIndex < argc; ++argIndex)
+    {
+        const std::string argument(argv[argIndex]);
+        if(argument == "--ddmc")
+        {
+            useDDMC = true;
+        }
+        else
+        {
+            positionalArgs.push_back(argument);
+        }
+    }
+
+    size_t Nx = positionalArgs.size() >= 1 ? std::stoul(positionalArgs[0]) : 512;
+    size_t newPhotonsPerCell = positionalArgs.size() >= 2 ? std::stoul(positionalArgs[1]) : 16;
+    size_t boundaryPhotonsPerCell = positionalArgs.size() >= 3 ? std::stoul(positionalArgs[2]) : 100;
     const bool noPopulationControl =
-        argc >= 5 && std::string(argv[4]) == "none";
+        positionalArgs.size() >= 4 && positionalArgs[3] == "none";
     const double dtScale =
-        argc >= 7 ? std::stod(argv[6]) : 1.0;
+        positionalArgs.size() >= 6 ? std::stod(positionalArgs[5]) : 1.0;
     const double opacityScale =
-        argc >= 8 ? std::stod(argv[7]) : 1.0;
+        positionalArgs.size() >= 7 ? std::stod(positionalArgs[6]) : 1.0;
     const bool materializeEachStep =
-        argc >= 9 && std::stoul(argv[8]) != 0;
+        positionalArgs.size() >= 8 && std::stoul(positionalArgs[7]) != 0;
 
     {
 
@@ -152,9 +169,9 @@ int main(int argc, char *argv[])
         double tf = 1e-9;
         double dt = 5e-12 * dtScale;
         size_t iterations = static_cast<size_t>(tf / dt);
-        if(argc >= 6)
+        if(positionalArgs.size() >= 5)
         {
-            iterations = std::stoul(argv[5]);
+            iterations = std::stoul(positionalArgs[4]);
             tf = iterations * dt;
         }
 
@@ -195,6 +212,7 @@ int main(int argc, char *argv[])
             std::cout << "new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << std::endl;
             std::cout << "population_control="
                       << (noPopulationControl ? "none" : "comb")
+                      << ", transport=" << (useDDMC ? "DDMC" : "IMC + random walk")
                       << ", opacity_scale=" << opacityScale
                       << ", materialize_each_step="
                       << materializeEachStep
@@ -225,12 +243,18 @@ int main(int argc, char *argv[])
 
         STORM::RadiationIMCParameters<G> imcParams;
         imcParams.newPhotonsPerCell = newPhotonsPerCell;
-        imcParams.withRandomWalk = true;
+        // DDMC and random walk are alternative optically thick transport
+        // accelerators. Keep the default random-walk path unchanged and
+        // select multigroup DDMC only when requested.
+        imcParams.withRandomWalk = !useDDMC;
         imcParams.withSlabTransport =
-            std::getenv("STORM_DENSMORE_EXPLICIT_WALLS") == nullptr;
+            !useDDMC && std::getenv("STORM_DENSMORE_EXPLICIT_WALLS") == nullptr;
         if(rank == 0)
             std::cout << "slab_transport=" << imcParams.withSlabTransport << std::endl;
         imcParams.withMultigroupOpacity = true;
+        imcParams.withEgTimeAvg = useDDMC;
+        imcParams.withDDMC = useDDMC;
+        imcParams.withMultigroupDDMC = useDDMC;
         imcParams.energyBoundaries = energyBoundaries;
         imcParams.energyBoundariesProvided = true;
 

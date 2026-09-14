@@ -117,94 +117,34 @@ check_densmore2012_case() {
     return 1
 }
 
-check_densmore2012_mc_case() {
+check_densmore2012_l1_limit_case() {
     local run_dir="$1"
     local start_epoch="$2"
     local stdout_log="$3"
     local stderr_log="$4"
-    local profile_file="${run_dir}/densmore2012_mc_profile.txt"
-    local checker_stdout="${run_dir}/densmore2012_mc_check.stdout.log"
-    local checker_stderr="${run_dir}/densmore2012_mc_check.stderr.log"
-    local storm_root
-    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-    local reference_file="${storm_root}/examples/densmore2012/data/densmore2012_fig4_mc.csv"
+    local max_l1="$5"
 
     check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
-    is_nonempty_and_newer "$profile_file" "$start_epoch" || return 1
-    if [[ ! -f "$reference_file" ]]; then
-        REGRESSION_CHECK_MSG="missing reference file: ${reference_file}"
+    local l1
+    l1="$(extract_number_after "DENSMORE2012_TGAS_L1" "$stdout_log")"
+    if [[ -z "$l1" ]]; then
+        REGRESSION_CHECK_MSG="Missing DENSMORE2012_TGAS_L1 comparison metric"
         return 1
     fi
-    python3 "${storm_root}/examples/densmore2012_mc/check_densmore2012_mc.py" \
-        --profile "$profile_file" \
-        --reference "$reference_file" \
-        --max-tgas-l1 "${DENSMORE2012_MC_MAX_TGAS_L1:-0.05}" \
-        >"$checker_stdout" 2>"$checker_stderr" || {
-        REGRESSION_CHECK_MSG="Densmore 2012 MC gas temperature comparison failed"
+    if ! awk -v l1="$l1" -v max_l1="$max_l1" \
+        'BEGIN { exit !(l1 >= 0 && l1 <= max_l1) }'; then
+        REGRESSION_CHECK_MSG="DENSMORE2012_TGAS_L1 exceeds ${max_l1} keV"
         return 1
-    }
-    REGRESSION_CHECK_MSG="Densmore 2012 MC gas temperature comparison passed"
-    return 0
+    fi
+    REGRESSION_CHECK_MSG="PASS (DENSMORE2012_TGAS_L1 = ${l1} keV)"
 }
 
-check_densmore2012_mc_ddmc_case() {
-    local run_dir="$1"
-    local start_epoch="$2"
-    local stdout_log="$3"
-    local stderr_log="$4"
-    local profile_file="${run_dir}/densmore2012_mc_ddmc_profile.txt"
-    local checker_stdout="${run_dir}/densmore2012_mc_ddmc_check.stdout.log"
-    local checker_stderr="${run_dir}/densmore2012_mc_ddmc_check.stderr.log"
-    local storm_root
-    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-    local reference_file="${storm_root}/examples/densmore2012/data/densmore2012_fig4_mc.csv"
-
-    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
-    is_nonempty_and_newer "$profile_file" "$start_epoch" || return 1
-    if [[ ! -f "$reference_file" ]]; then
-        REGRESSION_CHECK_MSG="missing reference file: ${reference_file}"
-        return 1
-    fi
-    python3 "${storm_root}/examples/densmore2012_mc/check_densmore2012_mc.py" \
-        --profile "$profile_file" \
-        --reference "$reference_file" \
-        --max-tgas-l1 "${DENSMORE2012_MC_DDMC_MAX_TGAS_L1:-0.06}" \
-        >"$checker_stdout" 2>"$checker_stderr" || {
-        REGRESSION_CHECK_MSG="Densmore 2012 MC+DDMC gas temperature comparison failed"
-        return 1
-    }
-    REGRESSION_CHECK_MSG="Densmore 2012 MC+DDMC gas temperature comparison passed"
-    return 0
+check_densmore2012_ddmc_case() {
+    check_densmore2012_l1_limit_case "$1" "$2" "$3" "$4" 0.06
 }
 
-check_densmore2012_mc_serial_case() {
-    local run_dir="$1"
-    local start_epoch="$2"
-    local stdout_log="$3"
-    local stderr_log="$4"
-    local profile_file="${run_dir}/densmore2012_mc_serial_profile.txt"
-    local checker_stdout="${run_dir}/densmore2012_mc_serial_check.stdout.log"
-    local checker_stderr="${run_dir}/densmore2012_mc_serial_check.stderr.log"
-    local storm_root
-    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-    local reference_file="${storm_root}/examples/densmore2012/data/densmore2012_fig4_mc.csv"
-
-    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
-    is_nonempty_and_newer "$profile_file" "$start_epoch" || return 1
-    if [[ ! -f "$reference_file" ]]; then
-        REGRESSION_CHECK_MSG="missing reference file: ${reference_file}"
-        return 1
-    fi
-    python3 "${storm_root}/examples/densmore2012_mc/check_densmore2012_mc.py" \
-        --profile "$profile_file" \
-        --reference "$reference_file" \
-        --max-tgas-l1 "${DENSMORE2012_MC_SERIAL_MAX_TGAS_L1:-0.05}" \
-        >"$checker_stdout" 2>"$checker_stderr" || {
-        REGRESSION_CHECK_MSG="Densmore 2012 serial MC+RW gas temperature comparison failed"
-        return 1
-    }
-    REGRESSION_CHECK_MSG="Densmore 2012 serial MC+RW gas temperature comparison passed"
-    return 0
+check_densmore2012_serial_case() {
+    check_densmore2012_l1_limit_case "$1" "$2" "$3" "$4" 0.05
 }
 
 # Moving slab benchmark
