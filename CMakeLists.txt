@@ -273,6 +273,32 @@ target_include_directories(storm INTERFACE
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(storm INTERFACE Boost::boost)
+option(STORM_OPTIMIZE_CPU_TRANSPORT
+  "Optimize CPU transport for x86-64-v3 (requires AVX2-compatible execution nodes)" OFF)
+if(STORM_OPTIMIZE_CPU_TRANSPORT)
+  if(STORM_WITH_GPU OR NOT CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
+    message(FATAL_ERROR "STORM_OPTIMIZE_CPU_TRANSPORT requires a CPU-only GNU or Clang build")
+  endif()
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-march=x86-64-v3" STORM_COMPILER_HAS_X86_64_V3)
+  if(NOT STORM_COMPILER_HAS_X86_64_V3)
+    message(FATAL_ERROR "The compiler does not support -march=x86-64-v3")
+  endif()
+  # Keep Voronoi predicate arithmetic unfused. ISA tuning with the default
+  # contraction setting fails mesh construction on Crooked Pipe.
+  target_compile_options(storm INTERFACE
+    $<$<COMPILE_LANGUAGE:CXX>:-march=x86-64-v3>
+    $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+  target_compile_definitions(storm INTERFACE STORM_CPU_VECTOR_INTERSECTION)
+endif()
+option(STORM_CPU_DIRECT_LOG
+  "Use direct log for CPU IMC exponential sampling (may change last-bit rounding)" OFF)
+if(STORM_CPU_DIRECT_LOG)
+  if(STORM_WITH_GPU)
+    message(FATAL_ERROR "STORM_CPU_DIRECT_LOG is currently validated for CPU-only builds")
+  endif()
+  target_compile_definitions(storm INTERFACE STORM_CPU_DIRECT_LOG)
+endif()
 if(OpenMP_CXX_FOUND)
   target_link_libraries(storm INTERFACE OpenMP::OpenMP_CXX)
 endif()

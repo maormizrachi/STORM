@@ -6,6 +6,11 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <type_traits>
+
+#if defined(STORM_CPU_VECTOR_INTERSECTION) && defined(__AVX2__) && !defined(STORM_WITH_GPU)
+#include <immintrin.h>
+#endif
 
 #include "KokkosTypes.hpp"
 #include "../types.hpp"
@@ -97,7 +102,65 @@ Intersection FindIntersection(const ParticleT &particle, const FlatGridView<Poin
     const std::size_t begin = grid.cellFaceOffsets[cellIndex];
     const std::size_t end = grid.cellFaceOffsets[cellIndex + 1];
 
-    for(std::size_t directedFace = begin; directedFace < end; ++directedFace)
+    std::size_t directedFace = begin;
+#if defined(STORM_CPU_VECTOR_INTERSECTION) && defined(__AVX2__) && !defined(STORM_WITH_GPU)
+    if constexpr(std::is_same<decltype(particle.velocity.x), double>::value &&
+                 std::is_same<decltype(particle.location.x), double>::value &&
+                 std::is_same<decltype(PointT::x), double>::value)
+    {
+        const __m256d vx = _mm256_set1_pd(particle.velocity.x);
+        const __m256d vy = _mm256_set1_pd(particle.velocity.y);
+        const __m256d vz = _mm256_set1_pd(particle.velocity.z);
+        const __m256d px = _mm256_set1_pd(particle.location.x);
+        const __m256d py = _mm256_set1_pd(particle.location.y);
+        const __m256d pz = _mm256_set1_pd(particle.location.z);
+        const __m256d zero = _mm256_setzero_pd();
+        const __m256d one = _mm256_set1_pd(1.0);
+        const __m256d limit = _mm256_set1_pd(-velocityTolerance);
+        const __m256d infinity = _mm256_set1_pd(DBL_MAX);
+        for(; end - directedFace >= 4; directedFace += 4)
+        {
+            const PointT *n = grid.normals + directedFace;
+            const __m256d nx = _mm256_setr_pd(n[0].x, n[1].x, n[2].x, n[3].x);
+            const __m256d ny = _mm256_setr_pd(n[0].y, n[1].y, n[2].y, n[3].y);
+            const __m256d nz = _mm256_setr_pd(n[0].z, n[1].z, n[2].z, n[3].z);
+            // Keep the scalar arithmetic order; build with contraction off.
+            const __m256d velocity = _mm256_add_pd(_mm256_add_pd(_mm256_mul_pd(nx, vx),
+                _mm256_mul_pd(ny, vy)), _mm256_mul_pd(nz, vz));
+            __m256d outgoing = _mm256_cmp_pd(velocity, limit, _CMP_LT_OQ);
+            if(grid.slabTransport)
+                outgoing = _mm256_and_pd(outgoing, _mm256_cmp_pd(nx, zero, _CMP_NEQ_OQ));
+            if(_mm256_movemask_pd(outgoing) == 0) continue;
+            const __m256d plane = _mm256_add_pd(_mm256_add_pd(_mm256_mul_pd(px, nx),
+                _mm256_mul_pd(py, ny)), _mm256_mul_pd(pz, nz));
+            // Inactive lanes use a nonzero denominator, including parallel
+            // faces. They must not introduce divide-by-zero exceptions.
+            const __m256d denominator = _mm256_blendv_pd(one, velocity, outgoing);
+            const __m256d time = _mm256_div_pd(
+                _mm256_sub_pd(_mm256_loadu_pd(grid.facePlaneOffsets + directedFace), plane), denominator);
+            const __m256d valid = _mm256_and_pd(outgoing, _mm256_cmp_pd(time, zero, _CMP_GT_OQ));
+            const __m256d candidates = _mm256_blendv_pd(infinity, time, valid);
+            if(_mm256_movemask_pd(_mm256_cmp_pd(candidates, _mm256_set1_pd(result.time), _CMP_LT_OQ)) == 0)
+                continue;
+            alignas(32) double times[4];
+            _mm256_store_pd(times, candidates);
+            // Resolve equal-time edge/corner hits in original face order.
+            for(std::size_t lane = 0; lane < 4; ++lane)
+            {
+                if(times[lane] < result.time)
+                {
+                    const std::size_t face = directedFace + lane;
+                    result.time = times[lane];
+                    result.nextCellIndex = grid.nextCellIndices[face];
+                    result.directedFace = face;
+                    result.boundaryCrossing = grid.boundaryCrossings[face];
+                    result.valid = 1;
+                }
+            }
+        }
+    }
+#endif
+    for(; directedFace < end; ++directedFace)
     {
         const PointT &normal = grid.normals[directedFace];
         if(grid.slabTransport && normal.x == 0.0)

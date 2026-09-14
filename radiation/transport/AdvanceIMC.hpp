@@ -287,7 +287,14 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
     const double effectiveAbsorptionOpacity = (1.0 - fleck) * absorptionOpacity;
     const double eventOpacity = scatteringOpacity + effectiveAbsorptionOpacity;
     const double distanceRandom = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
+#if defined(STORM_CPU_DIRECT_LOG) && !defined(STORM_WITH_GPU)
+    // unitOpen produces (2*m+1)*2^-53. Subtracting one is exact on this
+    // lattice, so both expressions are mathematically identical. The two
+    // libm entry points may differ in the last bit of the rounded result.
+    const double randomDistance = -Log(distanceRandom);
+#else
     const double randomDistance = -Log1p(distanceRandom - 1.0);
+#endif
     const double scatteringDistance = (eventOpacity > 0.0)? randomDistance / (eventOpacity * dopplerShift) : DBL_MAX;
     const double scatteringTime = (speed > 0.0)? scatteringDistance / speed : DBL_MAX;
 
@@ -314,7 +321,11 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
     particle.timeLeft -= dt;
     const double decayRate = absorptionOpacity * fleck * views.speedOfLight;
     const double materialExpFactor = Expm1(-dt * decayRate);
-    const double weightExpFactor = Expm1(-dt * decayRate * dopplerShift);
+    // In a stationary material frame the two attenuation factors are
+    // identical. Reuse the full-precision result instead of evaluating
+    // the same transcendental function twice for every transport event.
+    const double weightExpFactor = dopplerShift == 1.0 ? materialExpFactor :
+                                   Expm1(-dt * decayRate * dopplerShift);
     double integratedEnergy = particle.weight * dt;
     if(Abs(decayRate * dt) >= 1.0e-12)
     {
