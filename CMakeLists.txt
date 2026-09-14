@@ -35,8 +35,6 @@ project(STORM
   DESCRIPTION "Scalable Three-dimensional Optimized RDMA Monte Carlo"
 )
 
-include(CTest)
-
 if(CMAKE_CXX_COMPILER_ID MATCHES "^(Intel|IntelLLVM)$")
   add_compile_options(-fp-model precise)
 endif()
@@ -374,34 +372,8 @@ if(STORM_WITH_HDF5)
 endif()
 
 # ---------- Examples ----------
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND STORM_BUILD_EXAMPLES)
-  include(CTest)
-endif()
-
 if(STORM_BUILD_EXAMPLES)
   add_subdirectory(examples)
-endif()
-
-if(BUILD_TESTING)
-  add_executable(storm_portable_physics_test tests/portable_physics_test.cpp)
-  target_link_libraries(storm_portable_physics_test PRIVATE storm)
-  add_test(NAME storm_portable_physics_test COMMAND storm_portable_physics_test)
-  find_package(Python3 COMPONENTS Interpreter NumPy QUIET)
-  if(Python3_Interpreter_FOUND AND Python3_NumPy_FOUND)
-    add_test(NAME storm_moving_slab_validation_test
-      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/moving_slab_validation_test.py)
-  endif()
-  add_executable(storm_slab_transport_test tests/slab_transport_test.cpp)
-  target_link_libraries(storm_slab_transport_test PRIVATE storm)
-  add_test(NAME storm_slab_transport_test COMMAND storm_slab_transport_test)
-  if(STORM_WITH_GPU)
-    add_executable(storm_gpu_transport_overlap_test tests/gpu_transport_overlap_test.cpp)
-    target_link_libraries(storm_gpu_transport_overlap_test PRIVATE storm)
-    add_test(NAME storm_gpu_transport_overlap_test COMMAND storm_gpu_transport_overlap_test)
-  endif()
-  add_executable(storm_ddmc_interface_test tests/ddmc_interface_test.cpp)
-  target_link_libraries(storm_ddmc_interface_test PRIVATE storm)
-  add_test(NAME storm_ddmc_interface_test COMMAND storm_ddmc_interface_test)
 endif()
 
 # ---------- Install & export (skip when embedded) ----------

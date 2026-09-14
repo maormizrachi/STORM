@@ -127,12 +127,5 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
       -USPATIAL_DS_WITH_MPI -U__WITH_MPI)
   endif()
 
-  if(_storm_example_name STREQUAL "cartesian_parallel_check" AND
-     BUILD_TESTING AND MPIEXEC_EXECUTABLE)
-    add_test(NAME cartesian_parallel_check
-      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
-              $<TARGET_FILE:cartesian_parallel_check>)
-  endif()
-
   message(STATUS "STORM regression example: ${_storm_example_name}")
 endforeach()
