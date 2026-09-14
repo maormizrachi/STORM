@@ -34,6 +34,7 @@ struct DeviceCombEmitter
     DeviceParticle *outputPackets = nullptr;
     DeviceParticleCold *outputCold = nullptr;
     std::size_t *outputIndex = nullptr;
+    std::uint64_t binRngKey = 0;
 
     STORM_GPU_INLINE_FUNCTION
     void operator()(const std::size_t sourceIndex, const double weight, const double initialWeight, const std::size_t cellIndex, const bool resetIdentity) const
@@ -47,6 +48,7 @@ struct DeviceCombEmitter
         particle.steps = 0;
         if(resetIdentity)
         {
+            comb::RekeyClone(particle, this->binRngKey, *this->outputIndex);
             cold.id = std::numeric_limits<particle_id_t>::max();
             cold.rank = std::numeric_limits<rank_t>::max();
         }
@@ -288,7 +290,8 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
                 censusCold.data(),
                 outputPackets.data(),
                 outputCold.data(),
-                &outputIndex};
+                &outputIndex,
+                comb::MakeBinRngKey(activationEpoch, static_cast<std::uint64_t>(rank), cell)};
             comb::EmitBin(sortedIndices.data() + begin, particleWeights.data(), count, cellWeights(cell), targets(cell), cell, combOffsets(cell), emitter);
             cellEmitCursor(cell) = outputIndex;
         });

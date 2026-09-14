@@ -27,7 +27,10 @@ public:
                                                   std::uint64_t creationRank,
                                                   std::uint64_t particleID)
     {
-        return mix(seed ^ mix(creationRank) ^ mix(particleID));
+        // Fold fields in order: XORing independently mixed rank and ID
+        // aliases (rank, ID) with (ID, rank), and cancels when rank == ID.
+        const std::uint64_t rankKey = mix(mix(seed) ^ creationRank);
+        return mix(rankKey ^ particleID);
     }
 
     STORM_RNG_INLINE static std::uint64_t next(std::uint64_t key, std::uint64_t counter)
@@ -39,8 +42,10 @@ public:
 
     STORM_RNG_INLINE static double unitOpen(std::uint64_t key, std::uint64_t counter)
     {
-        const std::uint64_t mantissa = next(key, counter) >> 11U;
-        return (static_cast<double>(mantissa) + 0.5) * 0x1.0p-53;
+        // Use 52 bits so the half-bin offset remains exactly representable.
+        // With 53 bits, the highest bin rounds to 1.0 in double precision.
+        const std::uint64_t mantissa = next(key, counter) >> 12U;
+        return (static_cast<double>(mantissa) + 0.5) * 0x1.0p-52;
     }
 };
 

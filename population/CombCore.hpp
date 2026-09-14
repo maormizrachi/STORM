@@ -35,11 +35,10 @@ std::uint64_t MakeBinRngKey(
     const std::size_t cellIndex,
     const std::size_t groupIndex = 0)
 {
-    return CounterRNG::mix(
-        CounterRNG::mix(activationEpoch) ^
-        CounterRNG::mix(rank) ^
-        CounterRNG::mix(static_cast<std::uint64_t>(cellIndex)) ^
-        CounterRNG::mix(static_cast<std::uint64_t>(groupIndex)));
+    // Preserve field order; equal fields must not cancel one another.
+    const auto cellKey = CounterRNG::makeKey(
+        activationEpoch, rank, static_cast<std::uint64_t>(cellIndex));
+    return CounterRNG::mix(cellKey ^ static_cast<std::uint64_t>(groupIndex));
 }
 
 STORM_COMB_INLINE
@@ -51,6 +50,17 @@ std::size_t GlobalBudget(
         static_cast<double>(globalCellCount) *
         static_cast<double>(parameters.Nmin) *
         parameters.totalParticlesFactor);
+}
+
+// Resampling creates a new history. IDs are assigned later by the manager,
+// but shared transport consumes RNG state directly, so initialize it here.
+template<typename ParticleT>
+STORM_COMB_INLINE
+void RekeyClone(ParticleT &particle, const std::uint64_t binKey,
+                const std::size_t outputIndex)
+{
+    particle.rngKey = CounterRNG::makeKey(particle.rngKey, binKey, outputIndex);
+    particle.rngCounter = 0;
 }
 
 STORM_COMB_INLINE

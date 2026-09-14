@@ -245,6 +245,7 @@ inline void AppendCombBin(
         particle.steps = 0;
         if(resetIdentity)
         {
+            comb::RekeyClone(particle, rngKey, result.size());
             particle.id = std::numeric_limits<size_t>::max();
 #ifdef STORM_WITH_MPI
             particle.rank = std::numeric_limits<rank_t>::max();
