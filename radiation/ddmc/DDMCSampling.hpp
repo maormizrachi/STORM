@@ -212,9 +212,10 @@ double BoseEinstein0Antiderivative(const double x)
     {
         return 0.0;
     }
-    if(x < 1.0e-8)
+    // Complementary forms avoid cancellation at both small and large x.
+    if(x < 0.69314718055994530942)
     {
-        return transport::Log(x);
+        return transport::Log(-transport::Expm1(-x));
     }
     return transport::Log1p(-transport::Exp(-x));
 }
@@ -257,28 +258,34 @@ double SampleBoseEinstein0FrequencyInGroup(const double *boundaries,
     }
     const double a = left / kT;
     const double b = right / kT;
-    const double groupMass = BoseEinstein0Integral(a, b);
-    if(!(groupMass > 0.0))
+    if(!(a > 0.0) || !(a < b) || !transport::IsFinite(a) ||
+       !transport::IsFinite(b) || !transport::IsFinite(random))
     {
         return 0.5 * (left + right);
     }
-    const double target = random * groupMass;
-    double lo = left;
-    double hi = right;
-    for(int iteration = 0; iteration < 56; ++iteration)
+    if(random == 0.0) return left;
+    if(random == 1.0) return right;
+
+    double x;
+    if(a >= 36.0)
     {
-        const double mid = 0.5 * (lo + hi);
-        const double mass = BoseEinstein0Integral(a, mid / kT);
-        if(mass < target)
-        {
-            lo = mid;
-        }
-        else
-        {
-            hi = mid;
-        }
+        // In the Wien tail the Bose correction is below double precision
+        // in the returned frequency. Shift by a to avoid exp(-a) underflow;
+        // keep the positive terms separate when random is close to one.
+        x = a - transport::Log((1.0 - random) + random * transport::Exp(-(b - a)));
     }
-    return 0.5 * (lo + hi);
+    else
+    {
+        // F(x) is affine in log(1-exp(-x)). Invert that expression directly
+        // instead of evaluating two transcendental functions 56 times.
+        const double logQ = (1.0 - random) * BoseEinstein0Antiderivative(a) +
+                            random * BoseEinstein0Antiderivative(b);
+        x = logQ < -0.69314718055994530942
+                ? -transport::Log1p(-transport::Exp(logQ))
+                : -transport::Log(-transport::Expm1(logQ));
+    }
+    const double frequency = kT * x;
+    return frequency < left ? left : (frequency > right ? right : frequency);
 }
 
 STORM_TRANSPORT_INLINE
