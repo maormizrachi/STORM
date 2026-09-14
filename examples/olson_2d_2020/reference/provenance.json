@@ -1,0 +1,9 @@
+{
+  "source": "https://arxiv.org/pdf/2303.06634v1",
+  "figure": "6",
+  "page": 15,
+  "sha256": "83ddd546be311b5c70427bcbf75799e132696f5b0d367db29d8715c24f01a3ce",
+  "method": "PN reference-circle centers with axis-affine mapping; additional IMC material curves stored separately from dashed vector paths",
+  "coordinate_uncertainty_cm": 0.01,
+  "log10_uncertainty": 0.03
+}

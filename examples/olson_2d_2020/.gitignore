@@ -1,0 +1,8 @@
+/olson_2020_2d_mc
+/olson_2020_2d_mc_serial
+/output*/
+/smoke*/
+*.out
+*.err
+__pycache__/
+/.job_binaries/

@@ -1,0 +1,9 @@
+TAGS="mpi"
+DUAL_MODE=1
+CATEGORY="physics"
+MPI_NP=4
+TIMEOUT=7200
+CHECK_FUNCTION="check_olson_2d_2020"
+RUN_ARGS=["38", "4", "32", "1e-12", "output_regression", "50"]
+LEGACY_TEST_ID="olson_2020_2d_mc"
+LEGACY_TEST_ID_SERIAL="olson_2020_2d_mc_serial"

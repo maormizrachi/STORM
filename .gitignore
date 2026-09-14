@@ -34,3 +34,6 @@ examples/**/*_profile*.txt
 
 examples/su_olson/su_olson
 examples/su_olson/su_olson_serial
+
+examples/olson_2d_2020/olson_2d_2020
+examples/olson_2d_2020/olson_2d_2020_serial

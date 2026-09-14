@@ -344,3 +344,17 @@ check_su_olson() {
     fi
     REGRESSION_CHECK_MSG="PASS (Su-Olson late-time radiation and material relative L1 < 6%)"
 }
+
+check_olson_2d_2020() {
+    local run_dir="$1" start_epoch="$2" stdout_log="$3" stderr_log="$4"
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+    local ct
+    for ct in 2 2p5 3; do
+        is_nonempty_and_newer "$run_dir/output_regression/profile_ct${ct}.txt" "$start_epoch" || return 1
+    done
+    if ! python3 "$STORM_CHECK_EXAMPLES/olson_2d_2020/compare.py" "$run_dir/output_regression" --check; then
+        REGRESSION_CHECK_MSG="Olson 2020 energy/reference comparison failed"
+        return 1
+    fi
+    REGRESSION_CHECK_MSG="PASS (Olson 2020 energy conservation and digitized PN comparison)"
+}

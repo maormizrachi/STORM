@@ -1,0 +1,65 @@
+{
+  "2": {
+    "material_T4": {
+      "log10_RMSE": 0.05831790320184708,
+      "compared_markers": 11,
+      "excluded_interface_radius_cm": 0.1414213562373095,
+      "foam_log10_RMSE": 0.0378047724028359,
+      "foam_markers": 5
+    },
+    "radiation": {
+      "log10_RMSE": 0.3010458307515904,
+      "compared_markers": 9,
+      "excluded_interface_radius_cm": 0.1414213562373095,
+      "foam_log10_RMSE": 0.026131648667510474,
+      "foam_markers": 4
+    },
+    "published_IMC_material": {
+      "log10_T4_RMSE": 0.11361769927493465,
+      "temperature_relative_L1": 0.030013654390120877
+    }
+  },
+  "2.5": {
+    "material_T4": {
+      "log10_RMSE": 0.03915045013611267,
+      "compared_markers": 12,
+      "excluded_interface_radius_cm": 0.1414213562373095,
+      "foam_log10_RMSE": 0.01621997329280733,
+      "foam_markers": 4
+    },
+    "radiation": {
+      "log10_RMSE": 0.30763932079170125,
+      "compared_markers": 11,
+      "excluded_interface_radius_cm": 0.1414213562373095,
+      "foam_log10_RMSE": 0.014374562080226267,
+      "foam_markers": 5
+    },
+    "published_IMC_material": {
+      "log10_T4_RMSE": 0.1298707143259914,
+      "temperature_relative_L1": 0.032677037520279964
+    }
+  },
+  "3": {
+    "material_T4": {
+      "log10_RMSE": 0.060176979492345385,
+      "compared_markers": 11,
+      "excluded_interface_radius_cm": 0.1414213562373095,
+      "foam_log10_RMSE": 0.019845722899083918,
+      "foam_markers": 4
+    },
+    "radiation": {
+      "log10_RMSE": 0.33757127117022956,
+      "compared_markers": 11,
+      "excluded_interface_radius_cm": 0.1414213562373095,
+      "foam_log10_RMSE": 0.02018347241970821,
+      "foam_markers": 5
+    },
+    "published_IMC_material": {
+      "log10_T4_RMSE": 0.12240823319440818,
+      "temperature_relative_L1": 0.031913250290307706
+    }
+  },
+  "aluminum_area_cm2": 2.4999999999999996,
+  "maximum_energy_budget_residual": 1.933110305438011e-15,
+  "source_normalization_relative_error": 0.0005792865426160754
+}

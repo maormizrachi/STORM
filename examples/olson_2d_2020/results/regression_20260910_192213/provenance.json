@@ -1,0 +1,10 @@
+{
+  "campaign": "20260910_192213",
+  "original_test_id": "olson_2020_2d_mc",
+  "test_id": "olson_2d_2020",
+  "ranks": 4,
+  "simulation_exit_code": 0,
+  "note": "Original campaign check failed to locate compare.py. Saved outputs pass the corrected source-directory checker. No simulation rerun.",
+  "comparison_exit_code": 0,
+  "comparison_command": "python3 compare.py results/regression_20260910_192213 --check"
+}
