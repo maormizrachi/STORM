@@ -1,8 +1,11 @@
 #ifndef STORM_P2P_COMMUNICATION_ENGINE_HPP
 #define STORM_P2P_COMMUNICATION_ENGINE_HPP
 #ifdef STORM_WITH_MPI
+#include <boost/container/flat_set.hpp>
 #include <mpi_utils/BuffersManager.hpp>
 #include "CommunicationEngine.hpp"
+#include "../../gpu/DeviceParticle.hpp"
+#include <type_traits>
 
 namespace STORM
 {
@@ -10,6 +13,21 @@ template<class T, class Grid>
 class P2PCommunicationEngine : public CommunicationEngine<T>
 {
     using MCParticle = Particle<T>;
+
+    // Exclude Serializable vtables and copy the transport payload in one block.
+    struct PackedParticle
+    {
+        gpu::DeviceParticle particle;
+        gpu::DeviceParticleCold cold;
+        std::uint8_t sent = 0;
+    };
+    static_assert(std::is_trivially_copyable_v<PackedParticle>);
+#if !defined(STORM_DEBUG) && !defined(STORM_WITH_TRACING_HISTORY)
+    static constexpr bool packedWire = std::is_same_v<typename T::coord_type, double>;
+#else
+    static constexpr bool packedWire = false;
+#endif
+    using WireParticle = std::conditional_t<packedWire, PackedParticle, MCParticle>;
 
 public:
     P2PCommunicationEngine(const Grid &grid, const MonteCarloConfig &config, MPI_Comm comm)
@@ -28,13 +46,24 @@ public:
         {
             queue.clear();
         }
-        buffers = std::make_unique<BuffersManager<MCParticle>>(
-            comm, [this](const MCParticle *particles, size_t count, rank_t source)
+        buffers = std::make_unique<BuffersManager<WireParticle>>(
+            comm, [this](const WireParticle *particles, size_t count, rank_t source)
             {
                 std::vector<MCParticle> &queue = incoming[source];
-                queue.insert(queue.end(), particles, particles + count);
+                if constexpr(packedWire)
+                {
+                    const auto offset = queue.size();
+                    queue.resize(offset + count);
+                    for(std::size_t i = 0; i < count; ++i)
+                    {
+                        gpu::UnpackParticle(particles[i].particle, particles[i].cold, queue[offset + i]);
+                        queue[offset + i].sent = particles[i].sent;
+                    }
+                }
+                else
+                    queue.insert(queue.end(), particles, particles + count);
             },
-            8817, std::max<size_t>(1000, 2 * config.sendBufferMinSize) * sizeof(MCParticle), config.sendBufferMinSize * sizeof(MCParticle), dispatchCycles, size, neighbors);
+            8817, std::max<size_t>(1000, 2 * config.sendBufferMinSize) * sizeof(WireParticle), config.sendBufferMinSize * sizeof(WireParticle), dispatchCycles, size, neighbors);
     }
 
     void Progress() override
@@ -74,7 +103,15 @@ public:
     }
     void Send(rank_t destination, const MCParticle &particle) override
     {
-        buffers->Add(destination, particle);
+        if constexpr(packedWire)
+        {
+            PackedParticle packed;
+            gpu::PackParticle(particle, packed.particle, packed.cold);
+            packed.sent = particle.sent;
+            buffers->Add(destination, packed);
+        }
+        else
+            buffers->Add(destination, particle);
     }
 
     void AppendLocal(const std::vector<MCParticle> &particles) override
@@ -148,7 +185,7 @@ private:
     rank_t size;
     std::vector<rank_t> neighbors;
     std::vector<std::vector<MCParticle>> incoming;
-    std::unique_ptr<BuffersManager<MCParticle>> buffers;
+    std::unique_ptr<BuffersManager<WireParticle>> buffers;
 };
 } // namespace STORM
 
