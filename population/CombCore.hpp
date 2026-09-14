@@ -26,6 +26,14 @@ struct Parameters
 {
     std::size_t Nmin = 20;
     double totalParticlesFactor = 2.0;
+    // Per-cell floor and cap. Zero keeps them tied to Nmin (floor Nmin, cap
+    // 20*Nmin), the historical behaviour. Setting them separates the count a
+    // negligible-weight cell is padded up to from the global budget and from
+    // the ceiling a hot cell may reach. On a mesh whose cell count is dominated
+    // by refinement in regions holding almost no radiation, it is the floor and
+    // not the proportional share that sets the population.
+    std::size_t Nfloor = 0;
+    std::size_t Nmax = 0;
 };
 
 STORM_COMB_INLINE
@@ -68,17 +76,18 @@ std::size_t TargetParticleCount(
     const double binWeight,
     const double totalWeight,
     const std::size_t globalBudget,
-    const std::size_t Nmin)
+    const std::size_t Nmin,
+    const std::size_t Nfloor = 0,
+    const std::size_t Nmax = 0)
 {
     if(binWeight <= 0.0 || totalWeight <= 0.0)
     {
         return 0;
     }
-    const std::size_t proportional = static_cast<std::size_t>(
-        static_cast<double>(globalBudget) * binWeight / totalWeight);
-    return std::min(
-        Nmin * 20,
-        std::max(Nmin, proportional));
+    const std::size_t proportional = static_cast<std::size_t>(static_cast<double>(globalBudget) * binWeight / totalWeight);
+    const std::size_t floorCount = (Nfloor > 0) ? Nfloor : Nmin;
+    const std::size_t capCount = (Nmax > 0) ? Nmax : Nmin * 20;
+    return std::min(capCount, std::max(floorCount, proportional));
 }
 
 STORM_COMB_INLINE

@@ -27,7 +27,8 @@ template<typename T, typename Grid>
 class CombPopulationControl : public PopulationControl<T, Grid>
 {
 public:
-    CombPopulationControl(const Grid &grid, size_t Nmin = 20, double totalParticlesFactor = 2.0);
+    CombPopulationControl(const Grid &grid, size_t Nmin = 20, double totalParticlesFactor = 2.0,
+                          size_t Nfloor = 0, size_t Nmax = 0);
 
     std::vector<Particle<T>> activate(const std::vector<Particle<T>> &particles) override;
 
@@ -43,11 +44,13 @@ public:
 private:
     size_t Nmin;
     double totalParticlesFactor;
+    size_t Nfloor;
+    size_t Nmax;
     mutable std::uint64_t activationEpoch_ = 0;
 
     comb::Parameters Parameters() const
     {
-        return {this->Nmin, this->totalParticlesFactor};
+        return {this->Nmin, this->totalParticlesFactor, this->Nfloor, this->Nmax};
     }
 
     template<typename MCParticle>
@@ -327,10 +330,14 @@ template<typename T, typename Grid>
 CombPopulationControl<T, Grid>::CombPopulationControl(
     const Grid &grid,
     size_t Nmin,
-    double totalParticlesFactor)
+    double totalParticlesFactor,
+    size_t Nfloor,
+    size_t Nmax)
     : PopulationControl<T, Grid>(grid),
       Nmin(Nmin),
-      totalParticlesFactor(totalParticlesFactor)
+      totalParticlesFactor(totalParticlesFactor),
+      Nfloor(Nfloor),
+      Nmax(Nmax)
 {}
 
 #ifdef STORM_WITH_GPU
@@ -429,8 +436,7 @@ std::vector<Particle<T>> CombPopulationControl<T, Grid>::activate(
         {
             continue;
         }
-        const size_t target = comb::TargetParticleCount(
-            weights[i], totalWeight, globalBudget, this->Nmin);
+        const size_t target = comb::TargetParticleCount(weights[i], totalWeight, globalBudget, this->Nmin, this->Nfloor, this->Nmax);
         comb_host_detail::AppendCombBin<MCParticle>(
             particlesInCells[i],
             weights[i],

@@ -144,7 +144,8 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
     Kokkos::View<double *>::HostMirror hostCombOffsets = Kokkos::create_mirror_view(combOffsets);
     for(std::size_t cell = 0; cell < cellCount; ++cell)
     {
-        hostTargets(cell) = comb::TargetParticleCount(hostCellWeights(cell), globalTotalWeight, globalBudget, parameters.Nmin);
+        hostTargets(cell) = comb::TargetParticleCount(hostCellWeights(cell), globalTotalWeight, globalBudget, parameters.Nmin,
+                                                      parameters.Nfloor, parameters.Nmax);
         const std::uint64_t rngKey = comb::MakeBinRngKey(activationEpoch, static_cast<std::uint64_t>(rank), cell);
         hostCombOffsets(cell) = CounterRNG::unitOpen(rngKey, 0);
     }

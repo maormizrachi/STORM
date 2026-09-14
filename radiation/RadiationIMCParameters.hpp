@@ -28,6 +28,11 @@ template<std::size_t NumGroups>
 struct RadiationIMCParameters
 {
     std::size_t newPhotonsPerCell = 0;
+    // Per-cell floor on emission packets. Zero keeps it equal to
+    // newPhotonsPerCell, which also sets the global emission budget and the
+    // per-cell cap; set it lower to stop cells that emit a negligible share of
+    // the total from being padded up to the budget-setting count.
+    std::size_t emissionFloorPhotonsPerCell = 0;
     double lightSpeed = units::clight;
     bool withHydro = false;
     bool diffusionPressureGradient = false;
@@ -96,6 +101,10 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
 {
     os << "STORM IMC, with parameters:\n";
     os << "\tnew photons per cell: " << parameters.newPhotonsPerCell << '\n';
+    os << "\temission floor photons per cell: "
+       << (parameters.emissionFloorPhotonsPerCell > 0 ? parameters.emissionFloorPhotonsPerCell
+                                                      : parameters.newPhotonsPerCell)
+       << '\n';
     os << "\tlight speed: " << parameters.lightSpeed << '\n';
     os << "\twith hydro: " << parameters.withHydro << '\n';
     os << "\tdiffusion pressure gradient: " << parameters.diffusionPressureGradient << '\n';

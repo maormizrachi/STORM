@@ -333,7 +333,9 @@ public:
                 energyToCreateVec[i],
                 globalTotalEnergy,
                 totalParticles,
-                owner_.parameters_.newPhotonsPerCell,
+                owner_.parameters_.emissionFloorPhotonsPerCell > 0
+                    ? owner_.parameters_.emissionFloorPhotonsPerCell
+                    : owner_.parameters_.newPhotonsPerCell,
                 owner_.parameters_.newPhotonsPerCell * 20);
         }
 
