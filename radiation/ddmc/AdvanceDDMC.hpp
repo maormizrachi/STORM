@@ -1446,7 +1446,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
 
     if(views.depositMaterialEnergy)
     {
-        STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], -expFactor * oldWeight);
+        ::STORM::transport::AccumulateEnergy(views, views.pendingMaterialEnergy[cellIndex], -expFactor * oldWeight);
         if(views.depositMomentum && views.comovingTransport &&
            views.pendingMomentum != nullptr &&
            views.cellVelocities != nullptr)
@@ -1466,7 +1466,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
                 absorbed * velocity.z * inverseC2);
         }
     }
-    STORM_TRANSPORT_ACCUMULATE(views.pendingRadiationEnergy[cellIndex], integratedEnergy);
+    ::STORM::transport::AccumulateEnergy(views, views.pendingRadiationEnergy[cellIndex], integratedEnergy);
     if(views.pendingGroupRadiationEnergy != nullptr && pgrw &&
        groupCutoff > 0 && groupCutoff <= views.groupCount &&
        ddmc.cellTemperature != nullptr)
@@ -1498,7 +1498,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
     {
         if(views.depositMaterialEnergy)
         {
-            STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], particle.weight);
+            ::STORM::transport::AccumulateEnergy(views, views.pendingMaterialEnergy[cellIndex], particle.weight);
             if(views.depositMomentum && views.comovingTransport &&
                views.pendingMomentum != nullptr &&
                views.cellVelocities != nullptr)

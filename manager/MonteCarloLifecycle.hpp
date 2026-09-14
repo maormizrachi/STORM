@@ -496,6 +496,10 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
 
     this->engine->EndTransport();
     this->engine->FinishCounters();
+#ifdef STORM_WITH_GPU
+    if(this->gpuTransportExecutor)
+        this->gpuTransportExecutor->FlushEnergyTallies();
+#endif
 
     std::chrono::high_resolution_clock::time_point loopEnd = std::chrono::high_resolution_clock::now();
     double loopTime = std::chrono::duration_cast<std::chrono::duration<double>>(loopEnd - loopStart).count();
@@ -562,6 +566,9 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
     }
 #ifdef STORM_WITH_GPU
     localStepCount += static_cast<double>(this->gpuPhysicsStepCount);
+    // Export after counting the rank-wide GPU work above, to avoid counting it twice.
+    if(this->gpuTransportExecutor)
+        this->gpuTransportExecutor->AddCellSteps(this->cellsStepsCounters);
 #endif
     double avgSteps = localStepCount;
     this->engine->Reduce(&avgSteps, &avgSteps, 1, Reduction::Sum);

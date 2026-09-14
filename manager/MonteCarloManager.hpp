@@ -193,6 +193,15 @@ public:
     /// getParticles() are invalidated by this call.
     void step(dt_t fullDt);
 
+    std::size_t GetParticleCount() const
+    {
+#ifdef STORM_WITH_GPU
+        if(not this->hostParticlesValid and this->deviceCensusValid and this->gpuTransportExecutor)
+            return this->gpuTransportExecutor->PendingCensusCount();
+#endif
+        return this->ownedParticles.size();
+    }
+
     const std::vector<MCParticle> &getParticles(void) const
     {
         this->MaterializeDeviceCensus();
@@ -376,6 +385,8 @@ private:
 
 #ifdef STORM_WITH_GPU
     bool TransportBatchOnDevice(std::vector<MCParticle> &localParticles, rank_t bufferRank, MonteCarloStepFinalData &stepData, bool &isEmpty);
+
+    void IngestHostParticlesForDevice(std::vector<MCParticle> &arrivals);
 
     void CollectHostParticlesForDevice(std::vector<MCParticle> &arrivals);
 

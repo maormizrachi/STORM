@@ -383,6 +383,34 @@ MonteCarloManager<T, Grid, Physics>::ApplyTransportEvent(MCParticle &particle,
 
 #ifdef STORM_WITH_GPU
 template<typename T, typename Grid, typename Physics>
+void MonteCarloManager<T, Grid, Physics>::IngestHostParticlesForDevice(std::vector<MCParticle> &arrivals)
+{
+    if(not this->gpuTransportExecutor)
+    {
+        this->gpuTransportExecutor = std::make_unique<gpu::KokkosLocalTransportExecutor>(
+                    this->config.gpuMaxInnerSteps,
+                    this->config.gpuOverlapCommunication && this->sizeWorld > 1);
+    }
+
+    for(MCParticle &particle : arrivals)
+    {
+        if(particle.sent)
+        {
+            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
+            particle.sent = false;
+        }
+    }
+
+    this->gpuTransportExecutor->EnablePrivateEnergyTallies();
+    const std::size_t incoming = arrivals.size();
+    const std::chrono::steady_clock::time_point packStart = std::chrono::steady_clock::now();
+    this->gpuIngestCount += incoming;
+    this->gpuTransportExecutor->Ingest(arrivals);
+    this->gpuPackSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
+    arrivals.clear();
+}
+
+template<typename T, typename Grid, typename Physics>
 void MonteCarloManager<T, Grid, Physics>::CollectHostParticlesForDevice(std::vector<MCParticle> &arrivals)
 {
     arrivals.clear();
@@ -392,12 +420,22 @@ void MonteCarloManager<T, Grid, Physics>::CollectHostParticlesForDevice(std::vec
         std::vector<MCParticle> &deferred = this->detachedRankParticles[rank];
         if(not deferred.empty())
         {
-            arrivals.insert(arrivals.end(), std::make_move_iterator(deferred.begin()), std::make_move_iterator(deferred.end()));
+            if(arrivals.empty())
+                arrivals.swap(deferred);
+            else
+                arrivals.insert(arrivals.end(), std::make_move_iterator(deferred.begin()), std::make_move_iterator(deferred.end()));
             deferred.clear();
         }
 
         if(this->engine->LocalSize(rank) == 0)
         {
+            continue;
+        }
+        // Detach transfers ownership. Keep the first queue's storage directly;
+        // only additional queues need to be merged into the arrival array.
+        if(arrivals.empty())
+        {
+            this->engine->Detach(rank, arrivals);
             continue;
         }
         this->mergeScratchBuffer.clear();
@@ -423,28 +461,7 @@ bool MonteCarloManager<T, Grid, Physics>::TransportResidentOnDevice(std::vector<
         {
             return false;
         }
-        if(not this->gpuTransportExecutor)
-        {
-            this->gpuTransportExecutor = std::make_unique<gpu::KokkosLocalTransportExecutor>(
-                        this->config.gpuMaxInnerSteps,
-                        this->config.gpuOverlapCommunication && this->sizeWorld > 1);
-        }
-
-        for(MCParticle &particle : arrivals)
-        {
-            if(particle.sent)
-            {
-                particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
-                particle.sent = false;
-            }
-        }
-
-        const std::size_t incoming = arrivals.size();
-        const std::chrono::steady_clock::time_point packStart = std::chrono::steady_clock::now();
-        this->gpuIngestCount += incoming;
-        this->gpuTransportExecutor->Ingest(arrivals);
-        this->gpuPackSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - packStart).count();
-        arrivals.clear();
+        this->IngestHostParticlesForDevice(arrivals);
 
         if(this->gpuTransportExecutor->ActiveCount() == 0 and
            this->gpuTransportExecutor->PendingRemoteCount() == 0 and

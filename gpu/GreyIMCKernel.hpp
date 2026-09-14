@@ -25,6 +25,7 @@ struct GreyIMCViews
     const double *scatteringOpacities = nullptr;
     const double *fleckFactors = nullptr;
     const PointT *cellVelocities = nullptr;
+    bool privateEnergyTallies = false;
     double *pendingMaterialEnergy = nullptr;
     double *pendingRadiationEnergy = nullptr;
     PointT *pendingMomentum = nullptr;

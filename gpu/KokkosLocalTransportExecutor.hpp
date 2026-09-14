@@ -11,6 +11,10 @@
 #include <utility>
 #include <vector>
 #include "DeviceParticle.hpp"
+#include <Kokkos_ScatterView.hpp>
+#ifdef KOKKOS_ENABLE_OPENMP
+#include <omp.h>
+#endif
 #include "GreyIMCKernel.hpp"
 #include "ProfileRegion.hpp"
 #include "ExecutionEvent.hpp"
@@ -129,6 +133,9 @@ class KokkosLocalTransportExecutor
     using PinnedHostSpace = Kokkos::HostSpace;
 #endif
 
+    static constexpr bool hostAccessible = Kokkos::SpaceAccessibility<
+        Kokkos::HostSpace, Kokkos::DefaultExecutionSpace::memory_space>::accessible;
+
 public:
     explicit KokkosLocalTransportExecutor(std::size_t maximumInnerSteps,
                                           bool overlapCommunication = false)
@@ -170,16 +177,72 @@ public:
     {
         if(this->HasPendingRemoteCopy())
             throw std::runtime_error("Cannot reset transport with undelivered remotes");
+        this->ResetStepMetrics();
         this->activeCount_ = 0;
         this->pendingRemoteCount_ = 0;
         this->pendingCensusCount_ = 0;
-        this->ResetStepMetrics();
     }
 
     void ResetStepMetrics()
     {
+        if(this->privateMaterialTarget_ || this->privateRadiationTarget_)
+            throw std::runtime_error("Flush private energy tallies before resetting transport");
         this->remoteHoldSkips_ = 0;
         this->metrics_ = {};
+        if constexpr(hostAccessible)
+        {
+            Kokkos::deep_copy(this->cellSteps_, std::size_t(0));
+            if(this->cellSteps_.extent(0) != 0)
+                this->cellStepScatter_.reset();
+        }
+    }
+
+    // Restore the work weights used by the host mesh load balancer.
+    void AddCellSteps(std::vector<std::size_t> &counts)
+    {
+        if constexpr(hostAccessible)
+        {
+            if(this->cellSteps_.extent(0) != 0)
+                Kokkos::Experimental::contribute(this->cellSteps_, this->cellStepScatter_);
+            Kokkos::DefaultExecutionSpace{}.fence("STORM cell work counts");
+            for(std::size_t i = 0; i < std::min(counts.size(), this->cellSteps_.extent(0)); ++i)
+                counts[i] += this->cellSteps_(i);
+        }
+    }
+
+    // Opt-in because direct executor users may consume tallies after each wave.
+    void EnablePrivateEnergyTallies()
+    {
+#ifdef KOKKOS_ENABLE_OPENMP
+        if constexpr(std::is_same_v<Kokkos::DefaultExecutionSpace, Kokkos::OpenMP>)
+            this->privateEnergyTallies_ = true;
+#endif
+    }
+
+    void FlushEnergyTallies()
+    {
+        if(!this->privateMaterialTarget_ && !this->privateRadiationTarget_)
+            return;
+        auto tallies = this->threadEnergyTallies_;
+        double *material = this->privateMaterialTarget_;
+        double *radiation = this->privateRadiationTarget_;
+        Kokkos::parallel_for("storm_merge_private_energy", tallies.extent(2),
+            KOKKOS_LAMBDA(std::size_t cell)
+            {
+                double m = 0.0, r = 0.0;
+                for(std::size_t thread = 0; thread < tallies.extent(0); ++thread)
+                {
+                    m += tallies(thread, 0, cell);
+                    r += tallies(thread, 1, cell);
+                    tallies(thread, 0, cell) = 0.0;
+                    tallies(thread, 1, cell) = 0.0;
+                }
+                if(material) material[cell] += m;
+                if(radiation) radiation[cell] += r;
+            });
+        Kokkos::DefaultExecutionSpace{}.fence("STORM merge private energy");
+        this->privateMaterialTarget_ = nullptr;
+        this->privateRadiationTarget_ = nullptr;
     }
 
     std::size_t ActiveCount() const
@@ -260,8 +323,11 @@ public:
             return;
         }
 
-        this->EnsureCapacity(this->hostPackets_, hostTarget);
-        this->EnsureCapacity(this->hostColdPackets_, hostTarget);
+        if constexpr(!hostAccessible)
+        {
+            this->EnsureCapacity(this->hostPackets_, hostTarget);
+            this->EnsureCapacity(this->hostColdPackets_, hostTarget);
+        }
         this->EnsureCapacity(this->packets_, activeTarget);
         this->EnsureCapacity(this->coldPackets_, activeTarget);
         this->poolReservedActiveCapacity_ = activeTarget;
@@ -417,22 +483,29 @@ public:
         const std::size_t required = offset + incoming;
         this->ReserveForIngest(incoming);
 
-        for(std::size_t i = 0; i < incoming; ++i)
-        {
-            PackParticle(arrivals[i], this->hostPackets_(i), this->hostColdPackets_(i));
-        }
         const Kokkos::DefaultExecutionSpace execution;
-        Kokkos::deep_copy(execution, Kokkos::subview(this->packets_, std::pair<std::size_t, std::size_t>(offset, required)),
-                            Kokkos::subview(this->hostPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
-        Kokkos::deep_copy(execution, Kokkos::subview(this->coldPackets_, std::pair<std::size_t, std::size_t>(offset, required)),
-                            Kokkos::subview(this->hostColdPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
-        // Reusing the pinned ingest buffer needs only this stream, not the
-        // independent outbound-copy stream.
-        execution.fence("STORM ingest staging reuse");
+        if constexpr(hostAccessible)
+        {
+            // Capacity changes and previous kernels must finish before host writes.
+            execution.fence("STORM direct ingest");
+            for(std::size_t i = 0; i < incoming; ++i)
+                PackParticle(arrivals[i], this->packets_(offset + i), this->coldPackets_(offset + i));
+            ++this->metrics_.synchronizationCount;
+        }
+        else
+        {
+            for(std::size_t i = 0; i < incoming; ++i)
+                PackParticle(arrivals[i], this->hostPackets_(i), this->hostColdPackets_(i));
+            Kokkos::deep_copy(execution, Kokkos::subview(this->packets_, std::pair<std::size_t, std::size_t>(offset, required)),
+                                Kokkos::subview(this->hostPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
+            Kokkos::deep_copy(execution, Kokkos::subview(this->coldPackets_, std::pair<std::size_t, std::size_t>(offset, required)),
+                                Kokkos::subview(this->hostColdPackets_, std::pair<std::size_t, std::size_t>(0, incoming)));
+            execution.fence("STORM ingest staging reuse");
+            this->metrics_.h2dBytes += incoming *
+                (sizeof(DeviceParticle) + sizeof(DeviceParticleCold));
+            this->metrics_.synchronizationCount += 2;
+        }
         this->activeCount_ = required;
-        this->metrics_.h2dBytes += incoming *
-            (sizeof(DeviceParticle) + sizeof(DeviceParticleCold));
-        this->metrics_.synchronizationCount += 2;
         this->metrics_.maxIngestCount =
             std::max(this->metrics_.maxIngestCount, incoming);
         this->metrics_.maxActiveCount =
@@ -683,7 +756,10 @@ private:
         if(!this->HasPendingRemoteCopy()) return;
         this->WaitWithProgress(this->remoteReady_, progress, completed);
         CompletedBatch remotes;
-        remotes.remotes = {this->inFlightHostRemotes_.data(), this->inFlightRemoteCount_};
+        if constexpr(hostAccessible)
+            remotes.remotes = {this->inFlightDeviceRemotes_.data(), this->inFlightRemoteCount_};
+        else
+            remotes.remotes = {this->inFlightHostRemotes_.data(), this->inFlightRemoteCount_};
         consume(remotes);
         // The consumer owns MPI serialization. It must finish reading the
         // borrowed span before returning; only then may these buffers swap.
@@ -710,19 +786,26 @@ private:
         // Preallocate the alternate pair before starting the copy. During
         // steady state neither pair is resized while a copy owns it.
         this->EnsureCapacity(this->inFlightDeviceRemotes_, this->pendingRemotes_.extent(0));
-        this->EnsureCapacity(this->inFlightHostRemotes_, this->hostRemoteTransports_.extent(0));
+        if constexpr(!hostAccessible)
+        {
+            this->EnsureCapacity(this->inFlightHostRemotes_, this->hostRemoteTransports_.extent(0));
+        }
         std::swap(this->inFlightDeviceRemotes_, this->pendingRemotes_);
         std::swap(this->inFlightHostRemotes_, this->hostRemoteTransports_);
         this->inFlightRemoteCount_ = this->pendingRemoteCount_;
         this->pendingRemoteCount_ = 0;
         const auto range = std::make_pair(std::size_t(0), this->inFlightRemoteCount_);
-        Kokkos::deep_copy(this->remoteCopySpace_,
-            Kokkos::subview(this->inFlightHostRemotes_, range),
-            Kokkos::subview(this->inFlightDeviceRemotes_, range));
+        if constexpr(!hostAccessible)
+        {
+            Kokkos::deep_copy(this->remoteCopySpace_,
+                Kokkos::subview(this->inFlightHostRemotes_, range),
+                Kokkos::subview(this->inFlightDeviceRemotes_, range));
+            const std::size_t bytes = this->inFlightRemoteCount_ * sizeof(CompletedTransport);
+            this->metrics_.d2hBytes += bytes;
+            this->metrics_.eliminatedHostCopyBytes += bytes;
+        }
+        // Keep the existing deferred-consumption and buffer ownership protocol.
         this->remoteReady_.Record(this->remoteCopySpace_);
-        const std::size_t bytes = this->inFlightRemoteCount_ * sizeof(CompletedTransport);
-        this->metrics_.d2hBytes += bytes;
-        this->metrics_.eliminatedHostCopyBytes += bytes;
         this->metrics_.remoteCount += this->inFlightRemoteCount_;
         this->metrics_.pipelinedRemoteCount += this->inFlightRemoteCount_;
     }
@@ -768,6 +851,11 @@ public:
 
     void LaunchGreyIMCTransport(const GreyIMCViews<DeviceVec3> &views, const std::size_t launchCount, const std::size_t remoteOffset)
     {
+        this->PrepareHostTallies(views);
+        auto threadViews = this->threadTransportViews_;
+        const bool usePrivateEnergy = this->privateEnergyTallies_ && views.grid.cellCount != 0;
+        auto cellSteps = this->cellSteps_;
+        auto cellStepScatter = this->cellStepScatter_;
         const std::size_t maximumInnerSteps = this->maximumInnerSteps_;
         auto packets = this->packets_;
         auto nextPackets = this->nextPackets_;
@@ -783,11 +871,25 @@ public:
         const std::size_t fallbackCapacity = fallbackTransports.extent(0);
         const std::size_t remoteCapacity = pendingRemotes.extent(0);
 
-        Kokkos::parallel_for(
+        // CPU particles have uneven path lengths; let idle threads take chunks.
+        using TransportSchedule = std::conditional_t<hostAccessible,
+            Kokkos::Schedule<Kokkos::Dynamic>, Kokkos::Schedule<Kokkos::Static>>;
+        using CounterView = Kokkos::View<std::size_t,
+            Kokkos::DefaultExecutionSpace::memory_space,
+            Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+        CounterView physicsSteps(&this->waveCounters_.data()->physicsSteps);
+        Kokkos::parallel_reduce(
             "storm_grey_imc_transport",
-            Kokkos::RangePolicy<>(0, launchCount),
-            KOKKOS_LAMBDA(const std::size_t i)
+            Kokkos::RangePolicy<TransportSchedule>(0, launchCount).set_chunk_size(hostAccessible ? 4 : 1),
+            KOKKOS_LAMBDA(const std::size_t i, std::size_t &stepSum)
             {
+#if defined(KOKKOS_ENABLE_OPENMP) && !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__)
+            const auto &particleViews = usePrivateEnergy ? threadViews(omp_get_thread_num()) : views;
+#else
+            const auto &particleViews = views;
+#endif
+            const auto workCellCount = cellSteps.extent(0);
+            auto cellStepAccess = cellStepScatter.access();
             DeviceParticle particle = packets(i);
             DeviceParticleCold cold;
             AssignCold(cold, coldPackets(i));
@@ -799,12 +901,17 @@ public:
             {
                 ++taken;
                 ++particle.steps;
-                result = gpu::AdvanceOne(particle, cold, views);
+                if constexpr(hostAccessible)
+                {
+                    if(static_cast<std::size_t>(particle.cellIndex) < workCellCount)
+                        cellStepAccess(particle.cellIndex) += std::size_t(1);
+                }
+                result = gpu::AdvanceOne(particle, cold, particleViews);
                 if(result.ddmcExtraSplits > 0)
                 {
                     pendingExtraSplits = result.ddmcExtraSplits;
                 }
-                if(TryKeepPacketOnDevice(particle, cold, result, views))
+                if(TryKeepPacketOnDevice(particle, cold, result, particleViews))
                 {
                     if(pendingExtraSplits > 0)
                     {
@@ -815,7 +922,7 @@ public:
                 break;
             }
 
-            Kokkos::atomic_fetch_add(&waveCounters().physicsSteps, taken);
+            stepSum += taken;
             if(result.error == TransportError::HostFallback)
             {
                 CompletedTransport transport;
@@ -839,7 +946,8 @@ public:
                 AssignCold(coldPackets(i), cold);
                 survivorSplitCounts(i) = pendingExtraSplits;
                 survivorFlags(i) = 1;
-                Kokkos::atomic_fetch_add(&waveCounters().appended, pendingExtraSplits);
+                if(pendingExtraSplits != 0)
+                    Kokkos::atomic_fetch_add(&waveCounters().appended, pendingExtraSplits);
                 return;
             }
 
@@ -850,17 +958,17 @@ public:
             if(IsCensusTerminal(particle, result))
             {
                 const std::size_t cellIndex = static_cast<std::size_t>(particle.cellIndex);
-                if(views.grid.cellIDs != nullptr and cellIndex < views.grid.cellCount)
+                if(particleViews.grid.cellIDs != nullptr and cellIndex < particleViews.grid.cellCount)
                 {
-                    cold.cellID = views.grid.cellIDs[cellIndex];
+                    cold.cellID = particleViews.grid.cellIDs[cellIndex];
                 }
-                AccumulateCensusEnergy(particle, views);
+                AccumulateCensusEnergy(particle, particleViews);
                 const std::size_t censusIndex = Kokkos::atomic_fetch_add(&waveCounters().census, std::size_t(1));
                 Kokkos::atomic_fetch_add(&waveCounters().censusSteps, static_cast<std::size_t>(particle.steps));
                 nextPackets(launchCount - 1 - censusIndex) = particle;
                 AssignCold(nextColdPackets(launchCount - 1 - censusIndex), cold);
             }
-            else if(IsRankHopTerminal(particle, result, views))
+            else if(IsRankHopTerminal(particle, result, particleViews))
             {
                 const std::size_t remoteIndex = remoteOffset + Kokkos::atomic_fetch_add(&waveCounters().remote, std::size_t(1));
                 if(remoteIndex >= remoteCapacity)
@@ -882,7 +990,7 @@ public:
                 }
                 completedTransports(terminalIndex) = transport;
             }
-            });
+            }, physicsSteps);
     }
 
     void CompactSurvivors(const std::size_t launchCount)
@@ -1030,11 +1138,49 @@ public:
     }
 
 private:
+    // Reuse thread-private energy storage and per-cell work counters across waves.
+    void PrepareHostTallies(const GreyIMCViews<DeviceVec3> &views)
+    {
+        if(this->privateEnergyTallies_ && views.grid.cellCount != 0)
+        {
+            const auto threads = Kokkos::DefaultExecutionSpace::concurrency();
+            if(this->threadEnergyTallies_.extent(2) != views.grid.cellCount ||
+               this->threadEnergyTallies_.extent(0) != static_cast<std::size_t>(threads))
+                this->threadEnergyTallies_ = decltype(this->threadEnergyTallies_)(
+                    "storm_private_energy", threads, 2, views.grid.cellCount);
+            this->privateMaterialTarget_ = views.pendingMaterialEnergy;
+            this->privateRadiationTarget_ = views.pendingRadiationEnergy;
+            if(this->threadTransportViews_.extent(0) != static_cast<std::size_t>(threads))
+                this->threadTransportViews_ = decltype(this->threadTransportViews_)("storm_thread_views", threads);
+            for(int thread = 0; thread < threads; ++thread)
+            {
+                auto &threadView = this->threadTransportViews_(thread);
+                threadView = views;
+                threadView.privateEnergyTallies = true;
+                if(views.pendingMaterialEnergy)
+                    threadView.pendingMaterialEnergy = &this->threadEnergyTallies_(thread, 0, 0);
+                if(views.pendingRadiationEnergy)
+                    threadView.pendingRadiationEnergy = &this->threadEnergyTallies_(thread, 1, 0);
+            }
+        }
+        if constexpr(hostAccessible)
+        {
+            if(this->cellSteps_.extent(0) != views.grid.cellCount)
+            {
+                this->cellSteps_ = Kokkos::View<std::size_t*>("storm_cell_work", views.grid.cellCount);
+                this->cellStepScatter_ = Kokkos::Experimental::create_scatter_view(this->cellSteps_);
+            }
+        }
+    }
+
     void ReserveForIngest(const std::size_t incoming)
     {
         const std::size_t required = this->activeCount_ + incoming;
-        this->EnsureCapacity(this->hostPackets_, incoming);
-        this->EnsureCapacity(this->hostColdPackets_, incoming);
+        if constexpr(!hostAccessible)
+        {
+            this->EnsureCapacity(this->hostPackets_, incoming);
+            this->EnsureCapacity(this->hostColdPackets_, incoming);
+        }
         this->EnsureCapacity(this->packets_, required);
         this->EnsureCapacity(this->nextPackets_, required);
         this->EnsureCapacity(this->coldPackets_, required);
@@ -1046,8 +1192,11 @@ private:
         this->EnsureCapacity(this->completedTransports_, incoming);
         this->EnsureCapacity(this->fallbackTransports_, incoming);
         this->EnsureCapacity(this->pendingRemotes_, this->pendingRemoteCount_ + incoming);
-        this->EnsureCapacity(this->hostEventTransports_, incoming);
-        this->EnsureCapacity(this->hostRemoteTransports_, this->pendingRemoteCount_ + incoming);
+        if constexpr(!hostAccessible)
+        {
+            this->EnsureCapacity(this->hostEventTransports_, incoming);
+            this->EnsureCapacity(this->hostRemoteTransports_, this->pendingRemoteCount_ + incoming);
+        }
     }
 
     void ReserveForWave(const std::size_t activeCount, const std::size_t remoteOffset, const std::size_t, const bool fullEventBuffers)
@@ -1073,10 +1222,11 @@ private:
                 (fullEventBuffers
                      ? activeCount
                      : std::max<std::size_t>(65536, activeCount / 8)));
-        this->EnsureCapacity(this->hostEventTransports_, eventGuess);
-        this->EnsureCapacity(
-            this->hostRemoteTransports_,
-            remoteOffset + eventGuess);
+        if constexpr(!hostAccessible)
+        {
+            this->EnsureCapacity(this->hostEventTransports_, eventGuess);
+            this->EnsureCapacity(this->hostRemoteTransports_, remoteOffset + eventGuess);
+        }
     }
 
     static void AppendSpan(std::vector<CompletedTransport> &destination,
@@ -1098,6 +1248,13 @@ private:
         if(count == 0)
         {
             return {};
+        }
+        if constexpr(hostAccessible)
+        {
+            Kokkos::DefaultExecutionSpace{}.fence("STORM direct completion access");
+            ++this->metrics_.synchronizationCount;
+            // Borrowed until the next executor call, just like the staged span.
+            return {source.data(), count};
         }
         Kokkos::deep_copy(
             Kokkos::subview(destination,
@@ -1193,6 +1350,14 @@ private:
         }
     }
 
+    Kokkos::View<GreyIMCViews<DeviceVec3>*, Kokkos::HostSpace> threadTransportViews_;
+    bool privateEnergyTallies_ = false;
+    Kokkos::View<double***, Kokkos::LayoutRight> threadEnergyTallies_;
+    double *privateMaterialTarget_ = nullptr;
+    double *privateRadiationTarget_ = nullptr;
+    Kokkos::View<std::size_t*> cellSteps_;
+    decltype(Kokkos::Experimental::create_scatter_view(
+        std::declval<Kokkos::View<std::size_t*>>())) cellStepScatter_;
     std::size_t maximumInnerSteps_;
     bool overlapCommunication_ = false;
     std::size_t poolReservedActiveCapacity_ = 0;

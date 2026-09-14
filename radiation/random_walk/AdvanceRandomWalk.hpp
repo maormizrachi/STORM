@@ -207,12 +207,12 @@ RandomWalkResult TryAdvanceRandomWalk(ParticleT &particle, const ViewsT &views)
     const double expFactor = Expm1(-dt * absorptionRate);
     if(views.depositMaterialEnergy)
     {
-        STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], -expFactor * particle.weight);
+        ::STORM::transport::AccumulateEnergy(views, views.pendingMaterialEnergy[cellIndex], -expFactor * particle.weight);
     }
     if(absorptionRate > 0.0)
     {
         const double integratedEnergy = particle.weight * expFactor * (-1.0 / absorptionRate);
-        STORM_TRANSPORT_ACCUMULATE(views.pendingRadiationEnergy[cellIndex], integratedEnergy);
+        ::STORM::transport::AccumulateEnergy(views, views.pendingRadiationEnergy[cellIndex], integratedEnergy);
         if(randomWalk.spectralEnabled && views.pendingGroupRadiationEnergy != nullptr)
         {
             std::size_t group = 0;
@@ -230,7 +230,7 @@ RandomWalkResult TryAdvanceRandomWalk(ParticleT &particle, const ViewsT &views)
     {
         if(views.depositMaterialEnergy)
         {
-            STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], particle.weight);
+            ::STORM::transport::AccumulateEnergy(views, views.pendingMaterialEnergy[cellIndex], particle.weight);
         }
         result.step.change = ParticleStatus::REMOVE;
         return result;

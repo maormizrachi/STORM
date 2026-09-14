@@ -19,6 +19,17 @@ namespace STORM
 namespace transport
 {
 
+// Private CPU tallies have one writer; shared/GPU tallies still require atomics.
+template<typename Views>
+STORM_TRANSPORT_INLINE
+void AccumulateEnergy(const Views &views, double &target, double value)
+{
+    if(views.privateEnergyTallies)
+        target += value;
+    else
+        STORM_TRANSPORT_ACCUMULATE(target, value);
+}
+
 STORM_TRANSPORT_INLINE
 double Abs(const double value)
 {
