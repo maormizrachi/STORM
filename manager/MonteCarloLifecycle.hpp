@@ -256,6 +256,7 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
         particle.steps = 0;
     };
 
+    this->engine->BeginTransport();
     this->engine->VisitLocal(initializeParticle);
     for(std::vector<MCParticle> &particles : this->detachedRankParticles)
     {
@@ -455,9 +456,22 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
 #endif
                 if(needsCompletionVerification)
                 {
+                    // An incomplete chunked scan is not evidence of work.
+                    // Verification retains every negative vote until the
+                    // attempt ends; periodic partial scans can therefore
+                    // veto every attempt forever, even with empty queues.
+                    // Rescan all neighbors before voting, including on the
+                    // iteration that first receives the verification request.
+                    const auto verifyHandleStart = std::chrono::steady_clock::now();
+                    const bool verificationWorkDone = this->HandleAll(data, true);
+                    this->loopHandleSeconds += std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - verifyHandleStart).count();
                     this->engine->FlushAll();
                     this->engine->Progress();
-                    const bool idle = localWorkDone && !this->engine->Pending();
+                    // A second transport pass can also complete device work.
+                    // Its count updates must reach AmountManager on the next
+                    // iteration before this rank can vote for completion.
+                    const bool idle = verificationWorkDone && this->localDecrementAmount == 0 && !this->engine->Pending();
 #ifdef STORM_WITH_MPI
                     if(this->amountManager)
                     {
@@ -480,6 +494,7 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
         }
     }
 
+    this->engine->EndTransport();
     this->engine->FinishCounters();
 
     std::chrono::high_resolution_clock::time_point loopEnd = std::chrono::high_resolution_clock::now();

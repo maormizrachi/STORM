@@ -660,7 +660,7 @@ bool MonteCarloManager<T, Grid, Physics>::TransportBatchOnDevice(std::vector<MCP
 #endif // STORM_WITH_GPU
 
 template<typename T, typename Grid, typename Physics>
-bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &stepData)
+bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &stepData, bool fullNeighborSweep)
 {
     std::vector<MCParticle> &particlesToAdd = this->particlesToAdd;
     size_t &progressStepCounter = this->progressStepCounter;
@@ -668,6 +668,9 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
     std::vector<rank_t> &nextActiveRankList = this->nextActiveRanks;
 
     nextActiveRankList.clear();
+#if defined(STORM_DEBUG) && defined(STORM_WITH_MPI)
+    ++this->hostTransportVisit;
+#endif
     bool completedNeighborSweep = true;
     auto hasDetachedParticles = [this](rank_t rank)
     {
@@ -686,15 +689,26 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
     }
 #endif
 
-    if(currentActiveRanks.empty() and scanForHostTransport)
+    if((currentActiveRanks.empty() or this->config.fairReceiveScheduling) and scanForHostTransport)
     {
+        this->activeRankListed.assign(this->sizeWorld, 0);
+        for(rank_t rank : currentActiveRanks) this->activeRankListed[rank] = 1;
+        auto activate = [&](rank_t rank)
+        {
+            if(not this->activeRankListed[rank])
+            {
+                this->activeRankListed[rank] = 1;
+                currentActiveRanks.push_back(rank);
+            }
+        };
         size_t neighborsNum = this->neighbors.size();
-        if(neighborsNum > 0 and this->activeRankScanRemaining == 0)
+        if(neighborsNum > 0 and (fullNeighborSweep or this->activeRankScanRemaining == 0))
         {
             this->activeRankScanRemaining = neighborsNum;
             this->activeRankScanCursor %= neighborsNum;
         }
-        size_t scanCount = (neighborsNum == 0) ? 0 : std::min(this->activeRankScanRemaining, std::min(neighborsNum, std::max<size_t>(1, this->config.activeRankScanChunk)));
+        const size_t scanLimit = fullNeighborSweep ? neighborsNum : std::max<size_t>(1, this->config.activeRankScanChunk);
+        size_t scanCount = (neighborsNum == 0) ? 0 : std::min(this->activeRankScanRemaining, std::min(neighborsNum, scanLimit));
 
         for(size_t scanOffset = 0; scanOffset < scanCount; ++scanOffset)
         {
@@ -702,13 +716,13 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
             rank_t rank = this->neighbors[i];
             if(hasDetachedParticles(rank))
             {
-                currentActiveRanks.push_back(rank);
+                activate(rank);
                 continue;
             }
             size_t len = this->engine->LocalSize(rank);
             if(len)
             {
-                currentActiveRanks.push_back(rank);
+                activate(rank);
             }
         }
         if(neighborsNum > 0)
@@ -721,11 +735,13 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
         {
             if(hasDetachedParticles(this->rankWorld) or this->engine->LocalSize(this->rankWorld) != 0)
             {
-                currentActiveRanks.push_back(this->rankWorld);
+                activate(this->rankWorld);
             }
         }
     }
 
+    if(this->config.fairReceiveScheduling and currentActiveRanks.size() > 1)
+        std::rotate(currentActiveRanks.begin(), currentActiveRanks.begin() + 1, currentActiveRanks.end());
     bool isEmpty = true;
     size_t activeRanksNum = currentActiveRanks.size();
 
@@ -780,6 +796,8 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
             }
 #endif // STORM_WITH_GPU
 
+            size_t eventsRemaining = this->config.fairReceiveScheduling ?
+                std::max<size_t>(1, this->config.localTransportEventBudget) : std::numeric_limits<size_t>::max();
             auto processParticle = [&](MCParticle &particle, size_t particleIndex)
             {
                 bool removeCurrent = false;
@@ -788,9 +806,9 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
                 try
                 {
 #if defined(STORM_DEBUG) && defined(STORM_WITH_MPI)
-                    if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rankWorld)
+                    if(particle.lastSeen == this->hostTransportVisit and particle.lastSeenRank == this->rankWorld)
                     {
-                        STORMError eo("Particle was already handled in this iteration");
+                        STORMError eo("Particle was already handled in this transport pass");
                         eo.addEntry("My Rank", this->rankWorld);
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Iteration", this->iteration);
@@ -800,7 +818,7 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
                         eo.addEntry("In List Index (2)", particleIndex);
                         throw eo;
                     }
-                    particle.lastSeen = this->iteration;
+                    particle.lastSeen = this->hostTransportVisit;
                     particle.lastSeenRankBuf = rank;
                     particle.lastSeenRank = this->rankWorld;
                     particle.lastSeenIndex = particleIndex;
@@ -811,6 +829,10 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
                     constexpr size_t stuckParticleWarnInterval = 256 * 1024;
                     while(true)
                     {
+                        // Suspend only between complete physics/events. Keep
+                        // the particle, RNG state and remaining time in place.
+                        if(eventsRemaining == 0) return false;
+                        --eventsRemaining;
                         ++progressStepCounter;
                         if((progressStepCounter % communicationProgressInterval) == 0)
                         {
@@ -1041,13 +1063,15 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
                 }
 
                 assert(removeCurrent);
+                return removeCurrent;
             };
             const size_t particleCount = std::min(std::max<size_t>(1, this->config.localTransportBatchSize), localParticles.size());
             for(size_t processed = 0; processed < particleCount; ++processed)
             {
                 const size_t particleIndex = localParticles.size() - 1;
-                processParticle(localParticles.back(), particleIndex);
+                if(not processParticle(localParticles.back(), particleIndex)) break;
                 localParticles.pop_back();
+                if(eventsRemaining == 0) break;
             }
 
             if(not localParticles.empty())

@@ -275,6 +275,8 @@ private:
     bool completionDone = false;
     std::vector<std::vector<MCParticle>> detachedRankParticles;
     std::vector<rank_t> activeRanks, nextActiveRanks;
+    std::vector<unsigned char> activeRankListed;
+    size_t hostTransportVisit = 0;
     size_t activeRankScanCursor = 0, activeRankScanRemaining = 0;
 #ifdef STORM_WITH_GPU
     std::unique_ptr<gpu::KokkosLocalTransportExecutor> gpuTransportExecutor;
@@ -336,7 +338,7 @@ private:
                                              MonteCarloStepFinalData &stepData,
                                              const TransportStepContext &context);
 
-    bool HandleAll(MonteCarloStepFinalData &stepData);
+    bool HandleAll(MonteCarloStepFinalData &stepData, bool fullNeighborSweep = false);
 
     bool HaveParticlesChanged(void) const
     {

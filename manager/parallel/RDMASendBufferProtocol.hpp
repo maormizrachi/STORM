@@ -80,6 +80,8 @@ void RDMACommunicationEngine<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t 
         size_t rankIndex = static_cast<size_t>(rank);
         if(not this->sendBufferActive[rankIndex])
         {
+            if(this->config.sendBufferMaxAgeMicroseconds != 0)
+                this->sendBufferBirth[rankIndex] = std::chrono::steady_clock::now();
             this->sendBufferActive[rankIndex] = 1;
             this->sendBufferPendingRanks++;
         }
@@ -100,7 +102,9 @@ void RDMACommunicationEngine<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t f
 {
     assert(this->sendBufferPendingParticles >= flushedParticles);
     this->sendBufferPendingParticles -= flushedParticles;
-    this->MarkSendBufferEmpty(rank);
+    this->sendBuffers[rank].Consume(flushedParticles);
+    if(this->sendBuffers[rank].empty()) this->MarkSendBufferEmpty(rank);
+    else this->QueueReadySendBuffer(rank);
 }
 
 template<typename T, typename Grid>
@@ -137,24 +141,21 @@ void RDMACommunicationEngine<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         }
         if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
         {
-            if(thresholdFlush)
-            {
-                this->QueueReadySendBuffer(toRank);
-            }
+            this->QueueReadySendBuffer(toRank);
             return;
         }
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-        size_t flushedParticles = particles.size();
+        size_t flushedParticles = 0;
         uint32_t sourceLkey = particles.SourceLkey(
             remoteHandler, remoteHandler->SupportsPersistentSendSourceRegistration());
-        bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
-        if(not transferred)
+        if(this->fixedTransportActive)
+            flushedParticles = remoteHandler->TransferParticlePrefix(particles.data(), particles.size(), sourceLkey);
+        else if(remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey))
+            flushedParticles = particles.size();
+        if(flushedParticles == 0)
         {
             this->ProgressReallocations();
-            if(thresholdFlush)
-            {
-                this->QueueReadySendBuffer(toRank);
-            }
+            this->QueueReadySendBuffer(toRank);
             return;
         }
         this->transfersCounter++;
@@ -169,7 +170,7 @@ void RDMACommunicationEngine<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         {
             this->sendBufferReadyQueued[static_cast<size_t>(toRank)] = 0;
         }
-        flushRankIfReady(toRank, false);
+        flushRankIfReady(toRank, true);
     }
     if(this->readySendBufferCursor >= this->readySendBufferRanks.size())
     {
@@ -183,8 +184,9 @@ void RDMACommunicationEngine<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         this->readySendBufferCursor = 0;
     }
 
-    if(flushSmallBuffers)
+    if(flushSmallBuffers or this->config.sendBufferMaxAgeMicroseconds != 0)
     {
+        const auto now = std::chrono::steady_clock::now();
         for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
         {
             rank_t toRank = this->sendBufferActiveRanks[index];
@@ -202,7 +204,10 @@ void RDMACommunicationEngine<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
                 this->sendBufferActiveRanks.pop_back();
                 continue;
             }
-            flushRankIfReady(toRank, true);
+            const bool expired = this->config.sendBufferMaxAgeMicroseconds != 0 and
+                now - this->sendBufferBirth[rankIndex] >=
+                    std::chrono::microseconds(this->config.sendBufferMaxAgeMicroseconds);
+            if(flushSmallBuffers or expired) flushRankIfReady(toRank, true);
             if(not this->sendBufferActive[rankIndex])
             {
                 this->sendBufferListed[rankIndex] = 0;
@@ -218,55 +223,7 @@ void RDMACommunicationEngine<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
 template<typename T, typename Grid>
 void RDMACommunicationEngine<T, Grid>::FlushAllSendBuffers(void)
 {
-    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
-    for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
-    {
-        rank_t toRank = this->sendBufferActiveRanks[index];
-        if(toRank < 0 or toRank >= static_cast<rank_t>(this->sendBuffers.size()))
-        {
-            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
-            this->sendBufferActiveRanks.pop_back();
-            continue;
-        }
-        size_t rankIndex = static_cast<size_t>(toRank);
-        if(not this->sendBufferActive[rankIndex])
-        {
-            this->sendBufferListed[rankIndex] = 0;
-            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
-            this->sendBufferActiveRanks.pop_back();
-            continue;
-        }
-        RegisteredSendBuffer_t &particles = this->sendBuffers[rankIndex];
-        if(particles.empty())
-        {
-            this->MarkSendBufferEmpty(toRank);
-            this->sendBufferListed[rankIndex] = 0;
-            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
-            this->sendBufferActiveRanks.pop_back();
-            continue;
-        }
-        size_t flushedParticles = particles.size();
-        if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
-        {
-            index++;
-            continue;
-        }
-        RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-        uint32_t sourceLkey = particles.SourceLkey(
-            remoteHandler, remoteHandler->SupportsPersistentSendSourceRegistration());
-        bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
-        if(not transferred)
-        {
-            this->ProgressReallocations();
-            index++;
-            continue;
-        }
-        this->transfersCounter++;
-        this->NoteSendBufferFlush(toRank, flushedParticles);
-        this->sendBufferListed[rankIndex] = 0;
-        this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
-        this->sendBufferActiveRanks.pop_back();
-    }
+    this->FlushSendBuffers(true);
 }
 
 template<typename T, typename Grid>

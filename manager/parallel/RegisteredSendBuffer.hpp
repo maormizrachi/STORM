@@ -22,10 +22,12 @@ public:
 
     RegisteredSendBuffer(RegisteredSendBuffer &&other) noexcept:
         storage(std::move(other.storage)),
+        consumed(other.consumed),
         registrationHandler(other.registrationHandler),
         sourceRegistration(other.sourceRegistration)
     {
         other.registrationHandler = nullptr;
+        other.consumed = 0;
         other.sourceRegistration = {};
     }
 
@@ -35,6 +37,8 @@ public:
         {
             this->ReleaseRegistration();
             this->storage = std::move(other.storage);
+            this->consumed = other.consumed;
+            other.consumed = 0;
             this->registrationHandler = other.registrationHandler;
             this->sourceRegistration = other.sourceRegistration;
             other.registrationHandler = nullptr;
@@ -50,7 +54,7 @@ public:
 
     size_t size(void) const
     {
-        return this->storage.size();
+        return this->storage.size() - this->consumed;
     }
 
     size_t capacity(void) const
@@ -60,22 +64,31 @@ public:
 
     bool empty(void) const
     {
-        return this->storage.empty();
+        return this->size() == 0;
     }
 
     ParticleT *data(void)
     {
-        return this->storage.data();
+        return this->consumed ? this->storage.data() + this->consumed : this->storage.data();
     }
 
     const ParticleT *data(void) const
     {
-        return this->storage.data();
+        return this->consumed ? this->storage.data() + this->consumed : this->storage.data();
     }
 
     void clear(void)
     {
         this->storage.clear();
+        this->consumed = 0;
+    }
+
+    // Transfers are synchronous: the NIC no longer accesses this prefix.
+    void Consume(size_t count)
+    {
+        assert(count <= this->size());
+        this->consumed += count;
+        if(this->consumed == this->storage.size()) this->clear();
     }
 
     void ReleaseStorage(void)
@@ -139,12 +152,21 @@ private:
         {
             return;
         }
+        if(this->consumed != 0)
+        {
+            desiredCapacity -= this->consumed;
+            std::move(this->storage.begin() + this->consumed, this->storage.end(), this->storage.begin());
+            this->storage.resize(this->size());
+            this->consumed = 0;
+            if(desiredCapacity <= this->storage.capacity()) return;
+        }
         this->ReleaseRegistration();
         size_t newCapacity = std::max<size_t>(desiredCapacity, std::max<size_t>(1, this->storage.capacity() * 2));
         this->storage.reserve(newCapacity);
     }
 
     std::vector<ParticleT> storage;
+    size_t consumed = 0;
     RankHandlerT *registrationHandler = nullptr;
     typename RemoteMemoryAgent<ParticleT>::SourceRegistration sourceRegistration{};
 };

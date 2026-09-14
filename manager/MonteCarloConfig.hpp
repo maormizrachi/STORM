@@ -41,6 +41,14 @@ public:
     // Bound one local compute slice so the host returns regularly to MPI/RMA
     // progress.  This is also the initial host-to-device packet batch size.
     size_t localTransportBatchSize    = 4096;
+    // Fixed allocations during transport; growth and shrinking happen only
+    // after the previous step has completed on every rank.
+    bool rdmaFixedStepQueues          = false;
+    size_t rdmaFixedQueueMaxSize      = 65536;
+    bool fairReceiveScheduling       = false;
+    size_t localTransportEventBudget  = 65536;
+    // Maximum residence time of a partial outgoing batch (0 disables).
+    size_t sendBufferMaxAgeMicroseconds = 0;
 #ifdef STORM_WITH_GPU
     // Events per particle per device wave. A wavefront retires only when its
     // slowest lane stops, so a long cap makes thin lanes idle behind thick

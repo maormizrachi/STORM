@@ -26,6 +26,8 @@ public:
     using MCParticle = Particle<T>;
     virtual ~CommunicationEngine() = default;
     virtual void Prepare() = 0;
+    virtual void BeginTransport() {}
+    virtual void EndTransport() {}
     virtual void Progress() = 0;
     // Cheap network polling between compute slices; full maintenance stays in Progress.
     virtual void Poll()

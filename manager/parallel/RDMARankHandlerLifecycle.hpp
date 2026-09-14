@@ -7,6 +7,10 @@
 template<typename T, typename Grid>
 void RDMACommunicationEngine<T, Grid>::ShrinkBuffers(void)
 {
+    if(this->fixedTransportActive)
+    {
+        throw std::runtime_error("RDMA engine: shrinking during fixed transport");
+    }
     if(this->rankWorld == 0)
     {
         std::cout << "Shrinking buffers." << std::endl;
@@ -305,7 +309,37 @@ void RDMACommunicationEngine<T, Grid>::PrepareHandlers(void)
         ForEachRankSyncByList(this->commWorld, newNeighbors, createHandler);
     }
 
+    if(this->config.rdmaFixedStepQueues) this->AdaptFixedQueueCapacities();
     this->ResetAllBuffers();
+}
+
+template<typename T, typename Grid>
+void RDMACommunicationEngine<T, Grid>::AdaptFixedQueueCapacities()
+{
+    // Demand is recorded by the producer, but allocation belongs to the
+    // consumer. Exchange it collectively while all rings are quiescent.
+    std::vector<unsigned long long> outgoing(this->sizeWorld, 0), incoming(this->sizeWorld, 0);
+    for(size_t rank = 0; rank < this->rankHandlers.size(); ++rank)
+    {
+        if(this->rankHandlers[rank])
+        {
+            outgoing[rank] = std::min(this->rankHandlers[rank]->NextPeerCapacity(), this->config.rdmaFixedQueueMaxSize);
+
+        }
+    }
+    MPI_Alltoall(outgoing.data(), 1, MPI_UNSIGNED_LONG_LONG, incoming.data(), 1, MPI_UNSIGNED_LONG_LONG, this->commWorld);
+    // Both endpoints compute the same required capacity. Sorted peer order
+    // gives the pair collectives an acyclic order (also used by shrinking).
+    for(size_t rank = 0; rank < this->rankHandlers.size(); ++rank)
+    {
+        RankHandler_t *handler = this->rankHandlers[rank];
+        if(not handler) continue;
+        const size_t required = std::max<size_t>(outgoing[rank], incoming[rank]);
+        if(required > std::min(handler->buffsize, handler->peer_buffsize))
+        {
+            handler->Reallocate(1.0, required);
+        }
+    }
 }
 
 #endif // STORM_RDMA_RANK_HANDLER_LIFECYCLE_HPP

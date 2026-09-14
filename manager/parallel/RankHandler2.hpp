@@ -47,6 +47,11 @@ public:
 
     bool TransferParticles(const MCParticle *particles, size_t particlesNum, uint32_t source_lkey = 0);
 
+    void BeginFixedStep();
+    void EndFixedStep();
+    size_t TransferParticlePrefix(const MCParticle *particles, size_t count, uint32_t source_lkey = 0);
+    size_t NextPeerCapacity() const { return nextPeerCapacity; }
+
     size_t LocalSize(void) const;
 
     bool LocalEmpty(void) const;
@@ -87,6 +92,9 @@ private:
     static constexpr size_t QUEUE_STORAGE_SIZE = 6;
     uint64_t queue_storage[QUEUE_STORAGE_SIZE];
     uint64_t buffer_generation;
+    bool fixedStepActive = false;
+    uint64_t producerTail = 0, cachedHead = 0;
+    size_t nextPeerCapacity = 0;
 
     void SynchronizeLocalQueueForRead(void) const;
     void SynchronizeLocalParticlesForRead(void) const;
@@ -222,6 +230,10 @@ RankHandler2<T, Grid>::RankHandler2(size_t buffsize, const MPI_Comm &comm_world,
 template<typename T, typename Grid>
 void RankHandler2<T, Grid>::Reset(void)
 {
+    if(this->fixedStepActive)
+    {
+        throw std::runtime_error("RankHandler2::Reset during fixed transport step");
+    }
     this->head = 0;
     this->tail = 0;
     this->PublishLocalQueueCounter();
@@ -230,6 +242,10 @@ void RankHandler2<T, Grid>::Reset(void)
 template<typename T, typename Grid>
 void RankHandler2<T, Grid>::Destroy(void)
 {
+    if(this->fixedStepActive)
+    {
+        throw std::runtime_error("RankHandler2::Destroy during fixed transport step");
+    }
     if(this->destroyed)
     {
         return;
@@ -458,7 +474,7 @@ void RankHandler2<T, Grid>::DetachLocalParticles(std::vector<MCParticle> &result
     }
 
     size_t count = static_cast<size_t>(localTail - localHead);
-    result.resize(count);
+    result.clear();
     if(count == 0)
     {
         return;
@@ -467,10 +483,13 @@ void RankHandler2<T, Grid>::DetachLocalParticles(std::vector<MCParticle> &result
     this->SynchronizeLocalParticlesForRead();
     size_t start = static_cast<size_t>(localHead % this->buffsize);
     size_t first = std::min(count, this->buffsize - start);
-    std::copy(this->particles + start, this->particles + start + first, result.begin());
+    // Construct directly from the received packets instead of initializing
+    // every field and then immediately overwriting it with copy assignment.
+    result.reserve(count);
+    result.insert(result.end(), this->particles + start, this->particles + start + first);
     if(first < count)
     {
-        std::copy(this->particles, this->particles + (count - first), result.begin() + first);
+        result.insert(result.end(), this->particles, this->particles + (count - first));
     }
     this->head = localTail;
     this->PublishLocalQueueCounter();
@@ -480,6 +499,8 @@ template<typename T, typename Grid>
 template<typename Writer>
 void RankHandler2<T, Grid>::AppendLocalParticles(size_t particlesNum, const Writer &writer)
 {
+    if(this->fixedStepActive)
+        throw std::runtime_error("RankHandler2: local append would violate the fixed queue's single producer");
     if(particlesNum == 0)
     {
         return;
@@ -532,6 +553,8 @@ void RankHandler2<T, Grid>::AppendLocalParticles(const MCParticle *particles, si
 template<typename T, typename Grid>
 void RankHandler2<T, Grid>::Reallocate(double factor, size_t requiredBuffSize)
 {
+    if(this->fixedStepActive)
+        throw std::runtime_error("RankHandler2::Reallocate during fixed transport step");
 #ifdef MEMORY_DEBUG
     memory_debug::check_system_memory("RankHandler2::Reallocate");
 #endif
@@ -650,6 +673,8 @@ bool RankHandler2<T, Grid>::UsesAsyncReallocation(void) const
 template<typename T, typename Grid>
 ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
 {
+    if(this->fixedStepActive)
+        throw std::runtime_error("RankHandler2::LocalReallocate during fixed transport step");
     if(not this->UsesAsyncReallocation())
     {
         throw std::runtime_error("RankHandler2::LocalReallocate is only supported for native RDMA backends");
@@ -706,6 +731,8 @@ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
 template<typename T, typename Grid>
 void RankHandler2<T, Grid>::UpdatePeerRemoteInfo(const ReallocationMetadata &metadata)
 {
+    if(this->fixedStepActive)
+        throw std::runtime_error("RankHandler2: late resize metadata during fixed transport step");
     if(this->size_internal <= 1)
     {
         return;
@@ -746,6 +773,93 @@ void RankHandler2<T, Grid>::DeregisterSendSource(uint64_t handle)
 }
 
 template<typename T, typename Grid>
+void RankHandler2<T, Grid>::BeginFixedStep()
+{
+    if(this->fixedStepActive or this->size_internal != 2 or
+       this->reallocationAgent->IsPendingReallocation(this->peer_rank_world) or
+       not this->LocalEmpty())
+    {
+        throw std::runtime_error("RankHandler2: invalid fixed-step entry");
+    }
+    this->RefreshPeerBufferInfo();
+    uint64_t counters[2] = {};
+    this->lengths_agent->Get(counters, 2, this->other_rank, HEAD_INDEX);
+    // No rank can send yet, so the entire snapshot is stable.
+    if(counters[0] != 0 or counters[1] != 0 or this->peer_buffsize == 0)
+    {
+        throw std::runtime_error("RankHandler2: fixed step requires a reset peer queue");
+    }
+    this->producerTail = this->cachedHead = 0;
+    this->nextPeerCapacity = this->peer_buffsize;
+    this->fixedStepActive = true;
+}
+
+template<typename T, typename Grid>
+void RankHandler2<T, Grid>::EndFixedStep()
+{
+    if(not this->fixedStepActive or not this->LocalEmpty())
+    {
+        throw std::runtime_error("RankHandler2: fixed step ended with pending receives");
+    }
+    // Every prefix transfer completes payload and tail remotely before return.
+    this->fixedStepActive = false;
+}
+
+template<typename T, typename Grid>
+size_t RankHandler2<T, Grid>::TransferParticlePrefix(const MCParticle *particles, size_t count,
+                                                    uint32_t source_lkey)
+{
+    if(not this->fixedStepActive)
+    {
+        throw std::runtime_error("RankHandler2: prefix transfer outside fixed step");
+    }
+    if(count == 0) return 0;
+    if(particles == nullptr) throw std::runtime_error("RankHandler2: null prefix source");
+    size_t available = this->peer_buffsize - static_cast<size_t>(this->producerTail - this->cachedHead);
+    if(count > available)
+    {
+        this->lengths_agent->Get(&this->cachedHead, 1, this->other_rank, HEAD_INDEX);
+        if(this->cachedHead > this->producerTail or
+           this->producerTail - this->cachedHead > this->peer_buffsize)
+            throw std::runtime_error("RankHandler2: invalid fixed queue credits");
+        available = this->peer_buffsize - static_cast<size_t>(this->producerTail - this->cachedHead);
+        if(count > available)
+        {
+            // Bound the demand sample to twice the current capacity; the
+            // engine applies a configurable allocation ceiling next step.
+            const size_t extra = std::min(count - available, this->peer_buffsize);
+            if(extra <= std::numeric_limits<size_t>::max() - this->peer_buffsize)
+                this->nextPeerCapacity = std::max(this->nextPeerCapacity, this->peer_buffsize + extra);
+        }
+    }
+    const size_t sent = std::min(count, available);
+    if(sent == 0) return 0;
+#ifdef STORM_DEBUG
+    for(size_t i = 0; i < sent; ++i)
+        if(particles[i].nextRank != this->peer_rank_world)
+            throw std::runtime_error("RankHandler2: fixed prefix has the wrong destination");
+#endif
+    if(sent > std::numeric_limits<uint64_t>::max() - this->producerTail)
+    {
+        throw std::runtime_error("RankHandler2: fixed queue tail overflow");
+    }
+    const size_t start = static_cast<size_t>(this->producerTail % this->peer_buffsize);
+    const size_t first = std::min(sent, this->peer_buffsize - start);
+    this->particles_agent->Put(particles, first, this->other_rank, start, false, source_lkey);
+    if(first < sent)
+    {
+        this->particles_agent->Put(particles + first, sent - first, this->other_rank, 0, false, source_lkey);
+    }
+    // Retain the conservative publication protocol on all providers. The
+    // source registration and allocation remain owned until this returns.
+    this->particles_agent->QuiesceTarget(this->other_rank);
+    const uint64_t newTail = this->producerTail + sent;
+    this->lengths_agent->Put(&newTail, 1, this->other_rank, TAIL_INDEX, true);
+    this->producerTail = newTail;
+    return sent;
+}
+
+template<typename T, typename Grid>
 bool RankHandler2<T, Grid>::TransferParticles(const std::vector<MCParticle> &particles)
 {
     return this->TransferParticles(particles.data(), particles.size(), 0);
@@ -754,6 +868,10 @@ bool RankHandler2<T, Grid>::TransferParticles(const std::vector<MCParticle> &par
 template<typename T, typename Grid>
 bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_t particlesNum, uint32_t source_lkey)
 {
+    if(this->fixedStepActive)
+    {
+        throw std::runtime_error("RankHandler2: legacy transfer during fixed transport step");
+    }
     size_t Np = particlesNum;
     if(particles == nullptr or particlesNum == 0)
     {

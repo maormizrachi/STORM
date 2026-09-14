@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <chrono>
 #include <exception>
 #include <sstream>
 #include <boost/container/flat_set.hpp>
@@ -68,6 +69,8 @@ class RDMACommunicationEngine : public CommunicationEngine<T>
     size_t readySendBufferCursor = 0, sendBufferPendingRanks = 0;
     size_t sendBufferPendingParticles = 0;
     size_t progressCycle = 0;
+    bool fixedTransportActive = false;
+    std::vector<std::chrono::steady_clock::time_point> sendBufferBirth;
 
 public:
     RDMACommunicationEngine(const Grid &grid, const MonteCarloConfig &config,
@@ -76,6 +79,10 @@ public:
     {
         MPI_Comm_rank(this->commWorld, &this->rankWorld);
         MPI_Comm_size(this->commWorld, &this->sizeWorld);
+        if(this->config.rdmaFixedStepQueues and
+           (this->config.initialBufferSize == 0 or
+            this->config.rdmaFixedQueueMaxSize < this->config.minimalBuffSize))
+            throw std::runtime_error("RDMA fixed queues require positive capacity and a growth limit at least the minimum capacity");
 
         // OFIContext construction exchanges endpoint addresses over commWorld and
         // must therefore happen collectively before neighbor-specific handlers are built.
@@ -89,6 +96,7 @@ public:
         this->sendBufferActive.assign(this->sizeWorld, 0);
         this->sendBufferListed.assign(this->sizeWorld, 0);
         this->sendBufferReadyQueued.assign(this->sizeWorld, 0);
+        this->sendBufferBirth.resize(this->sizeWorld);
 
         auto reallocationFunction = [this](rank_t rank)
         {
@@ -158,6 +166,8 @@ public:
 
     void Prepare() override
     {
+        if(this->fixedTransportActive)
+            throw std::runtime_error("RDMA engine prepared during fixed transport");
         ranksGhostMap = GetGhostMap(grid);
         PrepareHandlers();
         ResetSendBuffers();
@@ -165,8 +175,43 @@ public:
         progressCycle = 0;
     }
 
+    void BeginTransport() override
+    {
+        if(not this->config.rdmaFixedStepQueues) return;
+        if(this->fixedTransportActive or not AllSendBuffersEmpty() or
+           this->reallocationAgent->HasPendingAsyncReallocations())
+            throw std::runtime_error("RDMA engine: pending operations at fixed-step entry");
+        // First barrier closes all reset/resize work. Second barrier keeps
+        // early producers from posting while another rank snapshots counters.
+        MPI_Barrier(this->commWorld);
+        for(RankHandler_t *handler : this->rankHandlers)
+            if(handler) handler->BeginFixedStep();
+        MPI_Barrier(this->commWorld);
+        this->fixedTransportActive = true;
+    }
+
+    void EndTransport() override
+    {
+        if(not this->config.rdmaFixedStepQueues) return;
+        if(not this->fixedTransportActive or this->Pending())
+            throw std::runtime_error("RDMA engine: pending operations at fixed-step exit");
+        // Every transfer has completed remotely; all ranks must leave the
+        // transport loop before anyone may unlock allocations for resizing.
+        MPI_Barrier(this->commWorld);
+        for(RankHandler_t *handler : this->rankHandlers)
+            if(handler) handler->EndFixedStep();
+        this->fixedTransportActive = false;
+    }
+
     void Progress() override
     {
+        if(this->fixedTransportActive)
+        {
+            // BeginTransport collectively closes resizing for this epoch.
+            // Completion progress is still required by the RMA provider.
+            MakeRDMAProgress();
+            return;
+        }
         PumpRMAProgress();
         if(!UsesAsyncReallocation() || progressCycle++ % std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles) == 0 ||
            reallocationAgent->HasPendingAsyncReallocations())
@@ -298,6 +343,7 @@ private:
     void ProgressReallocations();
     void MakeRDMAProgress();
     void PrepareHandlers();
+    void AdaptFixedQueueCapacities();
     void RetireStaleHandlers();
     void ResetAllBuffers()
     {
@@ -369,6 +415,7 @@ void RDMACommunicationEngine<T, Grid>::FreeHandlers(void)
 template<typename T, typename Grid>
 bool RDMACommunicationEngine<T, Grid>::UsesAsyncReallocation(void) const
 {
+    if(this->fixedTransportActive) return false;
     for(const RankHandler_t *handler : this->rankHandlers)
     {
         if(handler and handler->UsesAsyncReallocation())
@@ -391,6 +438,7 @@ void RDMACommunicationEngine<T, Grid>::PumpRMAProgress(void)
 template<typename T, typename Grid>
 void RDMACommunicationEngine<T, Grid>::ProgressReallocations(void)
 {
+    if(this->fixedTransportActive) return;
     this->PumpRMAProgress();
     if(this->UsesAsyncReallocation())
     {
