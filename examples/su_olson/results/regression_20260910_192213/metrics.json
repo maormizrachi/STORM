@@ -1,0 +1,17 @@
+{
+  "1": {
+    "radiation_relative_L1": 0.2279911619088577,
+    "material_relative_L1": 0.3089255963980209,
+    "material_temperature_relative_L1": 0.4494535142292702
+  },
+  "10": {
+    "radiation_relative_L1": 0.05806336148722709,
+    "material_relative_L1": 0.06444321708229975,
+    "material_temperature_relative_L1": 0.02085666191375176
+  },
+  "100": {
+    "radiation_relative_L1": 0.016609079335824718,
+    "material_relative_L1": 0.012677463089284625,
+    "material_temperature_relative_L1": 0.0034067513664177676
+  }
+}

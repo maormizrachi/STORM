@@ -1,0 +1,8 @@
+/su_olson_mc
+/su_olson_mc_serial
+/output*/
+/smoke*/
+*.out
+*.err
+__pycache__/
+/.job_binaries/

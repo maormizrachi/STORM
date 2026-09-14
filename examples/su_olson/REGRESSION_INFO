@@ -1,0 +1,9 @@
+TAGS="mpi"
+DUAL_MODE=1
+CATEGORY="physics"
+MPI_NP=4
+TIMEOUT=7200
+CHECK_FUNCTION="check_su_olson"
+RUN_ARGS=["128", "8", "4000", "0.1", "output_regression"]
+LEGACY_TEST_ID="su_olson_mc"
+LEGACY_TEST_ID_SERIAL="su_olson_mc_serial"

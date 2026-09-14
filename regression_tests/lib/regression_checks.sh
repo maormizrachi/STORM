@@ -12,6 +12,7 @@
 # Return 0 on pass, non-zero on fail.
 
 REGRESSION_CHECK_MSG=""
+STORM_CHECK_EXAMPLES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../examples" && pwd)"
 
 # ---- helpers --------------------------------------------------------
 
@@ -327,4 +328,19 @@ check_till_compton_case() {
 
     REGRESSION_CHECK_MSG="PASS (profile generated with ${rows} samples; comparison diagnostics reported)"
     return 0
+}
+
+# The benchmark-local scripts own their physical references and tolerances.
+check_su_olson() {
+    local run_dir="$1" start_epoch="$2" stdout_log="$3" stderr_log="$4"
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+    local tau
+    for tau in 1 10 100; do
+        is_nonempty_and_newer "$run_dir/output_regression/profile_tau${tau}.txt" "$start_epoch" || return 1
+    done
+    if ! python3 "$STORM_CHECK_EXAMPLES/su_olson/compare.py" "$run_dir/output_regression" --check; then
+        REGRESSION_CHECK_MSG="Su-Olson reference comparison failed"
+        return 1
+    fi
+    REGRESSION_CHECK_MSG="PASS (Su-Olson late-time radiation and material relative L1 < 6%)"
 }
