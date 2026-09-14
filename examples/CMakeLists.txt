@@ -127,5 +127,12 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
       -USPATIAL_DS_WITH_MPI -U__WITH_MPI)
   endif()
 
+  if(STORM_WITH_VTK)
+    vtk_module_autoinit(TARGETS "${_storm_example_name}" MODULES ${VTK_LIBRARIES})
+    if(_storm_dual_mode)
+      vtk_module_autoinit(TARGETS "${_storm_example_name}_serial" MODULES ${VTK_LIBRARIES})
+    endif()
+  endif()
+
   message(STATUS "STORM regression example: ${_storm_example_name}")
 endforeach()

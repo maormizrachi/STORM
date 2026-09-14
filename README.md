@@ -98,8 +98,8 @@ The MPI build requires the `mpi_utils`, `MeshDecomposer3D`, and `EasyRMA` depend
 |---|---|---|
 | `STORM_BUILD_EXAMPLES` | `OFF` | Build example programs |
 | `STORM_WITH_MPI` | `OFF` | Enable MPI distributed-memory support |
-| `STORM_WITH_VTK` | `OFF` | Enable VTK mesh output (requires VTK >= 9.3) |
-| `STORM_WITH_HDF5` | `OFF` | Enable HDF5 I/O |
+| `STORM_WITH_VTK` | `OFF` | Enable VTK mesh output (`MADVORO_WITH_VTK`; requires VTK >= 9.3) |
+| `STORM_WITH_HDF5` | `OFF` | Enable HDF5 I/O (`MADVORO_WITH_HDF5`; compiles MadVoro `hdf5_utils.cpp`) |
 | `STORM_DEPS_DIR` | `./deps` | Path to external dependencies |
 | `STORM_CMMC_DIR` | `deps/CMMC/src` | Override the pinned CMMC source directory |
 
