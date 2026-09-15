@@ -358,3 +358,48 @@ check_olson_2d_2020() {
     fi
     REGRESSION_CHECK_MSG="PASS (Olson 2020 energy conservation and digitized PN comparison)"
 }
+
+# Hillier (1994) polarized electron-scattering benchmark.
+# The example prints its own verdict after comparing against the analytic
+# single-scattering limit, so the harness only has to read it back.
+check_hillier_polarization_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+
+    if grep -qx 'FAIL hillier_polarization' "$stdout_log"; then
+        local detail
+        detail="$(grep -m1 '^  FAIL: ' "$stdout_log" | sed 's/^ *FAIL: *//')"
+        set_check_msg "Hillier polarization benchmark failed${detail:+: ${detail}}"
+        return 1
+    fi
+    # Two gating runs per invocation: the prolate envelope and the spherical null
+    # control.  One verdict means one of them never ran, which is a silently
+    # halved test rather than a pass.
+    local verdicts
+    verdicts="$(grep -cx 'PASS hillier_polarization' "$stdout_log" || true)"
+    if [ "${verdicts:-0}" -lt 2 ]; then
+        set_check_msg "Hillier polarization benchmark produced ${verdicts:-0} verdict(s), expected 2 (prolate + null control)"
+        return 1
+    fi
+
+    # Figures are a by-product, never a gate: a machine without numpy must still
+    # be able to run the regression.
+    local storm_root
+    storm_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    local plot_log="${run_dir}/hillier_plot.log"
+    if python3 -c 'import numpy' >/dev/null 2>&1; then
+        python3 "${storm_root}/examples/hillier_polarization/plot_hillier_fig5.py" \
+            "${run_dir}/hillier_fig5.svg" "$run_dir" >"$plot_log" 2>&1 || true
+        python3 "${storm_root}/examples/hillier_polarization/plot_hillier.py" \
+            "${run_dir}/hillier_observers.svg" \
+            "${run_dir}/hillier_observers_prolate_0020.txt" \
+            "${run_dir}/hillier_observers_spherical_0020.txt" >>"$plot_log" 2>&1 || true
+    fi
+
+    set_check_msg "polarized Thomson transport matches the single-scattering limit"
+    return 0
+}

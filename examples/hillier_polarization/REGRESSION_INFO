@@ -1,0 +1,35 @@
+# Hillier (1994) polarized electron-scattering benchmark.
+#
+# Validates STORM's polarized Thomson transport against the analytic
+# single-scattering limit: null control, thin-limit amplitude, the sin^2 i
+# inclination law, and Stokes u consistent with zero.  Self-contained -- no
+# external reference data -- so it stands alone as a regression gate.
+#
+# Detectors are rings placed on the paper's inclinations (22.5, 45, 67.5, 90),
+# 16 azimuths each plus their equatorial mirrors, accepting photons whose
+# propagation direction is within 2 deg.  That cone is 1/25 the solid angle of a
+# 10 deg one, so the generation count carries a matching factor: at 8 generations
+# the 22.5 deg band would be ~50% noise.  128 generations puts the counted photon
+# budget back where the wider cone had it.  STORM's SphericalObserver (--fibonacci)
+# bins by crossing POSITION rather than direction and spreads its directions over
+# the whole sphere, which forced a +-7 deg band; read that way i = 22.5 deg came
+# out at half Hillier's value.  With rings it agrees, so all four inclinations are
+# gated.
+#
+# One invocation runs both gating configurations -- the prolate envelope and the
+# spherical null control -- so the harness must see two PASS lines.
+#
+# --sweep adds seven further chi0 points spanning two decades.  Those are NOT
+# gating: most of that span is optically thick, where the analytic thin limit
+# does not apply.  They exist so plot_hillier_fig5.py can lay the run over
+# Hillier's published curves, and they cost a few seconds each.
+#
+# Requires -DSTORM_MONTECARLO_POLARIZATION=ON; without it the Stokes state is
+# compiled out and the test cannot run.
+TEST_ID="hillier_polarization"
+TAGS="mpi"
+CATEGORY="physics"
+MPI_NP=16
+RUN_ARGS=["--chi0", "0.02", "--generations", "128", "--tag", "0020", "--sweep"]
+CHECK_FUNCTION="check_hillier_polarization_case"
+TIMEOUT=3600

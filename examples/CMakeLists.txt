@@ -29,6 +29,19 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
   get_filename_component(_storm_example_dir "${_storm_info_file}" DIRECTORY)
   get_filename_component(_storm_example_name "${_storm_example_dir}" NAME)
 
+  # The Hillier benchmark reads Stokes Q and U off the observer, and those
+  # accessors are compiled out without MONTECARLO_POLARIZATION -- so the example
+  # does not merely misbehave, it fails to compile.  Examples build as one group,
+  # so that failure would take every other regression test down with it.  Skip it
+  # instead, loudly.
+  if(_storm_example_name STREQUAL "hillier_polarization" AND
+     NOT STORM_MONTECARLO_POLARIZATION)
+    message(STATUS
+      "STORM: skipping example hillier_polarization -- it needs "
+      "-DSTORM_MONTECARLO_POLARIZATION=ON")
+    continue()
+  endif()
+
   # Runtime regression variants may reuse a target built from another example
   # directory.  This keeps one source of truth for cases that differ only by
   # command-line arguments, such as IMC and DDMC.

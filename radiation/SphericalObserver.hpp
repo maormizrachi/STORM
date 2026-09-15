@@ -94,7 +94,6 @@ public:
         observerStokesQ_.assign(numObservers, 0.0);
         observerStokesU_.assign(numObservers, 0.0);
 #endif
-        buildSkyBases();
     }
 
     Crossing nextOutwardCrossing(const PointT &position,
@@ -146,6 +145,8 @@ public:
 
     void recordCrossing(const CrossingRecord &record) override
     {
+        // Retained as a sanity check on the crossing geometry only; the tallies
+        // below are keyed on the direction, not on this.
         PointT const radiusVector = record.crossingPoint - center_;
         double const radiusNorm = abs(radiusVector);
         double const directionNorm = abs(record.direction);
@@ -154,7 +155,13 @@ public:
         {
             throw std::invalid_argument("SphericalObserver crossing has invalid geometry");
         }
-        std::size_t const observer = nearestDirection(radiusVector / radiusNorm);
+        // Bin by the PROPAGATION direction, not the crossing position.  An
+        // observer at infinity sees the photons whose direction points at it;
+        // where they happened to cross a finite tally sphere is a different
+        // observable (a surface-brightness map), and converges to this one only
+        // as the sphere radius grows large compared with the emitting region.
+        PointT const propagation = record.direction / directionNorm;
+        std::size_t const observer = nearestDirection(propagation);
         std::size_t const group = findGroup(record.frequency);
         double const signedWeight = record.weight;
         observerEnergy_[observer] += signedWeight;
@@ -172,7 +179,7 @@ public:
 #ifdef MONTECARLO_POLARIZATION
         if(polarizationEnabled_ && record.polarizationInitialized)
         {
-            accumulatePolarization(record, observer, radiusVector / radiusNorm);
+            accumulatePolarization(record, observer, propagation);
         }
 #else
         (void) polarizationEnabled_;
@@ -278,31 +285,51 @@ private:
         return best;
     }
 
-    void buildSkyBases()
+    //! \brief Sky reference axis for one propagation direction.
+    //!
+    //! The global z axis projected into the plane normal to the photon's
+    //! direction -- one convention for every observer, so Q and U mean the same
+    //! thing across the sphere.
+    //!
+    //! This replaces a per-observer reference chosen as
+    //! `|d.z| < 0.9 ? z : y`.  That test put every observer within
+    //! arccos(0.9) = 25.8 deg of a pole -- 10% of the sphere -- on a DIFFERENT
+    //! reference axis from the rest, so Q and U there were resolved against a
+    //! different position-angle zero.  Pooling Stokes parameters across that
+    //! boundary then cancels signal rather than adding it: on the Hillier
+    //! benchmark it put 80% of the polarization into U and left the i = 22.5 deg
+    //! band at half its true value.  The polarization DEGREE, sqrt(Q^2+U^2)/I, is
+    //! invariant under this rotation and was never affected.
+    //!
+    //! The degeneracy the old test was guarding against is real but confined to
+    //! the poles themselves, where the position angle is genuinely undefined --
+    //! a measure-zero set, handled below, rather than a tenth of the sky.
+    static PointT skyReference(const PointT &propagation)
     {
-#ifdef MONTECARLO_POLARIZATION
-        skyE1_.resize(directions_.size());
-        for(std::size_t i = 0; i < directions_.size(); ++i)
+        PointT reference(0.0, 0.0, 1.0);
+        PointT projected = reference - propagation * ScalarProd(reference, propagation);
+        if(!(abs(projected) > 1.0e-9))
         {
-            PointT helper = std::abs(directions_[i].z) < 0.9
-                ? PointT(0.0, 0.0, 1.0) : PointT(0.0, 1.0, 0.0);
-            skyE1_[i] = normalize(helper - directions_[i] * ScalarProd(helper, directions_[i]));
+            reference = PointT(1.0, 0.0, 0.0);
+            projected = reference - propagation * ScalarProd(reference, propagation);
         }
-#endif
+        return normalize(projected);
     }
 
 #ifdef MONTECARLO_POLARIZATION
     void accumulatePolarization(const CrossingRecord &record,
                                 std::size_t observer,
-                                const PointT &normal)
+                                const PointT &propagation)
     {
         PointT basis = record.polarizationBasis;
         double const basisNorm = abs(basis);
         if(!(basisNorm > 0.0)) return;
-        basis = normalize(basis - normal * ScalarProd(basis, normal));
-        PointT const sky = skyE1_[observer];
+        // Both the packet basis and the reference lie in the plane normal to the
+        // propagation direction, which is where the photon's E field actually is.
+        basis = normalize(basis - propagation * ScalarProd(basis, propagation));
+        PointT const sky = skyReference(propagation);
         double const cosine = std::clamp(ScalarProd(basis, sky), -1.0, 1.0);
-        double const sine = ScalarProd(CrossProduct(basis, sky), normal);
+        double const sine = ScalarProd(CrossProduct(basis, sky), propagation);
         double const c2 = cosine * cosine - sine * sine;
         double const s2 = 2.0 * sine * cosine;
         observerStokesQ_[observer] += record.weight *
@@ -336,7 +363,6 @@ private:
     double cutoffEnergy_ = 0.0;
     double totalCrossingEnergy_ = 0.0;
 #ifdef MONTECARLO_POLARIZATION
-    std::vector<PointT> skyE1_;
     std::vector<double> observerStokesQ_;
     std::vector<double> observerStokesU_;
 #endif
