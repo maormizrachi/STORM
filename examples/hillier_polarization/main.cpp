@@ -67,6 +67,14 @@
 #include "radiation/RadiationIMC.hpp"
 #include "radiation/SphericalObserver.hpp"
 
+#ifndef MONTECARLO_POLARIZATION
+// Stated here as well as in REGRESSION_INFO and the examples CMakeLists, because
+// this is where the requirement actually bites: without the macro
+// SphericalObserver::stokesQ() and stokesU() do not exist, and the failure would
+// otherwise read as "no member named stokesQ" with no hint as to why.
+#error "hillier_polarization measures Stokes Q and U. Configure STORM with -DSTORM_MONTECARLO_POLARIZATION=ON (regression runs set this in regression_tests/config.json)."
+#endif
+
 #include "HillierGeometry.hpp"
 #include "HillierObserver.hpp"
 #include "HillierPhysics.hpp"
@@ -81,12 +89,10 @@ using IMC = STORM::RadiationIMC<Vector3D, Grid, STORM::RadiationCell,
 constexpr double GAMMA = 7.0 / 13.0;
 constexpr double THIN_COEFF = 3.0 / 8.0 * (3.0 * GAMMA - 1.0);   // = 3/13
 
-// Inclination bands.  22.5 deg is deliberately absent: a fixed angular band has
-// <sin^2 i> 13% above sin^2 of its centre at that inclination, because sin^2 i
-// varies steeply there, which biases the comparison by more than the tolerance.
-// Fibonacci directions land nowhere near 22.5 deg, and a +-7 deg band there has
-// <sin^2 i> 12% above sin^2 of its centre, so that inclination is only measurable
-// with ring detectors placed on it.
+// The inclinations Hillier tabulates.  22.5 deg is gated only with ring
+// detectors, which sit exactly on it: Fibonacci directions land nowhere near it,
+// and the +-7 deg band that would have to stand in has <sin^2 i> 12% above sin^2
+// of its centre, because sin^2 i varies steeply at small inclination.
 constexpr double PAPER_INCLINATIONS[] = {22.5, 45.0, 67.5, 90.0};
 constexpr double FIBONACCI_BAND_CENTRES[] = {45.0, 67.5, 90.0};
 constexpr double BAND_HALF_WIDTH_DEG = 7.0;

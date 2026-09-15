@@ -23,7 +23,8 @@
       "{build_dir}"
     ],
     "configure_args": [
-      "-DSTORM_BUILD_EXAMPLES=ON"
+      "-DSTORM_BUILD_EXAMPLES=ON",
+      "-DSTORM_MONTECARLO_POLARIZATION=ON"
     ],
     "build_command": [
       "cmake",
