@@ -78,6 +78,8 @@ option(STORM_WITH_VTK    "Build with VTK support for mesh output (requires MadVo
 option(STORM_WITH_HDF5   "Build with HDF5 support" OFF)
 option(STORM_BUILD_EXAMPLES "Build example programs" OFF)
 option(STORM_WITH_COMPTON "Build internal CMMC Compton support" ON)
+option(STORM_MONTECARLO_POLARIZATION
+       "Carry linear polarization (Stokes Q/U) on Monte Carlo packets" OFF)
 option(STORM_WITH_GPU     "Build Kokkos GPU transport support" OFF)
 option(STORM_GPU_PROFILING "Compile Kokkos profiling regions (requires STORM_WITH_GPU)" OFF)
 
@@ -327,6 +329,15 @@ if(STORM_WITH_GPU)
     target_compile_definitions(storm ${_storm_gpu_scope} STORM_GPU_PROFILING)
   endif()
   target_link_libraries(storm ${_storm_gpu_scope} Kokkos::kokkos)
+endif()
+
+if(STORM_MONTECARLO_POLARIZATION)
+  # Gates the Stokes state on Particle and the whole of radiation/Polarization.hpp.
+  # RICH defines the same macro from its own RICH_MONTECARLO_POLARIZATION option;
+  # defining it from both sides is harmless (identical -D), and this option is what
+  # lets a standalone STORM build -- and STORM's own regression tests -- exercise
+  # polarized transport without RICH.
+  target_compile_definitions(storm PUBLIC MONTECARLO_POLARIZATION)
 endif()
 
 if(STORM_WITH_MPI)
