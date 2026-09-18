@@ -424,6 +424,76 @@ template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
          typename EOST, std::size_t NumGroups, typename OpacityT,
          typename TraitsT, typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::setPostProcessVolumeEmission(
+    std::vector<std::uint8_t> mask, std::vector<std::uint16_t> groupOutsideBits,
+    double subsampleFraction, std::uint64_t seed)
+{
+    if(mask.size() != this->grid.GetPointNo())
+    {
+        StormError eo("setPostProcessVolumeEmission: mask size does not match the local cell count");
+        eo.addEntry("Mask size", mask.size());
+        eo.addEntry("Local cells", this->grid.GetPointNo());
+        throw eo;
+    }
+    if(groupOutsideBits.size() != this->grid.GetPointNo())
+    {
+        StormError eo("setPostProcessVolumeEmission: group bit size does not match the local cell count");
+        eo.addEntry("Bits size", groupOutsideBits.size());
+        eo.addEntry("Local cells", this->grid.GetPointNo());
+        throw eo;
+    }
+    if(NumGroups > 16)
+    {
+        throw StormError("setPostProcessVolumeEmission: more than 16 groups are not supported by the bit mask");
+    }
+    this->postProcessGroupOutsideBits_ = std::move(groupOutsideBits);
+    this->postProcessGroupFleck_ = true;
+    if(!(subsampleFraction > 0.0) || subsampleFraction > 1.0 || !std::isfinite(subsampleFraction))
+    {
+        StormError eo("setPostProcessVolumeEmission: subsample fraction must be in (0, 1]");
+        eo.addEntry("Fraction", subsampleFraction);
+        throw eo;
+    }
+    this->postProcessVolumeEmissionMask_ = std::move(mask);
+    this->postProcessVolumeEmissionSubsample_ = subsampleFraction;
+    this->postProcessVolumeEmissionSeed_ = seed;
+    this->postProcessVolumeEmission_ = true;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::setPostProcessVolumeEmissionSubsample(
+    double subsampleFraction, std::uint64_t seed)
+{
+    if(!(subsampleFraction > 0.0) || subsampleFraction > 1.0 || !std::isfinite(subsampleFraction))
+    {
+        StormError eo("setPostProcessVolumeEmissionSubsample: fraction must be in (0, 1]");
+        eo.addEntry("Fraction", subsampleFraction);
+        throw eo;
+    }
+    this->postProcessVolumeEmissionSubsample_ = subsampleFraction;
+    this->postProcessVolumeEmissionSeed_ = seed;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::clearPostProcessVolumeEmission()
+{
+    this->postProcessVolumeEmissionMask_.clear();
+    this->postProcessVolumeEmissionSubsample_ = 1.0;
+    this->postProcessVolumeEmission_ = false;
+    this->postProcessGroupOutsideBits_.clear();
+    this->postProcessGroupFleck_ = false;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
                   TraitsT, PositionSamplerT>::setNewPhotonsPerCell(std::size_t n)
 {
     this->lifecycleProcess_->setNewPhotonsPerCell(n);

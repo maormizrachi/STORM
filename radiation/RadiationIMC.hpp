@@ -459,6 +459,43 @@ public:
 
     void setPostProcessExternalSources(std::vector<PostProcessExternalSource> sources);
     void clearPostProcessExternalSources();
+    // Post-process volume emission: every local cell with mask[i] != 0 emits
+    // kappa_P a c T^4 V per unit time at its (fixed) temperature, in addition
+    // to any face sources it owns. subsampleFraction < 1 includes each masked
+    // cell with that probability per generation (seeded by `seed`) and scales
+    // the included cells' energy by 1/fraction, so the expectation is exact.
+    // groupOutsideBits[i] has bit g set when cell i lies outside energy group
+    // g's thermalization surface. A cell emits only in the groups whose bit is
+    // set: emission in the other groups cannot escape and is not sampled.
+    void setPostProcessVolumeEmission(std::vector<std::uint8_t> mask,
+                                      std::vector<std::uint16_t> groupOutsideBits,
+                                      double subsampleFraction, std::uint64_t seed);
+    // Fleck factor seen by a packet of `group` in `cellIndex`.
+    // In volume-emission mode the Fleck factor is 1 for every group (real
+    // absorption everywhere); the per-group surface bits only gate emission.
+    inline double transportFleckFor(std::size_t cellIndex, std::size_t group) const
+    {
+        (void)group;
+        return this->factorFleck_[cellIndex];
+    }
+    void setPostProcessVolumeEmissionSubsample(double subsampleFraction, std::uint64_t seed);
+    void clearPostProcessVolumeEmission();
+    inline void setPostProcessVolumeEmissionExactBase(bool exact)
+    {
+        this->postProcessVolumeEmissionExactBase_ = exact;
+    }
+    inline void setPostProcessExplorationMaxWeight(double maxWeight)
+    {
+        this->postProcessExplorationMaxWeight_ = (std::isfinite(maxWeight) && maxWeight > 0.0) ? maxWeight : 0.0;
+    }
+    inline bool hasPostProcessVolumeEmission(void) const
+    {
+        return this->postProcessVolumeEmission_;
+    }
+    // Volume-emission bookkeeping from the last generateParticles call.
+    inline double getLastVolumeEmissionEnergy(void) const { return this->lastVolumeEmissionEnergy_; }
+    inline std::size_t getLastVolumeEmissionCells(void) const { return this->lastVolumeEmissionCells_; }
+    inline std::size_t getLastVolumeEmissionSelectedCells(void) const { return this->lastVolumeEmissionSelectedCells_; }
     inline bool hasPostProcessExternalSources(void) const
     {
         return this->postProcessExternalSourceMode_;
@@ -687,6 +724,21 @@ private:
     GroupSamplingDiagnostics lastGroupSamplingDiagnostics_;
     bool postProcessExternalSourceMode_ = false;
     std::vector<PostProcessExternalSource> postProcessExternalSources_;
+    bool postProcessVolumeEmission_ = false;
+    // Burn-in (base) allocation gives every emitting cell exactly
+    // newPhotonsPerCell packets instead of an energy-proportional count.
+    bool postProcessVolumeEmissionExactBase_ = false;
+    // Exploration packets (cells the allocation left at zero) are split so
+    // that no packet carries more than this energy; 0 = one packet per cell.
+    double postProcessExplorationMaxWeight_ = 0.0;
+    std::vector<std::uint8_t> postProcessVolumeEmissionMask_;
+    bool postProcessGroupFleck_ = false;
+    std::vector<std::uint16_t> postProcessGroupOutsideBits_;
+    double postProcessVolumeEmissionSubsample_ = 1.0;
+    std::uint64_t postProcessVolumeEmissionSeed_ = 0;
+    double lastVolumeEmissionEnergy_ = 0.0;
+    std::size_t lastVolumeEmissionCells_ = 0;
+    std::size_t lastVolumeEmissionSelectedCells_ = 0;
     std::vector<std::size_t> postProcessExternalSourceLocalCellIndices_;
     std::unordered_map<std::size_t, std::size_t> postProcessExternalSourceFaceIndex_;
     std::unordered_set<std::size_t> postProcessExternalSourceInteriorCellIDs_;

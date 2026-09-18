@@ -72,7 +72,7 @@ class IMCTransportProcess final : public IMCComponentBase<Owner>
                 cell, frequency);
             result.scattering = this->owner->opacity_->CalcScatteringOpacity(
                 cell, frequency);
-            result.fleck = this->owner->factorFleck_[cellIndex];
+            result.fleck = this->owner->transportFleckFor(cellIndex, result.group);
             return result;
 #endif
         }
@@ -522,7 +522,7 @@ public:
                 eo.addEntry("Scattering opacity", elasticScatteringOpacity);
                 throw eo;
             }
-            double const transportFleck = (owner_.parameters_.withCompton and group < NumGroups)? owner_.comptonData_[cellIndex].fleck : owner_.factorFleck_[cellIndex];
+            double const transportFleck = (owner_.parameters_.withCompton and group < NumGroups)? owner_.comptonData_[cellIndex].fleck : owner_.transportFleckFor(cellIndex, group);
             double effectiveAbsorptionOpacity = (1.0 - transportFleck) * absorptionOpacity;
             double comptonOpacity = 0.0;
             if(owner_.parameters_.withCompton && group < NumGroups)

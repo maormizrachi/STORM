@@ -6,6 +6,7 @@
 #include "CommunicationEngine.hpp"
 #include "../../gpu/DeviceParticle.hpp"
 #include <type_traits>
+#include <stdexcept>
 
 namespace STORM
 {
@@ -41,6 +42,7 @@ public:
     void Prepare() override
     {
         buffers.reset();
+        lastTransfers = 0;
         neighbors = grid.GetDuplicatedProcs();
         for(std::vector<MCParticle> &queue : incoming)
         {
@@ -68,7 +70,24 @@ public:
 
     void Progress() override
     {
-        buffers->HandleIncomingOutcoming();
+        if(buffers)
+        {
+            buffers->HandleIncomingOutcoming();
+        }
+    }
+
+    // Tear the particle buffers down as soon as the step's transport loop
+    // ends (collective: every rank reaches EndTransport). Between steps this
+    // engine then holds no posted MPI receives, so a manager that is kept
+    // alive but no longer stepped cannot match messages meant for a newer
+    // manager on the same communicator and tag.
+    void EndTransport() override
+    {
+        if(buffers)
+        {
+            lastTransfers += buffers->GetSentCounter();
+            buffers.reset();
+        }
     }
 
     void Flush(bool) override
@@ -78,6 +97,10 @@ public:
 
     void FlushAll() override
     {
+        if(!buffers)
+        {
+            return;
+        }
         // BuffersManager advances its dispatch age on each progress call.
         // Drain short batches without changing the shared MPI utility API.
         for(size_t cycle = 0; cycle <= dispatchCycles && buffers->GetPendingNumber(); ++cycle)
@@ -88,7 +111,7 @@ public:
 
     bool Pending() const override
     {
-        if(buffers->GetPendingNumber() || buffers->GetActiveSendsNumber())
+        if(buffers && (buffers->GetPendingNumber() || buffers->GetActiveSendsNumber()))
         {
             return true;
         }
@@ -103,6 +126,10 @@ public:
     }
     void Send(rank_t destination, const MCParticle &particle) override
     {
+        if(!buffers)
+        {
+            throw std::runtime_error("P2PCommunicationEngine::Send called outside a transport step");
+        }
         if constexpr(packedWire)
         {
             PackedParticle packed;
@@ -158,7 +185,21 @@ public:
 
     size_t Transfers() const override
     {
-        return this->buffers ? this->buffers->GetSentCounter() : 0;
+        return lastTransfers + (this->buffers ? this->buffers->GetSentCounter() : 0);
+    }
+
+    std::vector<unsigned long long> MessageCountsSent() const override
+    {
+        if(!this->buffers) return {};
+        const std::vector<size_t> &c = this->buffers->GetAllSendCounters();
+        return std::vector<unsigned long long>(c.begin(), c.end());
+    }
+
+    std::vector<unsigned long long> MessageCountsReceived() const override
+    {
+        if(!this->buffers) return {};
+        const std::vector<size_t> &c = this->buffers->GetAllRecvCounters();
+        return std::vector<unsigned long long>(c.begin(), c.end());
     }
 
     rank_t Rank() const override
@@ -186,6 +227,7 @@ private:
     std::vector<rank_t> neighbors;
     std::vector<std::vector<MCParticle>> incoming;
     std::unique_ptr<BuffersManager<WireParticle>> buffers;
+    size_t lastTransfers = 0; // messages sent by buffers released at EndTransport
 };
 } // namespace STORM
 

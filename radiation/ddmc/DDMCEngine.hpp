@@ -1197,6 +1197,13 @@ public:
             };
 
             double f = owner_.factorFleck_[cellIndex];
+            if(owner_.postProcessGroupFleck_)
+            {
+                double frequencyForGroup = particle.frequency;
+                owner_.clampFrequencyToBounds(frequencyForGroup);
+                f = owner_.transportFleckFor(cellIndex,
+                    owner_.opacity_->findGroup(frequencyForGroup, owner_.energyBoundaries_));
+            }
             double upscatterRate = 0.0;
             if(owner_.parameters_.withMultigroupDDMC && data.gamma < 1.0 &&
                data.sigmaEnergyAbs > 0.0 &&
@@ -1238,7 +1245,7 @@ public:
         #ifdef MONTECARLO_POLARIZATION
             if(owner_.polarizationEnabled())
             {
-                double const fHistory = owner_.factorFleck_[cellIndex];
+                double const fHistory = f;
                 double const scatteringOpacity =
                     owner_.scatteringOpacities_[cellIndex];
                 double const explicitResetOpacity = upscatterRate / owner_.lightSpeed();

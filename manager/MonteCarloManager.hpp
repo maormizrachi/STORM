@@ -24,6 +24,9 @@
 #endif // STORM_WITH_GPU
 #include "communication/CommunicationEngine.hpp"
 #include "communication/SerialCommunicationEngine.hpp"
+#ifdef STORM_WITH_MPI
+#include "SilentRankDetector.hpp"
+#endif
 
 #ifdef MEMORY_DEBUG
 #include "misc/memory_debug.hpp"
@@ -279,6 +282,14 @@ private:
     std::unique_ptr<CommunicationEngine<T>> engine;
 #ifdef STORM_WITH_MPI
     std::unique_ptr<AmountManager> amountManager;
+    std::unique_ptr<RankTelemetry> rankTelemetry;
+    double lastTelemetryTime = 0.0;
+    // Cumulative per-step accounting published through RankTelemetry.
+    CompletionCounter telemetryNetDecrements = 0; // sum of localDecrementAmount applied so far
+    std::uint64_t telemetrySentParticles = 0;
+    std::uint64_t telemetryReceivedParticles = 0;
+    std::vector<std::uint64_t> telemetrySentTo;        // particles handed to the send buffer, per destination
+    std::vector<std::uint64_t> telemetryReceivedFrom;  // particles detached from arrival queues, per source
 #endif
     CompletionCounter completionRemaining = 0;
     bool completionDone = false;

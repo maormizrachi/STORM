@@ -46,6 +46,16 @@ public:
     virtual void ShrinkBuffers()
     {
     }
+    // Per-peer particle-buffer message counts for diagnostics (empty when the
+    // engine does not track them).
+    virtual std::vector<unsigned long long> MessageCountsSent() const
+    {
+        return {};
+    }
+    virtual std::vector<unsigned long long> MessageCountsReceived() const
+    {
+        return {};
+    }
     virtual size_t MemoryBytes() const = 0;
     virtual size_t Transfers() const = 0;
     virtual rank_t Rank() const

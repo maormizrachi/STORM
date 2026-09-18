@@ -756,6 +756,15 @@ public:
                     throw eo;
                 }
                 owner_.factorFleck_[i] = 1.0 / (1.0 + (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * owner_.planckOpacities_[i] * owner_.lightSpeed() * fleckDt * gamma) / cv);
+                if(owner_.postProcessVolumeEmission_)
+                {
+                    // Fixed-temperature post-process with explicit volume
+                    // emission: absorption is real and emission is the snapshot
+                    // emissivity everywhere. Deep emission is absorbed within a
+                    // mean free path (Eddington-Barbier), so nothing has to be
+                    // transported through thick layers and no packet is immortal.
+                    owner_.factorFleck_[i] = 1.0;
+                }
                 if(!std::isfinite(owner_.factorFleck_[i]) ||
                    owner_.factorFleck_[i] < 0.0 || owner_.factorFleck_[i] > 1.0)
                 {

@@ -317,6 +317,14 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
     {
         this->amountManager = std::make_unique<AmountManager>(this->commWorld);
         this->amountManager->Initialize(startingParticleNum);
+        // Collective; every rank reaches this point once per step.
+        this->rankTelemetry = std::make_unique<RankTelemetry>(this->commWorld);
+        this->lastTelemetryTime = -1.0;
+        this->telemetryNetDecrements = 0;
+        this->telemetrySentParticles = 0;
+        this->telemetryReceivedParticles = 0;
+        this->telemetrySentTo.assign(static_cast<size_t>(this->sizeWorld), 0);
+        this->telemetryReceivedFrom.assign(static_cast<size_t>(this->sizeWorld), 0);
     }
 #endif
     this->completionRemaining = startingParticleNum;
@@ -391,6 +399,9 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
 
                 this->completionRemaining -= this->localDecrementAmount;
 #ifdef STORM_WITH_MPI
+                this->telemetryNetDecrements += this->localDecrementAmount;
+#endif
+#ifdef STORM_WITH_MPI
                 if(this->amountManager)
                 {
                     this->amountManager->Decrease(this->localDecrementAmount);
@@ -413,6 +424,55 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
 
                     std::array<unsigned long long, MC_PROGRESS_COUNTERS> localCounters = buildProgressCounters();
                     this->engine->PublishCounters(localCounters.data(), localCounters.size(), elapsedSeconds);
+#ifdef STORM_WITH_MPI
+                    if(this->rankTelemetry && elapsedSeconds - this->lastTelemetryTime >= 1.0)
+                    {
+                        this->lastTelemetryTime = elapsedSeconds;
+                        RankTelemetry::Record record;
+                        record.iteration = static_cast<std::uint64_t>(this->iteration) + 1;
+                        record.start = this->startParticleCount;
+                        record.created = this->dynamicallyAdded;
+                        // Net decrements include -created for dynamically added
+                        // particles, so finished = net + created.
+                        record.finished = static_cast<std::int64_t>(this->telemetryNetDecrements)
+                                          + static_cast<std::int64_t>(this->dynamicallyAdded);
+                        record.sent = this->telemetrySentParticles;
+                        record.received = this->telemetryReceivedParticles;
+                        std::uint64_t queued = 0;
+                        for(rank_t r = 0; r < this->sizeWorld; ++r)
+                        {
+                            queued += this->engine->LocalSize(r);
+                        }
+                        for(const std::vector<MCParticle> &deferred : this->detachedRankParticles)
+                        {
+                            queued += deferred.size();
+                        }
+                        record.queued = queued;
+                        record.treePending = this->amountManager ? static_cast<std::int64_t>(this->amountManager->GetPendingValue()) : 0;
+                        record.activeSends = this->engine->Pending() && queued == 0 ? 1 : 0;
+                        record.rootRemaining = this->amountManager ? static_cast<std::int64_t>(this->amountManager->GetValue()) : 0;
+                        RankTelemetry::PeerArrays peers;
+                        peers.particlesSentTo = this->telemetrySentTo;
+                        peers.particlesReceivedFrom = this->telemetryReceivedFrom;
+                        {
+                            const std::vector<unsigned long long> sentMessages = this->engine->MessageCountsSent();
+                            const std::vector<unsigned long long> receivedMessages = this->engine->MessageCountsReceived();
+                            peers.messagesSentTo.assign(sentMessages.begin(), sentMessages.end());
+                            peers.messagesReceivedFrom.assign(receivedMessages.begin(), receivedMessages.end());
+                            for(unsigned long long m : sentMessages) record.messagesSent += m;
+                            for(unsigned long long m : receivedMessages) record.messagesReceived += m;
+                        }
+                        peers.neighbourBits.assign(static_cast<size_t>(this->sizeWorld + 63) / 64, 0);
+                        for(rank_t nb : this->neighbors)
+                        {
+                            if(nb >= 0 && nb < this->sizeWorld)
+                            {
+                                peers.neighbourBits[static_cast<size_t>(nb) / 64] |= (1ull << (static_cast<size_t>(nb) % 64));
+                            }
+                        }
+                        this->rankTelemetry->Publish(record, peers);
+                    }
+#endif
 
                     if(this->rankWorld == 0 && elapsedSeconds - this->lastProgressPrintTime >= 10.0)
                     {
@@ -444,6 +504,16 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
                                   << " ddmc_fallback=" << globalCounters[MC_PROGRESS_DDMC_FALLBACK]
                                   << " eta_is_count_based=1"
                                   << std::endl;
+#ifdef STORM_WITH_MPI
+                        if(this->rankTelemetry)
+                        {
+                            // Conservation summary over all ranks plus any rank whose
+                            // loop stopped advancing (stuck inside a physics call).
+                            std::string telemetry;
+                            this->rankTelemetry->Report(telemetry);
+                            std::cerr << telemetry << std::endl;
+                        }
+#endif
                     }
                 }
 
@@ -494,6 +564,11 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
         }
     }
 
+#ifdef STORM_WITH_MPI
+    // Collective window free; matched on every rank before the next step's
+    // AmountManager collectives.
+    this->rankTelemetry.reset();
+#endif
     this->engine->EndTransport();
     this->engine->FinishCounters();
 #ifdef STORM_WITH_GPU

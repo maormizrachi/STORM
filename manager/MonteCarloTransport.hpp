@@ -354,6 +354,13 @@ MonteCarloManager<T, Grid, Physics>::ApplyTransportEvent(MCParticle &particle,
             particle.cellIndex = neighborIndexInRank;
             particle.sent = false;
             this->engine->Send(otherRank, particle);
+#ifdef STORM_WITH_MPI
+            ++this->telemetrySentParticles;
+            if(static_cast<size_t>(otherRank) < this->telemetrySentTo.size())
+            {
+                ++this->telemetrySentTo[static_cast<size_t>(otherRank)];
+            }
+#endif
             return TransportEventAction::Finished;
         }
     }
@@ -799,6 +806,16 @@ bool MonteCarloManager<T, Grid, Physics>::HandleAll(MonteCarloStepFinalData &ste
             else
             {
                 this->engine->Detach(rank, localParticles);
+#ifdef STORM_WITH_MPI
+                if(rank != this->rankWorld)
+                {
+                    this->telemetryReceivedParticles += localParticles.size();
+                    if(static_cast<size_t>(rank) < this->telemetryReceivedFrom.size())
+                    {
+                        this->telemetryReceivedFrom[static_cast<size_t>(rank)] += localParticles.size();
+                    }
+                }
+#endif
             }
 
 #ifdef STORM_WITH_GPU

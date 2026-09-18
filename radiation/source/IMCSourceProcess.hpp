@@ -257,6 +257,38 @@ public:
 
         std::vector<double> energyToCreateVec(Ncells);
         std::vector<double> gammaVec(Ncells);
+        // Post-process volume emission per cell (already divided by the
+        // subsample fraction for included cells; zero otherwise).
+        std::vector<double> volumeEnergyVec;
+        bool const volumeEmission = owner_.postProcessExternalSourceMode_ &&
+                                    owner_.postProcessVolumeEmission_;
+        if(volumeEmission)
+        {
+            if(owner_.postProcessVolumeEmissionMask_.size() != Ncells)
+            {
+                throw StormError("Post-process volume emission mask does not match the cell count");
+            }
+            volumeEnergyVec.assign(Ncells, 0.0);
+        }
+        owner_.lastVolumeEmissionEnergy_ = 0.0;
+        owner_.lastVolumeEmissionCells_ = 0;
+        owner_.lastVolumeEmissionSelectedCells_ = 0;
+        auto subsampleIncludes = [&](std::size_t cellId) -> bool
+        {
+            double const fraction = owner_.postProcessVolumeEmissionSubsample_;
+            if(fraction >= 1.0)
+            {
+                return true;
+            }
+            // splitmix64 of (seed, cellID): the same cell set on every rank
+            // that holds the cell, and a fresh set per generation.
+            std::uint64_t z = owner_.postProcessVolumeEmissionSeed_ + 0x9E3779B97F4A7C15ull * (static_cast<std::uint64_t>(cellId) + 1ull);
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+            z ^= z >> 31;
+            double const u = static_cast<double>(z >> 11) * (1.0 / 9007199254740992.0);
+            return u < fraction;
+        };
         double localTotalEnergy = 0.0;
         for(std::size_t i = 0; i < Ncells; ++i)
         {
@@ -283,6 +315,60 @@ public:
                     energyToCreateVec[i] +=
                         owner_.postProcessExternalSources_[
                             externalSourceIndices[offset]].luminosity * fullDt;
+                }
+                if(volumeEmission && owner_.postProcessVolumeEmissionMask_[i] != 0)
+                {
+                    // Thermal emission at the snapshot temperature with Fleck
+                    // factor 1: the instantaneous emissivity of a frozen state.
+                    // Only the groups outside their own thermalization surface
+                    // are emitted from this cell (the others cannot escape). The
+                    // emission opacity is the Planck-weighted sum of the *transport*
+                    // group opacities over those groups, so emission and absorption
+                    // use the same (scaled) opacities and a cell in radiative
+                    // equilibrium is energy neutral. The table's own Planck mean
+                    // (planckOpacities_) is only used in the grey case.
+                    double emissionOpacity = owner_.planckOpacities_[i];
+                    if(owner_.parameters_.withMultigroupOpacity)
+                    {
+                        auto const cumulative = owner_.opacity_->GetCumulativeOpacity(cell, owner_.energyBoundaries_);
+                        std::uint16_t bits = static_cast<std::uint16_t>((1u << NumGroups) - 1u);
+                        if(owner_.postProcessGroupFleck_ && i < owner_.postProcessGroupOutsideBits_.size())
+                        {
+                            bits = owner_.postProcessGroupOutsideBits_[i];
+                        }
+                        emissionOpacity = 0.0;
+                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        {
+                            if((bits >> g) & 1u)
+                            {
+                                double const lower = g == 0 ? 0.0 : cumulative[g - 1];
+                                double const weight = cumulative[g] - lower;
+                                if(weight > 0.0 && std::isfinite(weight))
+                                {
+                                    emissionOpacity += weight;
+                                }
+                            }
+                        }
+                    }
+                    double const volumeEnergy = source::CellEmissionEnergy(
+                        1.0,
+                        owner_.componentGrid().GetVolume(i),
+                        cell.temperature,
+                        emissionOpacity,
+                        fullDt,
+                        units::arad,
+                        owner_.lightSpeed());
+                    if(volumeEnergy > 0.0 && std::isfinite(volumeEnergy))
+                    {
+                        ++owner_.lastVolumeEmissionCells_;
+                        owner_.lastVolumeEmissionEnergy_ += volumeEnergy;
+                        if(subsampleIncludes(radiation_imc_detail::cellID(cell)))
+                        {
+                            ++owner_.lastVolumeEmissionSelectedCells_;
+                            volumeEnergyVec[i] = volumeEnergy / owner_.postProcessVolumeEmissionSubsample_;
+                            energyToCreateVec[i] += volumeEnergyVec[i];
+                        }
+                    }
                 }
             }
             else
@@ -329,14 +415,22 @@ public:
         std::vector<std::size_t> nPhotonsVec(Ncells);
         for(std::size_t i = 0; i < Ncells; ++i)
         {
+            std::size_t const baseMin = owner_.parameters_.emissionFloorPhotonsPerCell > 0
+                    ? owner_.parameters_.emissionFloorPhotonsPerCell
+                    : owner_.parameters_.newPhotonsPerCell;
+            // With explicit volume emission the thick cells hold nearly all the
+            // energy but none of the escaping light, so the burn-in explores
+            // every cell with the same packet count and leaves importance to the
+            // learned allocation.
+            std::size_t const baseMax = (owner_.postProcessVolumeEmission_ && owner_.postProcessVolumeEmissionExactBase_)
+                    ? std::max<std::size_t>(baseMin, owner_.parameters_.newPhotonsPerCell)
+                    : owner_.parameters_.newPhotonsPerCell * 20;
             nPhotonsVec[i] = source::PhotonCount(
                 energyToCreateVec[i],
                 globalTotalEnergy,
                 totalParticles,
-                owner_.parameters_.emissionFloorPhotonsPerCell > 0
-                    ? owner_.parameters_.emissionFloorPhotonsPerCell
-                    : owner_.parameters_.newPhotonsPerCell,
-                owner_.parameters_.newPhotonsPerCell * 20);
+                baseMin,
+                baseMax);
         }
 
         if(owner_.sourceEmissionControlEnabled_)
@@ -357,6 +451,14 @@ public:
                 * owner_.adaptiveSourceMaxFactor_ * owner_.adaptiveSourceObserverBudgetMultiplier_));
             for(std::size_t i = 0; i < Ncells; ++i)
             {
+                // A cell without emission energy never gets packets, whatever the
+                // uniform base says. In fixed-flux post-processing this is every
+                // cell without a source face, and emitting from it would throw.
+                if(!(energyToCreateVec[i] > 0.0))
+                {
+                    nPhotonsVec[i] = 0;
+                    continue;
+                }
                 std::size_t cellId = radiation_imc_detail::cellID(owner_.cells_[i]);
                 auto const it = owner_.adaptiveSourceScores_.find(cellId);
                 bool const learned = owner_.adaptiveSourceScoresEnabled_ && it != owner_.adaptiveSourceScores_.end()
@@ -402,7 +504,23 @@ public:
             {
                 if(energyToCreateVec[i] > 0.0 && nPhotonsVec[i] == 0)
                 {
-                    nPhotonsVec[i] = 1;
+                    // Every emitting cell keeps at least one packet: face cells so
+                    // the injected flux is conserved, volume cells as an
+                    // exploration floor so a cell the burn-in never saw escape can
+                    // still enter the learned set. Deep packets are absorbed within
+                    // a mean free path, so the floor is cheap. A thick cell holds
+                    // far more energy than the whole escaping luminosity, so its
+                    // exploration is split into packets of bounded weight; one
+                    // rare escape then moves the tally by a bounded amount instead
+                    // of swamping the generation.
+                    std::size_t exploration = 1;
+                    if(owner_.postProcessExplorationMaxWeight_ > 0.0)
+                    {
+                        double const wanted = std::ceil(energyToCreateVec[i] / owner_.postProcessExplorationMaxWeight_);
+                        if(std::isfinite(wanted) && wanted > 1.0)
+                            exploration = static_cast<std::size_t>(std::min(wanted, 1.0e7));
+                    }
+                    nPhotonsVec[i] = exploration;
                 }
             }
         }
@@ -795,16 +913,32 @@ public:
             {
                 MCParticle particle;
                 owner_.initializeParticleRNG(particle);
+                bool volumePacket = false;
                 if(owner_.postProcessExternalSourceMode_)
                 {
                     std::size_t const begin = externalSourceOffsets[i];
                     std::size_t const end = externalSourceOffsets[i + 1];
-                    if(begin == end)
+                    double const volumeEnergy = volumeEmission ? volumeEnergyVec[i] : 0.0;
+                    if(begin == end && !(volumeEnergy > 0.0))
                     {
                         throw StormError(
-                            "External source cell has energy but no source faces");
+                            "External source cell " + std::to_string(i) +
+                            " was allocated " + std::to_string(nPhotonsCell) +
+                            " packets with energy " + std::to_string(energyToCreate) +
+                            " but has neither source faces nor volume emission");
                     }
-                    double const totalLuminosity = energyToCreate / fullDt;
+                    // Split packets between the face sources and the volume
+                    // term in proportion to their energy.
+                    if(volumeEnergy > 0.0 &&
+                       (begin == end || owner_.randomUnitOpen(particle) * energyToCreate < volumeEnergy))
+                    {
+                        volumePacket = true;
+                        particle = owner_.generateSingleParticle(i, cell, cellDecomposition);
+                    }
+                    else
+                    {
+                    double const faceEnergy = energyToCreate - volumeEnergy;
+                    double const totalLuminosity = faceEnergy / fullDt;
                     double const target = owner_.randomUnitOpen(particle) * totalLuminosity;
                     double cumulative = 0.0;
                     std::size_t selectedSource = externalSourceIndices[end - 1];
@@ -823,11 +957,16 @@ public:
                     particle = owner_.generatePostProcessExternalSourceParticle(
                         i, cell,
                         owner_.postProcessExternalSources_[selectedSource]);
+                    }
                 }
                 else
                 {
                     particle = owner_.generateSingleParticle(i, cell, cellDecomposition);
                 }
+                // Volume packets sample the thermal emission spectrum of the
+                // cell (kappa_a B_nu), not the face Planck spectrum, and skip
+                // the learned group sampling built for the face spectrum.
+                bool const faceSpectrum = owner_.postProcessExternalSourceMode_ && !volumePacket;
                 particle.cellID = radiation_imc_detail::cellID(cell);
                 particle.sourceCellID = particle.cellID;
                 particle.timeLeft = fullDt * owner_.randomUnitOpen(particle);
@@ -835,7 +974,65 @@ public:
                 double weightCorrection = 1.0;
                 bool usedGroupFrequencySampling = false;
 
-                if(groupPdfValid)
+                if(volumePacket && owner_.postProcessGroupFleck_ &&
+                   owner_.parameters_.withMultigroupOpacity &&
+                   i < owner_.postProcessGroupOutsideBits_.size())
+                {
+                    // Volume packets carry only the groups whose Fleck factor
+                    // is 1 in this cell, weighted by the thermal spectrum.
+                    GroupArray const thermalPdf =
+                        owner_.opacity_->GetThermalGroupPdf(cell, owner_.energyBoundaries_);
+                    std::uint16_t const bits = owner_.postProcessGroupOutsideBits_[i];
+                    double allowedTotal = 0.0;
+                    std::size_t lastAllowed = NumGroups;
+                    for(std::size_t g = 0; g < NumGroups; ++g)
+                    {
+                        if((bits >> g) & 1u)
+                        {
+                            allowedTotal += thermalPdf[g];
+                            lastAllowed = g;
+                        }
+                    }
+                    if(allowedTotal > 0.0 && lastAllowed < NumGroups)
+                    {
+                        double const target = owner_.randomUnitOpen(particle) * allowedTotal;
+                        double cumulative = 0.0;
+                        std::size_t selectedGroup = lastAllowed;
+                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        {
+                            if(!((bits >> g) & 1u))
+                            {
+                                continue;
+                            }
+                            cumulative += thermalPdf[g];
+                            if(target <= cumulative)
+                            {
+                                selectedGroup = g;
+                                break;
+                            }
+                        }
+                        double const freqCo = owner_.opacity_->SampleThermalEnergyInGroup(
+                            cell, selectedGroup, owner_.randomUnitOpen(particle),
+                            owner_.energyBoundaries_);
+                        if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                            !owner_.parameters_.staticScatterers) ||
+                           (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
+                        {
+                            double D = radiation_imc_detail::computeDopplerShift<PointT>(
+                                particle, cell, owner_.lightSpeed());
+                            particle.frequency = freqCo / D;
+                            particle.weight = energyToCreate / (nPhotonsCell * D);
+                        }
+                        else
+                        {
+                            particle.frequency = freqCo;
+                            particle.weight = energyPerPhoton;
+                        }
+                        usedGroupFrequencySampling = true;
+                    }
+                }
+
+                if(groupPdfValid && !volumePacket)
                 {
                     double rndGroup = owner_.randomUnitOpen(particle);
                     double cumul = 0.0;
@@ -881,7 +1078,7 @@ public:
                             ++owner_.lastGroupSamplingDiagnostics_.totalSampled;
                             owner_.lastGroupSamplingDiagnostics_.sampledEnergy += energyPerPhoton;
                             double rndFreq = owner_.randomUnitOpen(particle);
-                            freqCo = owner_.postProcessExternalSourceMode_
+                            freqCo = faceSpectrum
                                 ? owner_.samplePostProcessExternalSourcePlanckFrequencyInGroup(
                                     cell, selectedGroup)
                                 : owner_.opacity_->SampleThermalEnergyInGroup(
@@ -926,7 +1123,7 @@ public:
                     if(owner_.parameters_.withMultigroupOpacity)
                     {
                         double rnd = owner_.randomUnitOpen(particle);
-                        double freqCo = owner_.postProcessExternalSourceMode_
+                        double freqCo = faceSpectrum
                             ? owner_.samplePostProcessExternalSourcePlanckFrequency(cell)
                             : owner_.opacity_->GetThermalEnergy(
                                 cell, rnd, owner_.energyBoundaries_);
@@ -938,7 +1135,7 @@ public:
                 {
                     if(owner_.parameters_.withMultigroupOpacity)
                     {
-                        particle.frequency = owner_.postProcessExternalSourceMode_
+                        particle.frequency = faceSpectrum
                             ? owner_.samplePostProcessExternalSourcePlanckFrequency(cell)
                             : owner_.opacity_->GetThermalEnergy(
                                 cell, owner_.randomUnitOpen(particle),
