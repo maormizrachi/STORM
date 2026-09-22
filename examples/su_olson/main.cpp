@@ -90,11 +90,20 @@ int main(int argc, char **argv)
         }
         STORM::RadiationIMCParameters<1> p;
         p.newPhotonsPerCell = np;
-        p.withSlabTransport = true;
+        // SO_SLAB=0 disables the slab fold (transverse walls are reflecting anyway); needed
+        // because slab transport refuses DDMC.
+        p.withSlabTransport = !(std::getenv("SO_SLAB") && std::string(std::getenv("SO_SLAB")) == "0");
         p.withHydro = false;
         p.withCompton = false;
-        p.withDDMC = false;
-        p.withRandomWalk = false;
+        // Diagnostic switches (environment): SO_DDMC=1 enables DDMC with eligibility
+        // threshold SO_DDMC_MIN_TAU (default 1); SO_RW=1 enables random walk with
+        // threshold SO_RW_MIN_TAU (default 5). Defaults leave the benchmark unchanged.
+        auto envFlag = [](const char *name) { const char *v = std::getenv(name); return v && std::string(v) != "0" && std::string(v) != "false"; };
+        auto envDouble = [](const char *name, double fallback) { const char *v = std::getenv(name); return v ? std::stod(v) : fallback; };
+        p.withDDMC = envFlag("SO_DDMC");
+        p.ddmcMinCellOpticalDepth = envDouble("SO_DDMC_MIN_TAU", 1.0);
+        p.withRandomWalk = envFlag("SO_RW");
+        p.rwMinCellOpticalDepth = envDouble("SO_RW_MIN_TAU", 5.0);
         p.withMultigroupOpacity = false;
         p.withEgTimeAvg = false;
         p.energyBoundaries = {0., 100 * units::kev};
@@ -162,6 +171,11 @@ int main(int argc, char **argv)
                         throw std::runtime_error("Invalid profile/ownership");
                     }
                     f << 40 * (j + 0.5) / nx << ' ' << global[3 * j] << ' ' << global[3 * j + 1] << ' ' << std::pow(global[3 * j + 1], .25) << '\n';
+                }
+                if(p.withDDMC && std::getenv("SO_DDMC_DEBUG"))
+                {
+                    for(std::size_t ci = 0; ci < std::min<std::size_t>(n, 3); ++ci)
+                        std::cout << "[rank " << rank << "] DDMC debug cell " << ci << ":\n" << physics->getAccelerationDebugInfo(ci, 0.0) << std::endl;
                 }
                 std::cout << "Wrote profile at tau=" << target << " ddmc_steps=" << physics->getDDMCStepCount()
                           << " ddmc_leaks=" << physics->getDDMCLeakCount() << " rw_steps=" << physics->getRandomWalkStepCount() << std::endl;
