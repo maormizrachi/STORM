@@ -40,10 +40,12 @@ ReallocationAgent::~ReallocationAgent()
     if(this->incomingRequest != MPI_REQUEST_NULL)
     {
         MPI_Cancel(&this->incomingRequest);
+        MPI_Wait(&this->incomingRequest, MPI_STATUS_IGNORE);
     }
     if(this->incomingAsyncRequest != MPI_REQUEST_NULL)
     {
         MPI_Cancel(&this->incomingAsyncRequest);
+        MPI_Wait(&this->incomingAsyncRequest, MPI_STATUS_IGNORE);
     }
 }
 
