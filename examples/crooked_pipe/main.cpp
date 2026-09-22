@@ -67,9 +67,13 @@ struct Options
     double thinCvPerVolume = 1.0e13;
     double thickOpacity = 2000.0;
     double thinOpacity = 0.2;
+    bool reflectSource = false;
+    bool reflectExit = false;
+    double sourceScale = 1.0;
     bool energyLedger = false;
     double initialDt = 1.0e-11;
     double dtGrowth = 1.1;
+    double fleckScale = 1.0;
     double probeRadius = 0.1;
     std::size_t censusFloorPerCell = 0;
     std::size_t censusCapPerCell = 0;
@@ -112,8 +116,12 @@ void PrintUsage(const char *program)
               << "  --thin-cv <erg/keV/cm3>      Channel heat capacity per volume; benchmark value 1e13 (bounding tests only)\n"
               << "  --thick-opacity <1/cm>       Wall absorption opacity; benchmark 2000 (diagnostic)\n"
               << "  --thin-opacity <1/cm>        Channel absorption opacity; benchmark 0.2 (diagnostic)\n"
+              << "  --reflect-source             Mirror outgoing packets at the source disc instead of absorbing them\n"
+              << "  --reflect-exit               Mirror outgoing packets at the pipe exit (x = 7) instead of losing them\n"
+              << "  --source-scale <f>           Multiply the injected source flux (diagnostic; default: 1)\n"
               << "  --energy-ledger              Print a per-cycle global energy balance\n"
               << "  --initial-dt <s>             First time step; the benchmark ramps from 1e-11 by 1.1x per step (default: 1e-11)\n"
+              << "  --fleck-scale <f>            Diagnostic multiplier on the Fleck-factor argument (default: 1)\n"
               << "  --dt-growth <f>              Time-step growth factor per cycle until --max-dt (default: 1.1, the benchmark's)\n"
               << "  --channel-points <N>         Extra points filling the optically thin channel (default: 0)\n"
               << "  --probe-radius <cm>          Probe over the axisymmetric ring within this radius; 0 = single cell (default: 0.1)\n"
@@ -257,6 +265,12 @@ Options ParseOptions(int argc, char *argv[], bool &showHelp)
             if(!std::isfinite(options.dtGrowth) || options.dtGrowth < 1.0)
                 throw std::runtime_error("--dt-growth must be finite and at least 1");
         }
+        else if(argument == "--fleck-scale")
+        {
+            options.fleckScale = std::stod(RequireValue(argc, argv, i));
+            if(!std::isfinite(options.fleckScale) || options.fleckScale <= 0.0)
+                throw std::runtime_error("--fleck-scale must be finite and positive");
+        }
         else if(argument == "--initial-dt")
         {
             options.initialDt = std::stod(RequireValue(argc, argv, i));
@@ -266,6 +280,20 @@ Options ParseOptions(int argc, char *argv[], bool &showHelp)
         else if(argument == "--energy-ledger")
         {
             options.energyLedger = true;
+        }
+        else if(argument == "--source-scale")
+        {
+            options.sourceScale = std::stod(RequireValue(argc, argv, i));
+            if(!std::isfinite(options.sourceScale) || options.sourceScale <= 0.0)
+                throw std::runtime_error("--source-scale must be finite and positive");
+        }
+        else if(argument == "--reflect-source")
+        {
+            options.reflectSource = true;
+        }
+        else if(argument == "--reflect-exit")
+        {
+            options.reflectExit = true;
         }
         else if(argument == "--thick-opacity")
         {
@@ -1299,6 +1327,7 @@ int main(int argc, char *argv[])
             STORM::RadiationIMCParameters<1> parameters;
             parameters.newPhotonsPerCell = options.newPhotonsPerCell;
             parameters.emissionFloorPhotonsPerCell = options.emissionFloorPerCell;
+            parameters.fleckArgumentScale = options.fleckScale;
             parameters.withHydro = false;
             parameters.withMultigroupOpacity = false;
             parameters.withRandomWalk = options.withRandomWalk;
@@ -1315,7 +1344,8 @@ int main(int argc, char *argv[])
                                                                                       options.thickOpacity, options.thinOpacity);
             std::shared_ptr<STORM::examples::CrookedPipeBoundary<Vector3D, Grid>> boundary =
                 std::make_shared<STORM::examples::CrookedPipeBoundary<Vector3D, Grid>>(
-                    grid, materialFlags, driveTemperature, options.boundaryPhotonsPerFace);
+                    grid, materialFlags, driveTemperature, options.boundaryPhotonsPerFace, options.reflectSource,
+                    options.reflectExit, options.sourceScale);
             std::shared_ptr<IMC> physics = std::make_shared<IMC>(grid, boundary, cells, extensives, eos, opacity, parameters);
             std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> populationControl =
                 std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(
@@ -1370,6 +1400,8 @@ int main(int argc, char *argv[])
                           << ", ddmc=" << (options.ddmc ? "on" : "off") << " min tau=" << options.ddmcMinTau
                           << ", cv thick/thin=" << options.thickCvPerVolume << "/" << options.thinCvPerVolume
                           << ", opacity thick/thin=" << options.thickOpacity << "/" << options.thinOpacity
+                          << ", reflect source/exit=" << options.reflectSource << "/" << options.reflectExit
+                          << ", source scale=" << options.sourceScale << ", fleck scale=" << options.fleckScale
                           << ", dt growth=" << options.dtGrowth
                           << ", probe radius=" << options.probeRadius << " cm"
                           << ", random walk=" << options.withRandomWalk

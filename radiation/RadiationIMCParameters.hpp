@@ -33,6 +33,10 @@ struct RadiationIMCParameters
     // per-cell cap; set it lower to stop cells that emit a negligible share of
     // the total from being padded up to the budget-setting count.
     std::size_t emissionFloorPhotonsPerCell = 0;
+    // Diagnostic only: multiplies the beta*sigma*c*dt argument of the Fleck factor
+    // (f = 1 / (1 + scale * beta*sigma*c*dt)). 1 is Fleck-Cummings; used to measure
+    // how strongly a result depends on the linearisation. Not for production.
+    double fleckArgumentScale = 1.0;
     // A packet is killed once its weight falls below this fraction of the weight it
     // was created with.  0.001 is STORM's long-standing value; Branson's equivalent
     // (Constants::cutoff_fraction) is 0.01, and since the number of events a packet

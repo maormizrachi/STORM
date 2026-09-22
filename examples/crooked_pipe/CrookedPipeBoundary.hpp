@@ -23,13 +23,25 @@ template<typename PointT, typename GridT>
 class CrookedPipeBoundary : public BoundaryCondition<PointT, GridT>
 {
 public:
-    CrookedPipeBoundary(const GridT &grid, const std::vector<int> &materialFlags, double driveTemperature, std::size_t photonsPerFace)
+    CrookedPipeBoundary(const GridT &grid, const std::vector<int> &materialFlags, double driveTemperature,
+                        std::size_t photonsPerFace, bool reflectSource = false, bool reflectExit = false,
+                        double sourceScale = 1.0)
         : BoundaryCondition<PointT, GridT>(grid),
           materialFlags_(materialFlags),
           driveTemperature_(driveTemperature),
-          photonsPerFace_(photonsPerFace)
+          photonsPerFace_(photonsPerFace),
+          reflectSource_(reflectSource),
+          reflectExit_(reflectExit),
+          sourceScale_(sourceScale)
     {}
 
+    // Every domain face is black (absorbing) by default: the 0.5 keV source disc is a
+    // black body that swallows what the hot pipe radiates back at it, and the far end
+    // is open. With the pipe near the inlet at T_rad ~ 0.45 keV that back-flux is ~2/3
+    // of the source output, so the choice of boundary treatment sets the net injection
+    // by a factor of ~3. reflectSource/reflectExit turn the pipe openings (r < 0.5 on
+    // x = 0 and x = 7) into specular mirrors for outgoing packets so the alternative
+    // convention can be tested against the published curves.
     // Energy ledger. Removed energy is classified by where the packet left: the source
     // disc, the pipe exit disc, any other box face, or nowhere near a box face at all --
     // the last would be a packet silently dropped at an interior face.
@@ -59,6 +71,46 @@ public:
 
     ParticleStatus apply(Particle<PointT> &particle) override
     {
+        if(!(reflectSource_ or reflectExit_))
+        {
+            tallyRemoval(particle);
+            return ParticleStatus::REMOVE;
+        }
+        // Same structure as STORM's MarshakBoundary: let the face-proximity test decide
+        // which box face the packet is on, reflect on every close face (corners), and
+        // never hand the transport a packet that is still outside the box.
+        const double radius = std::sqrt(particle.location.y * particle.location.y +
+                                        particle.location.z * particle.location.z);
+        ParticleStatus status = ParticleStatus::DONE;
+        for(const typename GridT::Face_T &face : this->grid.GetBoxFaces())
+        {
+            PointT normal;
+            double faceScale = 0.0;
+            if(!this->getInwardBoxFaceNormalIfClose(face, particle.location, normal, faceScale))
+            {
+                continue;
+            }
+            if(std::abs(normal.x) < 0.99)
+            {
+                tallyRemoval(particle);
+                return ParticleStatus::REMOVE;   // side walls stay black
+            }
+            const bool atSource = normal.x > 0.0; // inward +x means the x = 0 face
+            const bool mirror = radius < 0.5 and (atSource ? reflectSource_ : reflectExit_);
+            if(!mirror)
+            {
+                tallyRemoval(particle);
+                return ParticleStatus::REMOVE;
+            }
+            if(this->reflectParticleOnBoxFace(particle, face))
+            {
+                status = ParticleStatus::REFLECT;
+            }
+        }
+        if(status == ParticleStatus::REFLECT and !this->grid.IsPointOutsideBox(particle.location))
+        {
+            return ParticleStatus::REFLECT;
+        }
         tallyRemoval(particle);
         return ParticleStatus::REMOVE;
     }
@@ -99,8 +151,11 @@ public:
                     continue;
                 }
 
-                double particleEnergy = units::sigma_sb * temperatureFourth * this->grid.GetArea(faceIndex) * fullDt /
-                                        static_cast<double>(photonsPerFace_);
+                // sourceScale is a diagnostic multiplier on the injected flux (1 = the
+                // benchmark's sigma T^4), used to bound how much of a probe discrepancy net
+                // injection alone can account for.
+                double particleEnergy = sourceScale_ * units::sigma_sb * temperatureFourth *
+                                        this->grid.GetArea(faceIndex) * fullDt / static_cast<double>(photonsPerFace_);
                 ledger_.injected += particleEnergy * static_cast<double>(photonsPerFace_);
                 for(std::size_t j = 0; j < photonsPerFace_; ++j)
                 {
@@ -127,6 +182,38 @@ public:
         return particles;
     }
 
+    // The portable grey kernel tracks packets itself, so a host-side REFLECT leaves it
+    // unable to find the next intersection (TransportError::NoIntersection). Faces that
+    // should mirror are declared here instead and reflected on the device, exactly as
+    // RigidBoundary does; every other face stays HostOnly and apply() removes the packet.
+    DeviceBoundaryFaceBehavior getDeviceBoundaryFaceBehavior(std::size_t faceIdx, std::size_t insideCellIndex,
+                                                             std::size_t outsidePointIndex) const override
+    {
+        (void) insideCellIndex;
+        (void) outsidePointIndex;
+        if(!(reflectSource_ or reflectExit_))
+        {
+            return DeviceBoundaryFaceBehavior::HostOnly;
+        }
+        const auto &[lower, upper] = this->grid.GetBoxCoordinates();
+        const PointT centre = this->grid.FaceCM(faceIdx);
+        const double scale = std::max(1.0, std::abs(lower.x) + std::abs(upper.x));
+        const double radius = std::sqrt(centre.y * centre.y + centre.z * centre.z);
+        if(radius >= 0.5)
+        {
+            return DeviceBoundaryFaceBehavior::HostOnly;
+        }
+        if(reflectSource_ and std::abs(centre.x - lower.x) <= 1.0e-9 * scale)
+        {
+            return DeviceBoundaryFaceBehavior::ReflectingRigid;
+        }
+        if(reflectExit_ and std::abs(centre.x - upper.x) <= 1.0e-9 * scale)
+        {
+            return DeviceBoundaryFaceBehavior::ReflectingRigid;
+        }
+        return DeviceBoundaryFaceBehavior::HostOnly;
+    }
+
     DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(std::size_t, std::size_t insideCellIndex, std::size_t outsidePointIndex) const override
     {
         (void) insideCellIndex;
@@ -135,10 +222,13 @@ public:
     }
 
 private:
-    Ledger ledger_;
     const std::vector<int> &materialFlags_;
     double driveTemperature_;
     std::size_t photonsPerFace_;
+    bool reflectSource_;
+    bool reflectExit_;
+    double sourceScale_;
+    Ledger ledger_;
 };
 
 } // namespace examples

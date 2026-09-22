@@ -802,7 +802,7 @@ public:
                     eo.addEntry("cv", cv);
                     throw eo;
                 }
-                owner_.factorFleck_[i] = 1.0 / (1.0 + (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * owner_.planckOpacities_[i] * owner_.lightSpeed() * fleckDt * gamma) / cv);
+                owner_.factorFleck_[i] = 1.0 / (1.0 + owner_.parameters_.fleckArgumentScale * (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * owner_.planckOpacities_[i] * owner_.lightSpeed() * fleckDt * gamma) / cv);
                 if(owner_.postProcessVolumeEmission_)
                 {
                     // Fixed-temperature post-process with explicit volume
