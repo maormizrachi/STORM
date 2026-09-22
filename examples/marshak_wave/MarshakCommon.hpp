@@ -284,6 +284,14 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     size_t Nx = (argc >= 2) ? std::stoul(argv[1]) : 256;
     size_t newPhotonsPerCell = (argc >= 3) ? std::stoul(argv[2]) : 15;
     size_t boundaryPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 100;
+    // Scales the initial step, the ramp and the ceiling together, so the whole
+    // history is refined uniformly rather than only its first cycles.
+    double dtFactor = (argc >= 5) ? std::stod(argv[4]) : 1.0;
+    if(dtFactor <= 0.0)
+    {
+        std::cerr << "dt_factor must be positive, got " << dtFactor << std::endl;
+        return 2;
+    }
 
     ProblemParams params = GetProblemParams(problem);
 
@@ -344,12 +352,13 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     MonteCarloManager<Vector3D, MarshakGrid> manager(grid, physics, popControl, boundary);
     manager.getParticles().clear();
 
-    double dt = params.initialDt;
+    double dt = params.initialDt * dtFactor;
     double simTime = 0;
     size_t cycle = 0;
 
     std::cout << "T_bath(t_final) = " << BathTemperature(params, params.tf) / keV_K << " keV" << std::endl;
-    std::cout << "new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell << std::endl;
+    std::cout << "new_per_cell=" << newPhotonsPerCell << ", boundary_per_cell=" << boundaryPhotonsPerCell
+              << ", dt_factor=" << dtFactor << ", initial dt=" << dt << " s" << std::endl;
     std::cout << std::endl;
 
     while(simTime < params.tf)
@@ -364,8 +373,8 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         simTime += dt;
         cycle++;
 
-        double newDt = std::max(params.initialDt, simTime * 1e-3);
-        dt = std::min(newDt, 5e-11);
+        double newDt = std::max(params.initialDt, simTime * 1e-3) * dtFactor;
+        dt = std::min(newDt, 5e-11 * dtFactor);
 
         if(cycle % 50 == 0 or simTime >= params.tf)
         {
@@ -410,6 +419,9 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
         std::cout << "\nWrote " << profilePath << std::endl;
     }
 
+#ifndef STORM_DATA_DIR
+#define STORM_DATA_DIR "."
+#endif
     std::string refPath = std::string(STORM_DATA_DIR) + "/reference.txt";
     std::vector<ReferencePoint> ref = LoadReference(refPath);
     if(!ref.empty())

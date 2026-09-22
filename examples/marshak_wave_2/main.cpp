@@ -11,7 +11,7 @@
  * MC result is compared against a reference diffusion profile.
  *
  * Usage:
- *   ./marshak_wave_2 [Nx] [new_per_cell] [boundary_per_cell]
+ *   ./marshak_wave_2 [Nx] [new_per_cell] [boundary_per_cell] [dt_factor]
  */
 
 #include "examples/marshak_wave/MarshakCommon.hpp"
