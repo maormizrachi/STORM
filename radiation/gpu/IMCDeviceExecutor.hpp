@@ -441,6 +441,7 @@ private:
             result.randomWalk.spectralEnabled = owner_.parameters_.withMultigroupOpacity and owner_.rwCellData_.size() == result.grid.cellCount;
         }
         result.speedOfLight = owner_.lightSpeed();
+        result.weightCutoffFraction = owner_.parameters_.weightCutoffFraction;
         result.depositMaterialEnergy = not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled;
         result.staticScatterers = owner_.parameters_.staticScatterers;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)

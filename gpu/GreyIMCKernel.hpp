@@ -42,6 +42,9 @@ struct GreyIMCViews
     double *censusGroupRadiationEnergy = nullptr;
     std::size_t groupCount = 0;
     double speedOfLight = 0.0;
+    // Kill a packet below this fraction of its creation weight (see
+    // RadiationIMCParameters::weightCutoffFraction).
+    double weightCutoffFraction = 1.0e-3;
     std::uint8_t depositMaterialEnergy = 1;
     std::uint8_t comovingTransport = 0;
     std::uint8_t depositMomentum = 0;

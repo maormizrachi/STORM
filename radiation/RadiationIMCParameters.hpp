@@ -33,6 +33,12 @@ struct RadiationIMCParameters
     // per-cell cap; set it lower to stop cells that emit a negligible share of
     // the total from being padded up to the budget-setting count.
     std::size_t emissionFloorPhotonsPerCell = 0;
+    // A packet is killed once its weight falls below this fraction of the weight it
+    // was created with.  0.001 is STORM's long-standing value; Branson's equivalent
+    // (Constants::cutoff_fraction) is 0.01, and since the number of events a packet
+    // survives goes as ln(1/cutoff)/fleck, the choice changes transport cost by that
+    // ratio.  Exposed so the two can be matched when comparing run times.
+    double weightCutoffFraction = 1e-3;
     double lightSpeed = units::clight;
     bool withHydro = false;
     // For planar x-symmetric material/boundaries and gas velocity along x.

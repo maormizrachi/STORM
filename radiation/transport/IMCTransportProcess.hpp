@@ -614,7 +614,7 @@ public:
 
             MCParticle const labParticleBeforeCompton = particle;
 
-            if(std::abs(particle.weight) < particle.initialWeight * 1e-3)
+            if(std::abs(particle.weight) < particle.initialWeight * owner_.parameters_.weightCutoffFraction)
             {
                 if(owner_.observer_ and owner_.parameters_.postProcess.enabled)
                 {

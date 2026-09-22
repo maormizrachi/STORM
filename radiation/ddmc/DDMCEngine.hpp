@@ -1300,7 +1300,7 @@ public:
         particle.weight *= 1.0 + expFactor;
         particle.timeLeft -= dt;
 
-        if(std::abs(particle.weight) < particle.initialWeight * 1e-3)
+        if(std::abs(particle.weight) < particle.initialWeight * owner_.parameters_.weightCutoffFraction)
         {
             particle.radiationState.clearDDMC();
             functionality.change = ParticleStatus::REMOVE;

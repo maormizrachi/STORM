@@ -356,7 +356,7 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
     opacity.TallyGroupRadiation(particle, views, cellIndex, opacityState, integratedEnergy);
 
     particle.weight *= 1.0 + weightExpFactor;
-    if(Abs(particle.weight) < particle.initialWeight * 1.0e-3)
+    if(Abs(particle.weight) < particle.initialWeight * views.weightCutoffFraction)
     {
         if(views.depositMaterialEnergy)
         {
