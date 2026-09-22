@@ -311,7 +311,7 @@ inline int RunMarshakWave(int problem, int argc, char *argv[])
     size_t Ncells = grid.GetPointNo();
 
     double keV_K = units::kev_kelvin;
-    double T_init = 1e-3 * keV_K;
+    double T_init = 1e-2 * keV_K;
 
     std::cout << "Marshak wave problem " << problem << ": " << Ncells << " cells, domain [0, " << xMax << "] cm" << std::endl;
 
