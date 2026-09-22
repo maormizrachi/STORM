@@ -91,11 +91,7 @@ std::size_t TargetParticleCount(
 }
 
 STORM_COMB_INLINE
-bool LessParticleKey(
-    const rank_t leftRank,
-    const particle_id_t leftID,
-    const rank_t rightRank,
-    const particle_id_t rightID)
+bool LessParticleKey(const rank_t leftRank, const particle_id_t leftID, const rank_t rightRank, const particle_id_t rightID)
 {
 #ifdef STORM_WITH_MPI
     if(leftRank != rightRank)
@@ -110,15 +106,11 @@ bool LessParticleKey(
 }
 
 STORM_COMB_INLINE
-void FisherYatesShuffle(
-    std::size_t *indices,
-    const std::size_t count,
-    const std::uint64_t rngKey)
+void FisherYatesShuffle(std::size_t *indices, const std::size_t count, const std::uint64_t rngKey)
 {
     for(std::size_t i = count; i > 1; --i)
     {
-        const std::uint64_t draw =
-            CounterRNG::next(rngKey, count - i);
+        const std::uint64_t draw = CounterRNG::next(rngKey, count - i);
         const std::size_t j = draw % i;
         const std::size_t tmp = indices[i - 1];
         indices[i - 1] = indices[j];
@@ -127,25 +119,17 @@ void FisherYatesShuffle(
 }
 
 STORM_COMB_INLINE
-std::size_t CountSplitCopies(
-    const double weight,
-    const double idealWeight)
+std::size_t CountSplitCopies(const double weight, const double idealWeight)
 {
     if(weight <= 2.0 * idealWeight || idealWeight <= 0.0)
     {
         return 1;
     }
-    return static_cast<std::size_t>(
-        std::ceil(weight / idealWeight));
+    return static_cast<std::size_t>(std::ceil(weight / idealWeight));
 }
 
 STORM_COMB_INLINE
-std::size_t CountUndersampledBin(
-    const double *weights,
-    const std::size_t *sourceIndices,
-    const std::size_t count,
-    const double binWeight,
-    const std::size_t target)
+std::size_t CountUndersampledBin(const double *weights, const std::size_t *sourceIndices, const std::size_t count, const double binWeight, const std::size_t target)
 {
     if(count == 0 || target == 0 || binWeight <= 0.0)
     {
@@ -197,26 +181,13 @@ std::size_t CountOversampledBin(
 }
 
 STORM_COMB_INLINE
-std::size_t CountBin(
-    const double *weights,
-    const std::size_t *sourceIndices,
-    const std::size_t count,
-    const double binWeight,
-    const std::size_t target,
-    const double combOffset)
+std::size_t CountBin(const double *weights, const std::size_t *sourceIndices, const std::size_t count, const double binWeight, const std::size_t target, const double combOffset)
 {
     if(count <= target)
     {
-        return CountUndersampledBin(
-            weights, sourceIndices, count, binWeight, target);
+        return CountUndersampledBin(weights, sourceIndices, count, binWeight, target);
     }
-    return CountOversampledBin(
-        weights,
-        sourceIndices,
-        count,
-        binWeight,
-        target,
-        combOffset);
+    return CountOversampledBin(weights, sourceIndices, count, binWeight, target, combOffset);
 }
 
 template<typename EmitFn>
@@ -234,8 +205,7 @@ void EmitUndersampledBin(
     {
         return;
     }
-    const double idealWeight =
-        binWeight / static_cast<double>(target);
+    const double idealWeight = binWeight / static_cast<double>(target);
     for(std::size_t i = 0; i < count; ++i)
     {
         const std::size_t sourceIndex = sourceIndices[i];
@@ -247,8 +217,7 @@ void EmitUndersampledBin(
             emit(sourceIndex, weight, weight, cellIndex, false);
             continue;
         }
-        const double splitWeight =
-            weight / static_cast<double>(copies);
+        const double splitWeight = weight / static_cast<double>(copies);
         for(std::size_t copy = 0; copy < copies; ++copy)
         {
             emit(sourceIndex, splitWeight, splitWeight, cellIndex, true);
@@ -272,26 +241,17 @@ void EmitOversampledBin(
     {
         return;
     }
-    const double survivorWeight =
-        binWeight / static_cast<double>(target);
+    const double survivorWeight = binWeight / static_cast<double>(target);
     std::size_t combIndex = 0;
     double cumulativeWeight = 0.0;
     for(std::size_t i = 0; i < count; ++i)
     {
         const std::size_t sourceIndex = sourceIndices[i];
         const double weight = weights[sourceIndex];
-        while((cumulativeWeight + weight) >
-                  (static_cast<double>(combIndex) + combOffset) *
-                      survivorWeight &&
-              combIndex < target)
+        while((cumulativeWeight + weight) > (static_cast<double>(combIndex) + combOffset) * survivorWeight and combIndex < target)
         {
             ++combIndex;
-            emit(
-                sourceIndex,
-                survivorWeight,
-                survivorWeight,
-                cellIndex,
-                true);
+            emit(sourceIndex, survivorWeight, survivorWeight, cellIndex, true);
         }
         cumulativeWeight += weight;
     }
@@ -311,25 +271,10 @@ void EmitBin(
 {
     if(count <= target)
     {
-        EmitUndersampledBin(
-            sourceIndices,
-            weights,
-            count,
-            binWeight,
-            target,
-            cellIndex,
-            emit);
+        EmitUndersampledBin(sourceIndices, weights, count, binWeight, target, cellIndex, emit);
         return;
     }
-    EmitOversampledBin(
-        sourceIndices,
-        weights,
-        count,
-        binWeight,
-        target,
-        cellIndex,
-        combOffset,
-        emit);
+    EmitOversampledBin(sourceIndices, weights, count, binWeight, target, cellIndex, combOffset, emit);
 }
 
 inline void AllocateStratifiedTargets(
@@ -359,9 +304,7 @@ inline void AllocateStratifiedTargets(
     else
     {
         std::vector<std::size_t> sortedGroups = activeGroups;
-        std::sort(
-            sortedGroups.begin(),
-            sortedGroups.end(),
+        std::sort(sortedGroups.begin(), sortedGroups.end(),
             [&](const std::size_t left, const std::size_t right)
             {
                 return binWeights[left] > binWeights[right];
@@ -375,8 +318,7 @@ inline void AllocateStratifiedTargets(
         }
     }
 
-    const std::size_t remaining =
-        cellTarget > allocated ? cellTarget - allocated : 0;
+    const std::size_t remaining = (cellTarget > allocated)? cellTarget - allocated : 0;
     std::size_t proportionalAllocated = 0;
     std::vector<double> fractional(groupCount, 0.0);
     for(const std::size_t group : activeGroups)
@@ -385,11 +327,8 @@ inline void AllocateStratifiedTargets(
         {
             continue;
         }
-        const double exactExtra =
-            static_cast<double>(remaining) * binWeights[group] /
-            cellWeight;
-        const std::size_t extra =
-            static_cast<std::size_t>(std::floor(exactExtra));
+        const double exactExtra = static_cast<double>(remaining) * binWeights[group] / cellWeight;
+        const std::size_t extra = static_cast<std::size_t>(std::floor(exactExtra));
         targetByGroup[group] += extra;
         proportionalAllocated += extra;
         fractional[group] = exactExtra - static_cast<double>(extra);
@@ -400,8 +339,7 @@ inline void AllocateStratifiedTargets(
         double bestFraction = -1.0;
         for(const std::size_t group : activeGroups)
         {
-            if(targetByGroup[group] > 0 &&
-               fractional[group] > bestFraction)
+            if(targetByGroup[group] > 0 and fractional[group] > bestFraction)
             {
                 bestGroup = group;
                 bestFraction = fractional[group];

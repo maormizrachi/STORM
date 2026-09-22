@@ -171,297 +171,279 @@ public:
             }
     }
 
-    bool tryRandomWalkStep(
-        MCParticle &particle, Functionality &functionality)
+    bool tryRandomWalkStep(MCParticle &particle, Functionality &functionality)
     {
+        std::size_t cellIndex = particle.cellIndex;
+        CellT &cell = owner_.cells_[cellIndex];
 
-            std::size_t cellIndex = particle.cellIndex;
-            CellT &cell = owner_.cells_[cellIndex];
-
-            if(owner_.SharedRandomWalkKernelEligible())
+        if(owner_.SharedRandomWalkKernelEligible())
+        {
+            const gpu::GreyIMCViews<PointT> &views = owner_.GetHostTransportViews();
+            transport::RandomWalkResult result = transport::TryAdvanceRandomWalk(particle, views);
+            if(result.invalid)
             {
-                const gpu::GreyIMCViews<PointT> &views =
-                    owner_.GetHostTransportViews();
-                transport::RandomWalkResult result =
-                    transport::TryAdvanceRandomWalk(particle, views);
-                if(result.invalid)
-                {
-                    StormError eo(
-                        "RadiationIMC GPU-compatible random walk received invalid data");
-                    eo.addEntry("Cell index", particle.cellIndex);
-                    throw eo;
-                }
-                if(!result.taken)
-                {
-                    return false;
-                }
-                functionality = result.step;
-                return true;
+                StormError eo("RadiationIMC GPU-compatible random walk received invalid data");
+                eo.addEntry("Cell index", particle.cellIndex);
+                throw eo;
             }
-
-            double Ro = owner_.computeMinDistanceToFaces(cellIndex, particle.location);
-
-            double sigmaT, sigma_a_eff, D_phys, gamma_rw;
-            bool isPGRW = owner_.parameters_.withMultigroupOpacity;
-            std::size_t groupCutoff = 0;
-
-            if(isPGRW)
-            {
-                const PGRWCellData &rwd = owner_.rwCellData_[cellIndex];
-                sigmaT = rwd.sigmaT_bar;
-                sigma_a_eff = rwd.sigmaA_bar;
-                D_phys = rwd.D;
-                gamma_rw = rwd.gamma;
-                groupCutoff = rwd.groupCutoff;
-            }
-            else
-            {
-                sigmaT = owner_.rwCellTotalOpacity_[cellIndex];
-                sigma_a_eff = owner_.planckOpacities_[cellIndex];
-                D_phys = (sigmaT > 0.0) ? owner_.lightSpeed() / (3.0 * sigmaT) : 0.0;
-                gamma_rw = 1.0;
-            }
-
-            bool doRW = (Ro > 0.0 && sigmaT > 0.0 && D_phys > 0.0
-                         && Ro * sigmaT >= owner_.parameters_.rwMinParticleOpticalDepth);
-
-            if(doRW && isPGRW)
-            {
-                double cutoffEnergy = owner_.energyBoundaries_[groupCutoff];
-                double coFreq = particle.frequency;
-                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-                {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                       !owner_.parameters_.staticScatterers)
-                    {
-                        double dopplerShift =
-                            radiation_imc_detail::computeDopplerShift<PointT>(
-                                particle, cell, owner_.lightSpeed());
-                        coFreq *= dopplerShift;
-                    }
-                }
-                owner_.clampFrequencyToBounds(coFreq);
-                if(coFreq >= cutoffEnergy)
-                {
-                    doRW = false;
-                }
-            }
-
-            if(!doRW)
+            if(!result.taken)
             {
                 return false;
             }
+            functionality = result.step;
+            return true;
+        }
 
-            PointT oldVelocity = particle.velocity;
-            double oldWeight = particle.weight;
-            double f = owner_.factorFleck_[cellIndex];
-            double tauLeak = owner_.randomWalk_->sampleLeakTime(owner_.randomUnitOpen(particle));
-            double tLeak = tauLeak * Ro * Ro / D_phys;
+        double Ro = owner_.computeMinDistanceToFaces(cellIndex, particle.location);
 
-            double tCensus = particle.timeLeft;
+        double sigmaT, sigma_a_eff, D_phys, gamma_rw;
+        bool isPGRW = owner_.parameters_.withMultigroupOpacity;
+        std::size_t groupCutoff = 0;
 
-            double tUpscatter = std::numeric_limits<double>::max();
-            if(isPGRW && gamma_rw < 1.0 && sigma_a_eff > 0.0 && f > 0.0)
+        if(isPGRW)
+        {
+            const PGRWCellData &rwd = owner_.rwCellData_[cellIndex];
+            sigmaT = rwd.sigmaT_bar;
+            sigma_a_eff = rwd.sigmaA_bar;
+            D_phys = rwd.D;
+            gamma_rw = rwd.gamma;
+            groupCutoff = rwd.groupCutoff;
+        }
+        else
+        {
+            sigmaT = owner_.rwCellTotalOpacity_[cellIndex];
+            sigma_a_eff = owner_.planckOpacities_[cellIndex];
+            D_phys = (sigmaT > 0.0) ? owner_.lightSpeed() / (3.0 * sigmaT) : 0.0;
+            gamma_rw = 1.0;
+        }
+
+        bool doRW = (Ro > 0.0 and sigmaT > 0.0 and D_phys > 0.0 and Ro * sigmaT >= owner_.parameters_.rwMinParticleOpticalDepth);
+
+        if(doRW and isPGRW)
+        {
+            double cutoffEnergy = owner_.energyBoundaries_[groupCutoff];
+            double coFreq = particle.frequency;
+            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                double xiUp = owner_.randomUnitOpen(particle);
-                tUpscatter = -std::log(xiUp) / (owner_.lightSpeed() * (1.0 - f) * sigma_a_eff * (1.0 - gamma_rw));
+                if(owner_.parameters_.withHydro and not owner_.parameters_.MMC and not owner_.parameters_.staticScatterers)
+                {
+                    double dopplerShift =
+                        radiation_imc_detail::computeDopplerShift<PointT>(
+                            particle, cell, owner_.lightSpeed());
+                    coFreq *= dopplerShift;
+                }
             }
+            owner_.clampFrequencyToBounds(coFreq);
+            if(coFreq >= cutoffEnergy)
+            {
+                doRW = false;
+            }
+        }
 
-            enum { RW_LEAK, RW_CENSUS, RW_UPSCATTER };
-            int rwEvent;
-            double dt;
-            if(tLeak <= tCensus && tLeak <= tUpscatter)
-            {
-                rwEvent = RW_LEAK;
-                dt = tLeak;
-            }
-            else if(tCensus <= tUpscatter)
-            {
-                rwEvent = RW_CENSUS;
-                dt = tCensus;
-            }
-            else
-            {
-                rwEvent = RW_UPSCATTER;
-                dt = tUpscatter;
-            }
+        if(!doRW)
+        {
+            return false;
+        }
 
-            double rwAbsRate = sigma_a_eff * f * owner_.lightSpeed();
-            double rwExp = std::expm1(-dt * rwAbsRate);
+        PointT oldVelocity = particle.velocity;
+        double oldWeight = particle.weight;
+        double f = owner_.factorFleck_[cellIndex];
+        double tauLeak = owner_.randomWalk_->sampleLeakTime(owner_.randomUnitOpen(particle));
+        double tLeak = tauLeak * Ro * Ro / D_phys;
+
+        double tCensus = particle.timeLeft;
+
+        double tUpscatter = std::numeric_limits<double>::max();
+        if(isPGRW and gamma_rw < 1.0 and sigma_a_eff > 0.0 and f > 0.0)
+        {
+            double xiUp = owner_.randomUnitOpen(particle);
+            tUpscatter = -std::log(xiUp) / (owner_.lightSpeed() * (1.0 - f) * sigma_a_eff * (1.0 - gamma_rw));
+        }
+
+        enum { RW_LEAK, RW_CENSUS, RW_UPSCATTER };
+        int rwEvent;
+        double dt;
+        if(tLeak <= tCensus && tLeak <= tUpscatter)
+        {
+            rwEvent = RW_LEAK;
+            dt = tLeak;
+        }
+        else if(tCensus <= tUpscatter)
+        {
+            rwEvent = RW_CENSUS;
+            dt = tCensus;
+        }
+        else
+        {
+            rwEvent = RW_UPSCATTER;
+            dt = tUpscatter;
+        }
+
+        double rwAbsRate = sigma_a_eff * f * owner_.lightSpeed();
+        double rwExp = std::expm1(-dt * rwAbsRate);
+        if(!owner_.parameters_.noHydroFeedback)
+        {
+            owner_.tallyMaterialEnergy(cellIndex, -rwExp * particle.weight);
+        }
+        if(rwAbsRate > 0.0)
+        {
+            owner_.tallyRadiationEnergy(cellIndex, particle.weight * rwExp * (-1.0 / rwAbsRate));
+            if(owner_.parameters_.withEgTimeAvg && owner_.parameters_.withMultigroupOpacity)
+            {
+                std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
+                if(g < NumGroups)
+                {
+                    owner_.tallyGroupRadiationEnergy(cellIndex, g, particle.weight * rwExp * (-1.0 / rwAbsRate));
+                }
+            }
+        }
+        particle.weight *= 1.0 + rwExp;
+
+        particle.timeLeft -= dt;
+
+        if(std::abs(particle.weight) < particle.initialWeight * 1e-4)
+        {
+            functionality.change = ParticleStatus::REMOVE;
             if(!owner_.parameters_.noHydroFeedback)
             {
-                owner_.tallyMaterialEnergy(cellIndex, -rwExp * particle.weight);
+                owner_.tallyMaterialEnergy(cellIndex, particle.weight);
             }
-            if(rwAbsRate > 0.0)
+            return true;
+        }
+
+        constexpr double RW_PI = 3.14159265358979323846;
+        double cosTheta = 2.0 * owner_.randomUnitOpen(particle) - 1.0;
+        double sinTheta = std::sqrt(std::max(0.0, 1.0 - cosTheta * cosTheta));
+        double phi = 2.0 * RW_PI * owner_.randomUnitOpen(particle);
+        PointT posDir(sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta);
+
+        double displacement;
+        if(rwEvent == RW_LEAK)
+        {
+            displacement = Ro;
+        }
+        else
+        {
+            double tauPos = D_phys * dt / (Ro * Ro);
+            displacement = Ro * owner_.randomWalk_->sampleRadius(tauPos, owner_.randomUnitOpen(particle));
+        }
+
+        if(displacement > Ro * (1.0 + 1e-12))
+        {
+            displacement = Ro;
+        }
+
+        PointT rwCenter = particle.location;
+        particle.location = rwCenter + displacement * posDir;
+
+        static constexpr double nudge = 1e-6;
+        particle.location = particle.location * (1.0 - nudge) + nudge * owner_.componentGrid().GetMeshPoint(cellIndex);
+
+        const std::size_t faceBegin = owner_.componentGridData().cellFaceOffsets[cellIndex];
+        const std::size_t faceEnd = owner_.componentGridData().cellFaceOffsets[cellIndex + 1];
+        for(std::size_t fi = faceBegin; fi < faceEnd; ++fi)
+        {
+            double d = ScalarProd(
+                particle.location - owner_.componentGridData().pointsOnFaces[fi],
+                owner_.componentGridData().normals[fi]);
+            if(d < 0.0)
             {
-                owner_.tallyRadiationEnergy(
-                    cellIndex, particle.weight * rwExp * (-1.0 / rwAbsRate));
-                if(owner_.parameters_.withEgTimeAvg && owner_.parameters_.withMultigroupOpacity)
-                {
-                    std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
-                    if(g < NumGroups)
-                    {
-                        owner_.tallyGroupRadiationEnergy(
-                            cellIndex, g,
-                            particle.weight * rwExp * (-1.0 / rwAbsRate));
-                    }
-                }
+                displacement *= 0.99;
+                particle.location = rwCenter + displacement * posDir;
+                fi = faceBegin - 1;
             }
-            particle.weight *= 1.0 + rwExp;
+        }
 
-            particle.timeLeft -= dt;
+        particle.velocity = owner_.sampleRandomVelocity(cell, particle);
 
-            if(std::abs(particle.weight) < particle.initialWeight * 1e-4)
-            {
-                functionality.change = ParticleStatus::REMOVE;
-                if(!owner_.parameters_.noHydroFeedback)
-                {
-                    owner_.tallyMaterialEnergy(cellIndex, particle.weight);
-                }
-                return true;
-            }
-
-            constexpr double RW_PI = 3.14159265358979323846;
-            double cosTheta = 2.0 * owner_.randomUnitOpen(particle) - 1.0;
-            double sinTheta = std::sqrt(std::max(0.0, 1.0 - cosTheta * cosTheta));
-            double phi = 2.0 * RW_PI * owner_.randomUnitOpen(particle);
-            PointT posDir(sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta);
-
-            double displacement;
-            if(rwEvent == RW_LEAK)
-            {
-                displacement = Ro;
-            }
-            else
-            {
-                double tauPos = D_phys * dt / (Ro * Ro);
-                displacement = Ro * owner_.randomWalk_->sampleRadius(tauPos, owner_.randomUnitOpen(particle));
-            }
-
-            if(displacement > Ro * (1.0 + 1e-12))
-            {
-                displacement = Ro;
-            }
-
-            PointT rwCenter = particle.location;
-            particle.location = rwCenter + displacement * posDir;
-
-            static constexpr double nudge = 1e-6;
-            particle.location = particle.location * (1.0 - nudge) + nudge * owner_.componentGrid().GetMeshPoint(cellIndex);
-
-            const std::size_t faceBegin = owner_.componentGridData().cellFaceOffsets[cellIndex];
-            const std::size_t faceEnd = owner_.componentGridData().cellFaceOffsets[cellIndex + 1];
-            for(std::size_t fi = faceBegin; fi < faceEnd; ++fi)
-            {
-                double d = ScalarProd(
-                    particle.location - owner_.componentGridData().pointsOnFaces[fi],
-                    owner_.componentGridData().normals[fi]);
-                if(d < 0.0)
-                {
-                    displacement *= 0.99;
-                    particle.location = rwCenter + displacement * posDir;
-                    fi = faceBegin - 1;
-                }
-            }
-
-            particle.velocity = owner_.sampleRandomVelocity(cell, particle);
-
-        #ifdef MONTECARLO_POLARIZATION
-            if(owner_.polarizationEnabled())
-            {
-                MCParticle polarizationParticle = particle;
-                polarizationParticle.velocity = oldVelocity;
-                double dtCo = dt;
-                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-                {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                       !owner_.parameters_.staticScatterers)
-                    {
-                        dtCo *= radiation_imc_detail::computeDopplerShift<PointT>(
-                            polarizationParticle, cell, owner_.lightSpeed());
-                        radiation_imc_detail::lorentzTransformToComoving<PointT>(
-                            polarizationParticle, cell, owner_.lightSpeed());
-                    }
-                }
-                ParticleCounterEngine polarizationEngine(
-                    particle.rngKey, particle.rngCounter);
-                std::uniform_real_distribution<double> polarizationUnit(0.0, 1.0);
-                polarization::applyAcceleratedPolarizationHistory<PointT>(
-                    polarizationParticle, dtCo,
-                    std::max(0.0, sigmaT - sigma_a_eff),
-                    std::max(0.0, (1.0 - f) * sigma_a_eff),
-                    particle.velocity,
-                    owner_.parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
-                    owner_.parameters_.postProcess.polarization.depolarizationScatterings,
-                    polarizationEngine, polarizationUnit);
-                particle.stokesQ = polarizationParticle.stokesQ;
-                particle.stokesU = polarizationParticle.stokesU;
-                particle.polarizationBasis = polarizationParticle.polarizationBasis;
-                particle.polarizationInitialized = polarizationParticle.polarizationInitialized;
-                particle.radiationState.pendingMeanScatterings =
-                    polarizationParticle.radiationState.pendingMeanScatterings;
-                particle.polarizationBasis = polarization::projectBasisToDirection(
-                    particle.polarizationBasis, particle.velocity);
-            }
-        #endif
-
-            if(rwEvent == RW_UPSCATTER && isPGRW)
-            {
-                GroupArray cumOp = owner_.opacity_->GetCumulativeOpacity(cell, owner_.energyBoundaries_);
-                double cdfAtCutoff = cumOp[groupCutoff - 1];
-                double cdfTotal = cumOp[NumGroups - 1];
-                if(cdfTotal > cdfAtCutoff)
-                {
-                    double lo = cdfAtCutoff / cdfTotal;
-                    double xi = owner_.randomUnitOpen(particle);
-                    particle.frequency = owner_.opacity_->GetThermalEnergy(cell, lo + xi * (1.0 - lo), owner_.energyBoundaries_);
-                }
-                else
-                {
-                    particle.frequency = std::nextafter(
-                        owner_.energyBoundaries_[groupCutoff],
-                        std::numeric_limits<double>::max());
-                }
-                owner_.clampFrequencyToBounds(particle.frequency);
-            }
-
+    #ifdef MONTECARLO_POLARIZATION
+        if(owner_.polarizationEnabled())
+        {
+            MCParticle polarizationParticle = particle;
+            polarizationParticle.velocity = oldVelocity;
+            double dtCo = dt;
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
                 if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                   !owner_.parameters_.staticScatterers)
+                    !owner_.parameters_.staticScatterers)
                 {
-                    radiation_imc_detail::lorentzTransformToLab<PointT>(
-                        particle, cell, owner_.lightSpeed());
-                    if(owner_.parameters_.withMultigroupOpacity)
+                    dtCo *= radiation_imc_detail::computeDopplerShift<PointT>(
+                        polarizationParticle, cell, owner_.lightSpeed());
+                    radiation_imc_detail::lorentzTransformToComoving<PointT>(
+                        polarizationParticle, cell, owner_.lightSpeed());
+                }
+            }
+            ParticleCounterEngine polarizationEngine(
+                particle.rngKey, particle.rngCounter);
+            std::uniform_real_distribution<double> polarizationUnit(0.0, 1.0);
+            polarization::applyAcceleratedPolarizationHistory<PointT>(
+                polarizationParticle, dtCo,
+                std::max(0.0, sigmaT - sigma_a_eff),
+                std::max(0.0, (1.0 - f) * sigma_a_eff),
+                particle.velocity,
+                owner_.parameters_.postProcess.polarization.manualScatteringsAfterAcceleration,
+                owner_.parameters_.postProcess.polarization.depolarizationScatterings,
+                polarizationEngine, polarizationUnit);
+            particle.stokesQ = polarizationParticle.stokesQ;
+            particle.stokesU = polarizationParticle.stokesU;
+            particle.polarizationBasis = polarizationParticle.polarizationBasis;
+            particle.polarizationInitialized = polarizationParticle.polarizationInitialized;
+            particle.radiationState.pendingMeanScatterings =
+                polarizationParticle.radiationState.pendingMeanScatterings;
+            particle.polarizationBasis = polarization::projectBasisToDirection(
+                particle.polarizationBasis, particle.velocity);
+        }
+    #endif
+
+        if(rwEvent == RW_UPSCATTER && isPGRW)
+        {
+            GroupArray cumOp = owner_.opacity_->GetCumulativeOpacity(cell, owner_.energyBoundaries_);
+            double cdfAtCutoff = cumOp[groupCutoff - 1];
+            double cdfTotal = cumOp[NumGroups - 1];
+            if(cdfTotal > cdfAtCutoff)
+            {
+                double lo = cdfAtCutoff / cdfTotal;
+                double xi = owner_.randomUnitOpen(particle);
+                particle.frequency = owner_.opacity_->GetThermalEnergy(cell, lo + xi * (1.0 - lo), owner_.energyBoundaries_);
+            }
+            else
+            {
+                particle.frequency = std::nextafter(owner_.energyBoundaries_[groupCutoff], std::numeric_limits<double>::max());
+            }
+            owner_.clampFrequencyToBounds(particle.frequency);
+        }
+
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                !owner_.parameters_.staticScatterers)
+            {
+                radiation_imc_detail::lorentzTransformToLab<PointT>(particle, cell, owner_.lightSpeed());
+                if(owner_.parameters_.withMultigroupOpacity)
+                {
+                    owner_.clampFrequencyToBounds(particle.frequency);
+                }
+    #ifdef MONTECARLO_POLARIZATION
+                if(owner_.polarizationEnabled())
+                {
+                    particle.polarizationBasis = polarization::projectBasisToDirection(particle.polarizationBasis, particle.velocity);
+                }
+    #endif
+                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                {
+                    if(not owner_.parameters_.diffusionPressureGradient and not owner_.parameters_.noHydroFeedback)
                     {
-                        owner_.clampFrequencyToBounds(particle.frequency);
-                    }
-        #ifdef MONTECARLO_POLARIZATION
-                    if(owner_.polarizationEnabled())
-                    {
-                        particle.polarizationBasis = polarization::projectBasisToDirection(
-                            particle.polarizationBasis, particle.velocity);
-                    }
-        #endif
-                    if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
-                    {
-                        if(!owner_.parameters_.diffusionPressureGradient && !owner_.parameters_.noHydroFeedback)
-                        {
-                            owner_.tallyMomentum(
-                                cellIndex,
-                                (oldWeight * oldVelocity -
-                                 particle.weight * particle.velocity) *
-                                    owner_.inverseLightSpeedSquared());
-                        }
+                        owner_.tallyMomentum(cellIndex, (oldWeight * oldVelocity - particle.weight * particle.velocity) * owner_.inverseLightSpeedSquared());
                     }
                 }
             }
+        }
 
-            if(rwEvent == RW_CENSUS)
-            {
-                functionality.change = ParticleStatus::DONE;
-            }
-            return true;
+        if(rwEvent == RW_CENSUS)
+        {
+            functionality.change = ParticleStatus::DONE;
+        }
+        return true;
     }
 
 };

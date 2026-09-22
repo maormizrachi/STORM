@@ -538,7 +538,7 @@ std::vector<Particle<T>> StratifiedCombPopulationControl<T, Grid>::activate(
         0
 #endif
         );
-    if(!std::isfinite(totalWeight))
+    if(not std::isfinite(totalWeight))
     {
         STORMError eo("Stratified Comb Population Control: total particle weight is not finite");
         eo.addEntry("Total weight", totalWeight);
@@ -550,21 +550,19 @@ std::vector<Particle<T>> StratifiedCombPopulationControl<T, Grid>::activate(
         return result;
     }
 
-    const std::size_t globalBudget =
-        comb::GlobalBudget(globalCellCount, this->Parameters());
+    const std::size_t globalBudget = comb::GlobalBudget(globalCellCount, this->Parameters());
     for(size_t i = 0; i < Ncells; i++)
     {
         if(cellWeights[i] <= 0.0)
         {
             continue;
         }
-        const size_t cellTarget = comb::TargetParticleCount(
-            cellWeights[i], totalWeight, globalBudget, this->Nmin);
+        const size_t cellTarget = comb::TargetParticleCount(cellWeights[i], totalWeight, globalBudget, this->Nmin);
 
         std::vector<size_t> activeGroups;
         for(size_t g = 0; g < this->groupCount; g++)
         {
-            if(!particlesInBins[i][g].empty())
+            if(not particlesInBins[i][g].empty())
             {
                 activeGroups.push_back(g);
             }
