@@ -954,7 +954,7 @@ public:
                     ++owner_.ddmcMomentumMatrixFallbackCount_;
                 }
 
-                PointT const deltaP = data.sigmaMomentum * owner_.componentGrid().GetVolume(i) * owner_.inverseLightSpeed() * fluxDt;
+                PointT const deltaP = owner_.parameters_.momentumForCoupling(data.sigmaMomentum * owner_.componentGrid().GetVolume(i) * owner_.inverseLightSpeed() * fluxDt);
                 if(not (std::isfinite(deltaP[0]) and std::isfinite(deltaP[1]) and std::isfinite(deltaP[2])))
                 {
                     continue;

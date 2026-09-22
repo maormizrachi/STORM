@@ -344,6 +344,50 @@ public:
         {
             for(std::size_t i = 0; i < cellCount; ++i)
             {
+                if(owner_.parameters_.planarMomentumX)
+                {
+                    const auto &v = owner_.cells_[i].velocity;
+                    // Judge numerical drift relative to the material energy
+                    // scale, rather than requiring near-exact planar velocity.
+                    // At this threshold transverse kinetic energy is of order
+                    // floating-point roundoff in the material energy.
+                    double materialSpeed = std::abs(v.x);
+                    if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                    {
+                        const auto &ext = owner_.extensives_[i];
+                        materialSpeed = std::max(materialSpeed,
+                            std::sqrt(std::max(0.0, ext.internal_energy / ext.mass)));
+                    }
+                    const double tolerance = std::max(
+                        64.0 * std::numeric_limits<double>::epsilon() * owner_.lightSpeed(),
+                        std::sqrt(std::numeric_limits<double>::epsilon()) * materialSpeed);
+                    if(!std::isfinite(v.y) || !std::isfinite(v.z) ||
+                       std::abs(v.y) > tolerance || std::abs(v.z) > tolerance)
+                    {
+                        StormError eo("Planar momentum coupling requires gas velocity along x");
+                        eo.addEntry("Cell index", i);
+                        eo.addEntry("Velocity y", v.y);
+                        eo.addEntry("Velocity z", v.z);
+                        eo.addEntry("Allowed transverse velocity", tolerance);
+                        throw eo;
+                    }
+                    if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                    {
+                        auto &ext = owner_.extensives_[i];
+                        // Enforce the benchmark symmetry before transport.
+                        // Keep total energy and px, thermalizing only the tiny
+                        // transverse kinetic energy left by the hydro update.
+                        ext.internal_energy +=
+                            (ext.momentum.y * ext.momentum.y +
+                             ext.momentum.z * ext.momentum.z) / (2.0 * ext.mass);
+                        ext.momentum.y = ext.momentum.z = 0.0;
+                        this->synchronizeMaterialCell(i);
+                    }
+                    else
+                    {
+                        owner_.cells_[i].velocity.y = owner_.cells_[i].velocity.z = 0.0;
+                    }
+                }
                 owner_.transportCellVelocities_[i] = owner_.cells_[i].velocity;
             }
         }
@@ -388,7 +432,10 @@ public:
                 owner_.extensives_[i], owner_.pendingTotalEnergy_[i]);
             if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
             {
-                owner_.extensives_[i].momentum += owner_.pendingMomentum_[i];
+                // Project transverse MC kicks before updating the material
+                // momentum, preserving the one-dimensional benchmark symmetry.
+                const PointT dp = owner_.parameters_.momentumForCoupling(owner_.pendingMomentum_[i]);
+                owner_.extensives_[i].momentum += dp;
             }
             owner_.Erad_time_avg_[i] += owner_.pendingRadiationEnergy_[i];
             if((owner_.parameters_.withEgTimeAvg ||

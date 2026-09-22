@@ -667,8 +667,9 @@ public:
                         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                         {
                             owner_.extensives_[i].momentum -=
-                                energyToCreate * owner_.cells_[i].velocity *
-                                owner_.inverseLightSpeedSquared() * gamma;
+                                owner_.parameters_.momentumForCoupling(
+                                    energyToCreate * owner_.cells_[i].velocity *
+                                    owner_.inverseLightSpeedSquared() * gamma);
                         }
                     }
                 }

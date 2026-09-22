@@ -35,6 +35,11 @@ struct RadiationIMCParameters
     std::size_t emissionFloorPhotonsPerCell = 0;
     double lightSpeed = units::clight;
     bool withHydro = false;
+    // For planar x-symmetric material/boundaries and gas velocity along x.
+    // A packet represents mirrored rays with zero net transverse momentum;
+    // retain its full angular direction for transport and project coupling
+    // and momentum diagnostics with momentumForCoupling().
+    bool planarMomentumX = false;
     bool diffusionPressureGradient = false;
     bool MMC = false;
     // Keep lab-frame transport and scattering while still tallying momentum
@@ -79,6 +84,17 @@ struct RadiationIMCParameters
     std::array<double, NumGroups + 1> energyBoundaries{};
     bool energyBoundariesProvided = false;
 
+    template<typename PointT>
+    PointT momentumForCoupling(PointT momentum) const
+    {
+        if(planarMomentumX)
+        {
+            momentum.y = 0.0;
+            momentum.z = 0.0;
+        }
+        return momentum;
+    }
+
     struct PostProcessParameters
     {
         bool enabled = false;
@@ -107,6 +123,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
        << '\n';
     os << "\tlight speed: " << parameters.lightSpeed << '\n';
     os << "\twith hydro: " << parameters.withHydro << '\n';
+    os << "\tplanar x momentum: " << parameters.planarMomentumX << '\n';
     os << "\tdiffusion pressure gradient: " << parameters.diffusionPressureGradient << '\n';
     os << "\tMMC: " << parameters.MMC << '\n';
     os << "\tstatic scatterers: " << parameters.staticScatterers << '\n';

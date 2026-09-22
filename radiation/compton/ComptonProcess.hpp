@@ -901,9 +901,10 @@ public:
                                    !owner_.parameters_.diffusionPressureGradient)
                                 {
                                     owner_.extensives_[cellIndex].momentum -=
-                                        sourceEnergy[group] *
-                                        owner_.cells_[cellIndex].velocity *
-                                        owner_.inverseLightSpeedSquared() * gamma;
+                                        owner_.parameters_.momentumForCoupling(
+                                            sourceEnergy[group] *
+                                            owner_.cells_[cellIndex].velocity *
+                                            owner_.inverseLightSpeedSquared() * gamma);
                                 }
                             }
                         }
