@@ -281,10 +281,8 @@ public:
 
         double rwAbsRate = sigma_a_eff * f * owner_.lightSpeed();
         double rwExp = std::expm1(-dt * rwAbsRate);
-        if(!owner_.parameters_.noHydroFeedback)
-        {
-            owner_.tallyMaterialEnergy(cellIndex, -rwExp * particle.weight);
-        }
+        // Material energy and momentum are tallied once at the end of the walk
+        // from the packet's total lab-frame weight and direction change.
         if(rwAbsRate > 0.0)
         {
             owner_.tallyRadiationEnergy(cellIndex, particle.weight * rwExp * (-1.0 / rwAbsRate));
@@ -306,7 +304,15 @@ public:
             functionality.change = ParticleStatus::REMOVE;
             if(!owner_.parameters_.noHydroFeedback)
             {
-                owner_.tallyMaterialEnergy(cellIndex, particle.weight);
+                owner_.tallyMaterialEnergy(cellIndex, oldWeight);
+                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                {
+                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                       !owner_.parameters_.diffusionPressureGradient)
+                    {
+                        owner_.tallyMomentum(cellIndex, oldWeight * oldVelocity * owner_.inverseLightSpeedSquared());
+                    }
+                }
             }
             return true;
         }
@@ -429,12 +435,18 @@ public:
                     particle.polarizationBasis = polarization::projectBasisToDirection(particle.polarizationBasis, particle.velocity);
                 }
     #endif
-                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+            }
+        }
+
+        if(!owner_.parameters_.noHydroFeedback)
+        {
+            owner_.tallyMaterialEnergy(cellIndex, oldWeight - particle.weight);
+            if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+            {
+                if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                   !owner_.parameters_.diffusionPressureGradient)
                 {
-                    if(not owner_.parameters_.diffusionPressureGradient and not owner_.parameters_.noHydroFeedback)
-                    {
-                        owner_.tallyMomentum(cellIndex, (oldWeight * oldVelocity - particle.weight * particle.velocity) * owner_.inverseLightSpeedSquared());
-                    }
+                    owner_.tallyMomentum(cellIndex, (oldWeight * oldVelocity - particle.weight * particle.velocity) * owner_.inverseLightSpeedSquared());
                 }
             }
         }

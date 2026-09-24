@@ -345,7 +345,10 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
 
     if(views.depositMaterialEnergy)
     {
-        STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], -materialExpFactor * particle.weight);
+        // Lab-frame energy the packet loses (same factor as the weight
+        // update); the host derives the internal-energy share from it and
+        // the momentum tally.
+        STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], -weightExpFactor * particle.weight);
     }
     const double inverseC2 = 1.0 / (views.speedOfLight * views.speedOfLight);
     AddMomentum(views, cellIndex,
@@ -361,6 +364,10 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
         if(views.depositMaterialEnergy)
         {
             STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], particle.weight);
+            AddMomentum(views, cellIndex,
+                    particle.weight * particle.velocity.x * inverseC2,
+                    particle.weight * particle.velocity.y * inverseC2,
+                    particle.weight * particle.velocity.z * inverseC2);
         }
         result.step.change = ParticleStatus::REMOVE;
         return result;
@@ -413,6 +420,10 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
             {
                 result.error = TransportError::InvalidDoppler;
                 return result;
+            }
+            if(views.depositMaterialEnergy)
+            {
+                STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], weightBeforeTransform - particle.weight);
             }
             AddMomentum(views, cellIndex,
                     (weightBeforeTransform * oldVelocityX - particle.weight * particle.velocity.x) * inverseC2,

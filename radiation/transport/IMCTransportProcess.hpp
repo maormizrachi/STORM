@@ -156,7 +156,6 @@ public:
             {
                 double material = 0.0;
                 double radiation = 0.0;
-                double total = 0.0;
                 GroupArray group{};
             };
             auto snapshot = [&]()
@@ -164,7 +163,6 @@ public:
                 CellTally t;
                 t.material = owner_.pendingMaterialEnergy_[cellIndex];
                 t.radiation = owner_.pendingRadiationEnergy_[cellIndex];
-                t.total = owner_.pendingTotalEnergy_[cellIndex];
                 for(std::size_t group = 0; group < NumGroups; ++group)
                 {
                     t.group[group] =
@@ -177,7 +175,6 @@ public:
             {
                 owner_.pendingMaterialEnergy_[cellIndex] = t.material;
                 owner_.pendingRadiationEnergy_[cellIndex] = t.radiation;
-                owner_.pendingTotalEnergy_[cellIndex] = t.total;
                 for(std::size_t group = 0; group < NumGroups; ++group)
                 {
                     owner_.pendingGroupRadiationEnergy_[
@@ -584,8 +581,10 @@ public:
             particle.location += particle.velocity * dt;
             if(not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled)
             {
-                double const materialDeposit = -expFactor2 * particle.weight;
-                owner_.tallyMaterialEnergy(cellIndex, materialDeposit, owner_.parameters_.withCompton);
+                // Tally the lab-frame energy the packet actually loses; the
+                // comoving deposit e(1 - beta.n) falls out of the momentum
+                // work term in applyMaterialExchange.
+                owner_.tallyMaterialEnergy(cellIndex, -expFactor1 * particle.weight);
                 if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                 {
                     if(owner_.parameters_.withHydro and not owner_.parameters_.diffusionPressureGradient)
@@ -623,7 +622,16 @@ public:
                 functionality.change = ParticleStatus::REMOVE;
                 if(not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled)
                 {
-                    owner_.tallyMaterialEnergy(cellIndex, particle.weight, owner_.parameters_.withCompton);
+                    owner_.tallyMaterialEnergy(cellIndex, particle.weight);
+                    if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                    {
+                        if(owner_.parameters_.withHydro and not owner_.parameters_.diffusionPressureGradient)
+                        {
+                            owner_.tallyMomentum(
+                                cellIndex, particle.weight * particle.velocity *
+                                owner_.inverseLightSpeedSquared());
+                        }
+                    }
                 }
                 return functionality;
             }
@@ -734,8 +742,9 @@ public:
                     }
                     PointT const comptonOldVelocity = comptonParticle.velocity;
                     double const comptonOldWeight = comptonParticle.weight;
-                    double const comovingMaterialDeposit =
-                        owner_.applyComptonScatterEvent(
+                    // The comoving deposit it returns is not tallied: the
+                    // material receives the lab-frame weight change below.
+                    (void) owner_.applyComptonScatterEvent(
                             cellIndex,
                             cell,
                             group,
@@ -756,9 +765,8 @@ public:
                        !owner_.parameters_.postProcess.enabled)
                     {
                         owner_.tallyMaterialEnergy(
-                            cellIndex, comovingMaterialDeposit);
-                        owner_.pendingTotalEnergy_[cellIndex] +=
-                            labParticleBeforeCompton.weight - particle.weight;
+                            cellIndex,
+                            labParticleBeforeCompton.weight - particle.weight);
                         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                         {
                             if(owner_.parameters_.withHydro &&
@@ -819,6 +827,13 @@ public:
                                 particle.polarizationBasis, particle.velocity);
                         }
         #endif
+                        if(not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled)
+                        {
+                            // Elastic in the comoving frame, so the lab weight
+                            // change is pure v.dp work; tally it with the
+                            // momentum so the material gains no internal energy.
+                            owner_.tallyMaterialEnergy(cellIndex, weightBefore - particle.weight);
+                        }
                         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                         {
                             if(not owner_.parameters_.diffusionPressureGradient and not owner_.parameters_.noHydroFeedback)

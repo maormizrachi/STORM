@@ -668,8 +668,9 @@ private:
     double totalRadiationEnergy(std::size_t cellIndex) const;
     void depositMaterialEnergy(std::size_t cellIndex, double energy);
     void resetTransportTallies(std::size_t cellCount);
-    void tallyMaterialEnergy(std::size_t cellIndex, double energy, bool addToTotalEnergy = false);
+    void tallyMaterialEnergy(std::size_t cellIndex, double energy);
     void tallyMomentum(std::size_t cellIndex, const PointT &momentum);
+    void applyMaterialExchange(std::size_t cellIndex, double energy, const PointT &momentum);
     void tallyRadiationEnergy(std::size_t cellIndex, double integratedEnergy);
     void tallyGroupRadiationEnergy(std::size_t cellIndex, std::size_t group, double integratedEnergy);
     void applyTransportTallies();

@@ -19,8 +19,10 @@ struct IMCTransportTallies
     std::vector<double> scatteringOpacities_;
     std::vector<double> Erad_time_avg_;
     std::vector<GroupArray> Eg_time_avg_;
+    // Lab-frame energy and momentum the radiation field handed to the
+    // material this step.  The internal-energy share is derived from both in
+    // applyMaterialExchange(); nothing tallies internal energy directly.
     std::vector<double> pendingMaterialEnergy_;
-    std::vector<double> pendingTotalEnergy_;
     std::vector<PointT> pendingMomentum_;
     std::vector<PointT> transportCellVelocities_;
     std::vector<double> spectralAbsorptionScale_;

@@ -678,10 +678,19 @@ template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
          typename TraitsT, typename PositionSamplerT>
 void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
                   TraitsT, PositionSamplerT>::tallyMaterialEnergy(
-    std::size_t cellIndex, double energy, bool addToTotalEnergy)
+    std::size_t cellIndex, double energy)
 {
-    this->lifecycleProcess_->tallyMaterialEnergy(
-        cellIndex, energy, addToTotalEnergy);
+    this->lifecycleProcess_->tallyMaterialEnergy(cellIndex, energy);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::applyMaterialExchange(
+    std::size_t cellIndex, double energy, const PointT &momentum)
+{
+    this->lifecycleProcess_->applyMaterialExchange(cellIndex, energy, momentum);
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,

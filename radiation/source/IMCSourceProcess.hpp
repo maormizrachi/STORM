@@ -653,26 +653,23 @@ public:
             const double gamma = gammaVec[i];
             if(!owner_.parameters_.noHydroFeedback)
             {
-                owner_.extensives_[i].internal_energy -= energyToCreate;
-                if constexpr(radiation_imc_detail::has_member_total_energy<ExtensivesT>::value)
-                {
-                    owner_.extensives_[i].energy -= energyToCreate * gamma;
-                }
-                if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                // Isotropic comoving emission of energyToCreate carries the
+                // lab four-momentum (gamma E, gamma E v/c^2); remove exactly
+                // that from the material.  The internal-energy debit becomes
+                // E/gamma rather than E (O(beta^2)), the price of keeping the
+                // Newtonian material total energy conserved.
+                PointT emittedMomentum{};
+                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
                     if(owner_.parameters_.withHydro &&
                         !owner_.parameters_.staticScatterers &&
                         !owner_.parameters_.diffusionPressureGradient)
                     {
-                        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-                        {
-                            owner_.extensives_[i].momentum -=
-                                owner_.parameters_.momentumForCoupling(
-                                    energyToCreate * owner_.cells_[i].velocity *
-                                    owner_.inverseLightSpeedSquared() * gamma);
-                        }
+                        emittedMomentum = energyToCreate * gamma *
+                            owner_.cells_[i].velocity * owner_.inverseLightSpeedSquared();
                     }
                 }
+                owner_.applyMaterialExchange(i, -energyToCreate * gamma, -1.0 * emittedMomentum);
             }
             plan.energyPerPhoton[i] =
                 energyToCreate * gamma / static_cast<double>(nPhotonsCell);

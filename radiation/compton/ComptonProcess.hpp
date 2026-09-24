@@ -758,7 +758,7 @@ public:
             {
                 return;
             }
-            owner_.tallyMaterialEnergy(cellIndex, energy, true);
+            owner_.tallyMaterialEnergy(cellIndex, energy);
     }
 
     std::vector<typename Owner::MCParticle>
@@ -887,27 +887,22 @@ public:
                     }
                     if(!owner_.parameters_.noHydroFeedback)
                     {
-                        owner_.extensives_[cellIndex].internal_energy -=
-                            sourceEnergy[group];
-                        radiation_imc_detail::addTotalEnergyIfPresent(
-                            owner_.extensives_[cellIndex],
-                            -sourceEnergy[group] * gamma);
-                        if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+                        // Lab four-momentum of the isotropic comoving source,
+                        // removed conservatively (see applyMaterialExchange).
+                        PointT emittedMomentum{};
+                        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                         {
-                            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+                            if(owner_.parameters_.withHydro &&
+                               !owner_.parameters_.staticScatterers &&
+                               !owner_.parameters_.diffusionPressureGradient)
                             {
-                                if(owner_.parameters_.withHydro &&
-                                   !owner_.parameters_.staticScatterers &&
-                                   !owner_.parameters_.diffusionPressureGradient)
-                                {
-                                    owner_.extensives_[cellIndex].momentum -=
-                                        owner_.parameters_.momentumForCoupling(
-                                            sourceEnergy[group] *
-                                            owner_.cells_[cellIndex].velocity *
-                                            owner_.inverseLightSpeedSquared() * gamma);
-                                }
+                                emittedMomentum = sourceEnergy[group] * gamma *
+                                    owner_.cells_[cellIndex].velocity *
+                                    owner_.inverseLightSpeedSquared();
                             }
                         }
+                        owner_.applyMaterialExchange(
+                            cellIndex, -sourceEnergy[group] * gamma, -1.0 * emittedMomentum);
                     }
                     double const packetEnergy = sourceEnergy[group] /
                         static_cast<double>(groupPackets);

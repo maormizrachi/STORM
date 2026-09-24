@@ -337,7 +337,6 @@ public:
     {
         owner_.deviceExecutor_->InvalidateHostTransportViews();
         owner_.pendingMaterialEnergy_.assign(cellCount, 0.0);
-        owner_.pendingTotalEnergy_.assign(cellCount, 0.0);
         owner_.pendingMomentum_.assign(cellCount, PointT{});
         owner_.transportCellVelocities_.assign(cellCount, PointT{});
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
@@ -358,9 +357,7 @@ public:
                         materialSpeed = std::max(materialSpeed,
                             std::sqrt(std::max(0.0, ext.internal_energy / ext.mass)));
                     }
-                    const double tolerance = std::max(
-                        64.0 * std::numeric_limits<double>::epsilon() * owner_.lightSpeed(),
-                        std::sqrt(std::numeric_limits<double>::epsilon()) * materialSpeed);
+                    const double tolerance = std::max(64.0 * std::numeric_limits<double>::epsilon() * owner_.lightSpeed(), std::sqrt(std::numeric_limits<double>::epsilon()) * materialSpeed);
                     if(!std::isfinite(v.y) || !std::isfinite(v.z) ||
                        std::abs(v.y) > tolerance || std::abs(v.z) > tolerance)
                     {
@@ -399,18 +396,49 @@ public:
         owner_.thermalEmissionCdf_.assign(cellCount * (NumGroups + 1), 0.0);
     }
 
-    void tallyMaterialEnergy(std::size_t cellIndex, double energy, bool addToTotalEnergy)
+    /// Lab-frame energy the radiation field lost to this cell (packet weight
+    /// change), not the comoving deposit.
+    void tallyMaterialEnergy(std::size_t cellIndex, double energy)
     {
         owner_.pendingMaterialEnergy_[cellIndex] += energy;
-        if(addToTotalEnergy)
-        {
-            owner_.pendingTotalEnergy_[cellIndex] += energy;
-        }
     }
 
+    /// Lab-frame momentum the radiation field lost to this cell.
     void tallyMomentum(std::size_t cellIndex, const PointT &momentum)
     {
         owner_.pendingMomentum_[cellIndex] += momentum;
+    }
+
+    /// Hand the material lab-frame energy and momentum that the radiation
+    /// field lost.  The hydro is Newtonian with fixed mass, so the momentum
+    /// kick fixes the kinetic-energy change (v.dp + dp^2/2m); the internal
+    /// energy takes the remainder so that the material total energy changes
+    /// by exactly `energy` and Sum(material + radiation) is conserved in the
+    /// lab frame to roundoff.  To O(v/c) this reproduces the comoving deposit
+    /// e(1 - beta.n); the O(beta^2) difference is the price of a Newtonian
+    /// kinetic energy.
+    void applyMaterialExchange(std::size_t cellIndex, double energy, const PointT &momentum)
+    {
+        auto &ext = owner_.extensives_[cellIndex];
+        double internalEnergy = energy;
+        if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+        {
+            // Project transverse MC kicks before updating the material
+            // momentum, preserving the one-dimensional benchmark symmetry.
+            const PointT dp = owner_.parameters_.momentumForCoupling(momentum);
+            const double dp2 = ScalarProd(dp, dp);
+            if(dp2 > 0.0)
+            {
+                internalEnergy -= (ScalarProd(ext.momentum, dp) + 0.5 * dp2) / ext.mass;
+                ext.momentum += dp;
+            }
+        }
+        else
+        {
+            (void) momentum;
+        }
+        ext.internal_energy += internalEnergy;
+        radiation_imc_detail::addTotalEnergyIfPresent(ext, energy);
     }
 
     void tallyRadiationEnergy(std::size_t cellIndex, double integratedEnergy)
@@ -427,16 +455,7 @@ public:
     {
         for(std::size_t i = 0; i < owner_.pendingMaterialEnergy_.size(); ++i)
         {
-            owner_.extensives_[i].internal_energy += owner_.pendingMaterialEnergy_[i];
-            radiation_imc_detail::addTotalEnergyIfPresent(
-                owner_.extensives_[i], owner_.pendingTotalEnergy_[i]);
-            if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
-            {
-                // Project transverse MC kicks before updating the material
-                // momentum, preserving the one-dimensional benchmark symmetry.
-                const PointT dp = owner_.parameters_.momentumForCoupling(owner_.pendingMomentum_[i]);
-                owner_.extensives_[i].momentum += dp;
-            }
+            applyMaterialExchange(i, owner_.pendingMaterialEnergy_[i], owner_.pendingMomentum_[i]);
             owner_.Erad_time_avg_[i] += owner_.pendingRadiationEnergy_[i];
             if((owner_.parameters_.withEgTimeAvg ||
                 owner_.parameters_.withCompton) &&
@@ -451,7 +470,6 @@ public:
             }
         }
         owner_.pendingMaterialEnergy_.clear();
-        owner_.pendingTotalEnergy_.clear();
         owner_.pendingMomentum_.clear();
         owner_.pendingRadiationEnergy_.clear();
         owner_.pendingGroupRadiationEnergy_.clear();
@@ -905,17 +923,13 @@ public:
             return sourceDt;
     }
 
-    void appendBoundaryParticles(
-        std::vector<MCParticle> &newParticles,
-        double fullDt,
-        double transportDt)
+    void appendBoundaryParticles(std::vector<MCParticle> &newParticles, double fullDt, double transportDt)
     {
             if(!owner_.componentBoundary())
             {
                 return;
             }
-            std::vector<MCParticle> boundaryParticles =
-                owner_.componentBoundary()->generateNewBoundaryParticles(fullDt);
+            std::vector<MCParticle> boundaryParticles = owner_.componentBoundary()->generateNewBoundaryParticles(fullDt);
             for(MCParticle &particle : boundaryParticles)
             {
                 if(particle.rngKey == std::numeric_limits<std::uint64_t>::max())
@@ -932,24 +946,16 @@ public:
                     particle.timeLeft = transportDt * owner_.randomUnitOpen(particle);
                 }
             }
-            boundaryParticles.erase(
-                std::remove_if(
-                    boundaryParticles.begin(), boundaryParticles.end(),
-                    [&](MCParticle &particle)
-                    {
-                        return !owner_.ddmcEngine_->
-                            keepDDMCThermalBoundaryParticle(particle);
-                    }),
-                boundaryParticles.end());
-            newParticles.insert(
-                newParticles.end(),
-                boundaryParticles.begin(),
-                boundaryParticles.end());
+            boundaryParticles.erase(std::remove_if(boundaryParticles.begin(), boundaryParticles.end(),
+                                                [&](MCParticle &particle)
+                                                {
+                                                    return !owner_.ddmcEngine_->keepDDMCThermalBoundaryParticle(particle);
+                                                }),
+                                    boundaryParticles.end());
+            newParticles.insert(newParticles.end(), boundaryParticles.begin(), boundaryParticles.end());
     }
 
-    void recordEmittedEnergy(
-        const std::vector<MCParticle> &newParticles,
-        double extraEnergy)
+    void recordEmittedEnergy(const std::vector<MCParticle> &newParticles, double extraEnergy)
     {
             if(!owner_.observer_)
             {
@@ -975,8 +981,7 @@ public:
                 emittedPositiveEnergy, emittedNegativeEnergy);
     }
 
-    std::vector<typename Owner::MCParticle>
-    preStep(double fullDt)
+    std::vector<typename Owner::MCParticle> preStep(double fullDt)
     {
             const double sourceDt = this->preparePreStepTables(fullDt);
             const double transportDt = owner_.parameters_.postProcess.enabled
