@@ -1,0 +1,6 @@
+TAGS="mpi"
+DUAL_MODE=1
+CATEGORY="physics"
+MPI_NP=4
+TIMEOUT=7200
+RUN_ARGS=["4", "2"]
