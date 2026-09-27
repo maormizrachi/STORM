@@ -1046,13 +1046,10 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
          typename EOST, std::size_t NumGroups, typename OpacityT,
          typename TraitsT, typename PositionSamplerT>
-std::vector<typename RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST,
-                                  NumGroups, OpacityT, TraitsT,
-                                  PositionSamplerT>::MCParticle>
-RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
-             TraitsT, PositionSamplerT>::generateComptonParticles(double fullDt)
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::buildComptonSourcePlan(source::Plan &plan) const
 {
-    return this->comptonProcess_->generateComptonParticles(fullDt);
+    this->comptonProcess_->buildComptonSourcePlan(plan);
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,

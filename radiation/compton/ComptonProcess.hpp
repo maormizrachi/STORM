@@ -2,6 +2,7 @@
 #define STORM_RADIATION_COMPTON_PROCESS_HPP
 
 #include "../imc/IMCComponentBase.hpp"
+#include "../source/SourceCore.hpp"
 
 namespace STORM::radiation_imc_detail {
 
@@ -761,11 +762,15 @@ public:
             owner_.tallyMaterialEnergy(cellIndex, energy);
     }
 
-    std::vector<typename Owner::MCParticle>
-    generateComptonParticles(double fullDt)
+    // Compton decides what each cell emits: the source energy per group,
+    // the packets per group and their group-centre frequencies.  It adds one
+    // plan entry per (cell, group); IMCSourceProcess emits the plan and
+    // debits every cell by what its packets carry, as for thermal emission.
+    void buildComptonSourcePlan(source::Plan &plan) const
     {
 
-            std::vector<MCParticle> result;
+            plan.fixedFrequencies = true;
+            plan.clampLabFrequency = true;
             for(std::size_t cellIndex = 0; cellIndex < owner_.comptonData_.size(); ++cellIndex)
             {
                 ComptonCellData const &data = owner_.comptonData_[cellIndex];
@@ -864,20 +869,6 @@ public:
                     riskBudget -= add;
                 }
 
-                double gamma = 1.0;
-                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-                {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                       !owner_.parameters_.staticScatterers)
-                    {
-                        gamma = 1.0 / std::sqrt(
-                            1.0 - ScalarProd(
-                                owner_.cells_[cellIndex].velocity,
-                                owner_.cells_[cellIndex].velocity) *
-                            owner_.inverseLightSpeedSquared());
-                    }
-                }
-
                 for(std::size_t group = 0; group < NumGroups; ++group)
                 {
                     std::size_t const groupPackets = groupCounts[group];
@@ -885,47 +876,11 @@ public:
                     {
                         continue;
                     }
-                    if(!owner_.parameters_.noHydroFeedback)
-                    {
-                        // Lab four-momentum of the isotropic comoving source,
-                        // removed conservatively (see applyMaterialExchange).
-                        PointT emittedMomentum{};
-                        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-                        {
-                            if(owner_.parameters_.withHydro &&
-                               !owner_.parameters_.staticScatterers &&
-                               !owner_.parameters_.diffusionPressureGradient)
-                            {
-                                emittedMomentum = sourceEnergy[group] * gamma *
-                                    owner_.cells_[cellIndex].velocity *
-                                    owner_.inverseLightSpeedSquared();
-                            }
-                        }
-                        owner_.applyMaterialExchange(
-                            cellIndex, -sourceEnergy[group] * gamma, -1.0 * emittedMomentum);
-                    }
-                    double const packetEnergy = sourceEnergy[group] /
-                        static_cast<double>(groupPackets);
-                    for(std::size_t packetIndex = 0;
-                        packetIndex < groupPackets; ++packetIndex)
-                    {
-                        MCParticle particle = owner_.generateSingleParticle(
-                            cellIndex, owner_.cells_[cellIndex]);
-                        particle.timeLeft = fullDt * owner_.randomUnitOpen(particle);
-                        owner_.setPacketFromComovingState(
-                            particle,
-                            owner_.cells_[cellIndex],
-                            owner_.frequencyForComptonGroup(group),
-                            packetEnergy);
-                        owner_.setInitialWeightFromWeight(particle);
-                        if(particle.initialWeight > 0.0)
-                        {
-                            result.push_back(particle);
-                        }
-                    }
+                    plan.addEntry(cellIndex, groupPackets,
+                        sourceEnergy[group] / static_cast<double>(groupPackets),
+                        this->frequencyForComptonGroup(group));
                 }
             }
-            return result;
     }
 
     std::size_t sampleComptonCdf(

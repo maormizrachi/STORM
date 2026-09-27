@@ -6,6 +6,7 @@
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "../radiation/source/SourceCore.hpp"
 #include "../types.hpp"
@@ -36,6 +37,9 @@ struct DeviceSourceContext
     std::uint8_t sampleFrequency = 0;
     std::uint8_t applyLabFrame = 0;
     std::size_t emittedCount = 0;
+    // Per plan entry (energy, px, py, pz) carried by the emitted packets in
+    // the lab frame, the amount the material must lose.
+    std::vector<double> emittedFourMomentum;
 };
 
 template<typename PhysicsT, typename = void>

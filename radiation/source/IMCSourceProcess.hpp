@@ -95,23 +95,84 @@ public:
         return views;
     }
 
+    void cacheCreationRank()
+    {
+        if(!owner_.creationRankCached_)
+        {
+#ifdef STORM_WITH_MPI
+            int rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            owner_.creationRank_ = static_cast<std::uint64_t>(rank);
+#else
+            owner_.creationRank_ = 0;
+#endif
+            owner_.creationRankCached_ = true;
+        }
+    }
+
+    // The cell loses exactly the lab four-momentum its packets carry.  Each
+    // packet has a fixed comoving energy w', so E_lab - v.P_lab = w'/gamma
+    // for every packet whatever its direction: the internal-energy debit is
+    // the deterministic sum of w'/gamma, and only the bulk momentum (and with
+    // it the total energy) fluctuates, by the recoil the packets really
+    // impart.  This mirrors the absorption tallies in IMCTransportProcess.
+    // entryFourMomentum holds (energy, px, py, pz) per plan entry.
+    void debitPlanEmission(source::Plan &plan, const std::vector<double> &entryFourMomentum)
+    {
+        plan.emittedEnergy = 0.0;
+        bool const coupleMomentum = [&]()
+        {
+            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+            {
+                return owner_.parameters_.withHydro &&
+                    !owner_.parameters_.staticScatterers &&
+                    !owner_.parameters_.diffusionPressureGradient;
+            }
+            return false;
+        }();
+        std::size_t entry = 0;
+        const std::size_t entryCount = plan.entryCount();
+        while(entry < entryCount)
+        {
+            // A cell's entries are contiguous: sum them in entry order and
+            // debit the cell once.
+            const std::size_t cellIndex = plan.entryCell[entry];
+            double energy = 0.0;
+            PointT momentum{};
+            for(; entry < entryCount && plan.entryCell[entry] == cellIndex; ++entry)
+            {
+                energy += entryFourMomentum[4 * entry];
+                momentum += PointT(entryFourMomentum[4 * entry + 1],
+                    entryFourMomentum[4 * entry + 2], entryFourMomentum[4 * entry + 3]);
+            }
+            plan.emittedEnergy += energy;
+            if(!owner_.parameters_.noHydroFeedback)
+            {
+                owner_.applyMaterialExchange(cellIndex, -energy, coupleMomentum ? -1.0 * momentum : PointT{});
+            }
+        }
+    }
+
     void emitPlanToHost(
-        const source::Plan &plan,
+        source::Plan &plan,
         std::vector<MCParticle> &newParticles, double fullDt)
     {
         if(plan.totalPhotons == 0)
         {
             return;
         }
+        this->cacheCreationRank();
         source::SampleViews<PointT> views = this->hostSampleViews();
         views.fullDt = fullDt;
-        newParticles.resize(plan.totalPhotons);
+        views.clampLabFrequency = plan.clampLabFrequency ? 1 : 0;
+        const std::size_t firstSlot = newParticles.size();
+        const std::size_t entryCount = plan.entryCount();
+        newParticles.resize(firstSlot + plan.totalPhotons);
         for(std::size_t slot = 0; slot < plan.totalPhotons; ++slot)
         {
-            const std::size_t cellIndex = source::CellFromPhotonSlot(
-                plan.photonOffsets.data(),
-                plan.nPhotons.size(),
-                slot);
+            const std::size_t entry = source::EntryFromPhotonSlot(
+                plan.entryOffsets.data(), entryCount, slot);
+            const std::size_t cellIndex = plan.entryCell[entry];
             const std::uint64_t rngKey = source::MakeSourceRngKey(
                 owner_.particleRngSeed_,
                 owner_.creationRank_,
@@ -119,15 +180,16 @@ public:
             source::EmittedScalars scalars;
             PointT location{};
             PointT velocity{};
-            source::EmitThermalPacket(
+            source::EmitSourcePacket(
                 views,
                 cellIndex,
                 rngKey,
-                plan.energyPerPhoton[cellIndex],
+                plan.energyPerPhoton[entry],
+                plan.fixedFrequencies ? &plan.fixedFrequency[entry] : nullptr,
                 location,
                 velocity,
                 scalars);
-            MCParticle &particle = newParticles[slot];
+            MCParticle &particle = newParticles[firstSlot + slot];
             particle.location = location;
             particle.velocity = velocity;
             particle.frequency = scalars.frequency;
@@ -149,6 +211,23 @@ public:
             }
 #endif
         }
+        std::vector<double> entryFourMomentum(4 * entryCount, 0.0);
+        for(std::size_t entry = 0; entry < entryCount; ++entry)
+        {
+            double energy = 0.0;
+            PointT momentum{};
+            for(std::size_t slot = plan.entryOffsets[entry]; slot < plan.entryOffsets[entry + 1]; ++slot)
+            {
+                const MCParticle &particle = newParticles[firstSlot + slot];
+                source::AddPacketFourMomentum(particle.weight, particle.velocity,
+                    views.invClight2, energy, momentum);
+            }
+            entryFourMomentum[4 * entry] = energy;
+            entryFourMomentum[4 * entry + 1] = momentum.x;
+            entryFourMomentum[4 * entry + 2] = momentum.y;
+            entryFourMomentum[4 * entry + 3] = momentum.z;
+        }
+        this->debitPlanEmission(plan, entryFourMomentum);
         owner_.sourceRngStreamCounter_ =
             plan.rngStreamBase + plan.totalPhotons;
     }
@@ -156,21 +235,11 @@ public:
 #ifdef STORM_WITH_GPU
     void emitPlanToDevice(
         gpu::DeviceSourceContext &context,
-        const source::Plan &plan)
+        source::Plan &plan)
     {
         context.plan = &plan;
         context.particleRngSeed = owner_.particleRngSeed_;
-        if(!owner_.creationRankCached_)
-        {
-#ifdef STORM_WITH_MPI
-            int rank = 0;
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            owner_.creationRank_ = static_cast<std::uint64_t>(rank);
-#else
-            owner_.creationRank_ = 0;
-#endif
-            owner_.creationRankCached_ = true;
-        }
+        this->cacheCreationRank();
         context.creationRank = owner_.creationRank_;
         const source::SampleViews<PointT> views = this->hostSampleViews();
         context.sampleFrequency = views.sampleFrequency;
@@ -178,6 +247,7 @@ public:
         context.speedOfLight = views.speedOfLight;
         context.invClight2 = views.invClight2;
         gpu::EmitSourcesOnDevice(context);
+        this->debitPlanEmission(plan, context.emittedFourMomentum);
         owner_.sourceRngStreamCounter_ =
             plan.rngStreamBase + plan.totalPhotons;
     }
@@ -205,8 +275,17 @@ public:
             {
                 throw StormError("External fixed-flux post-process sources do not support Compton yet");
             }
-            (void) materializeHost;
-            return owner_.generateComptonParticles(fullDt);
+            // Compton only decides what to emit; packets and the material
+            // debit come from the same emitter as thermal emission.
+            std::vector<MCParticle> comptonParticles;
+            source::Plan &plan = owner_.lastSourcePlan_;
+            plan.reset(owner_.sourceRngStreamCounter_);
+            owner_.buildComptonSourcePlan(plan);
+            if(materializeHost)
+            {
+                this->emitPlanToHost(plan, comptonParticles, fullDt);
+            }
+            return comptonParticles;
         }
         std::vector<MCParticle> newParticles;
         const std::size_t Ncells = owner_.componentGrid().GetPointNo();
@@ -256,7 +335,6 @@ public:
         }
 
         std::vector<double> energyToCreateVec(Ncells);
-        std::vector<double> gammaVec(Ncells);
         // Post-process volume emission per cell (already divided by the
         // subsample fraction for included cells; zero otherwise).
         std::vector<double> volumeEnergyVec;
@@ -293,19 +371,6 @@ public:
         for(std::size_t i = 0; i < Ncells; ++i)
         {
             CellT &cell = owner_.cells_[i];
-            double gamma = 1.0;
-            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-            {
-                if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                    !owner_.parameters_.staticScatterers) ||
-                    (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
-                {
-                    gamma = 1.0 / std::sqrt(
-                        1.0 - ScalarProd(cell.velocity, cell.velocity) *
-                        owner_.inverseLightSpeedSquared());
-                }
-            }
-            gammaVec[i] = gamma;
             if(owner_.postProcessExternalSourceMode_)
             {
                 energyToCreateVec[i] = 0.0;
@@ -622,60 +687,18 @@ public:
         newParticles.reserve(owner_.lastSourceAllocationSummary_.totalPhotons);
 
         source::Plan &plan = owner_.lastSourcePlan_;
-        plan.nPhotons = nPhotonsVec;
-        plan.energyToCreate = energyToCreateVec;
-        plan.gamma = gammaVec;
-        plan.energyPerPhoton.assign(Ncells, 0.0);
-        plan.photonOffsets.assign(Ncells + 1, 0);
-        if(!owner_.creationRankCached_)
-        {
-#ifdef STORM_WITH_MPI
-            int rank = 0;
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            owner_.creationRank_ = static_cast<std::uint64_t>(rank);
-#else
-            owner_.creationRank_ = 0;
-#endif
-            owner_.creationRankCached_ = true;
-        }
-        plan.rngStreamBase = owner_.sourceRngStreamCounter_;
-        plan.emittedEnergy = 0.0;
+        plan.reset(owner_.sourceRngStreamCounter_);
         for(std::size_t i = 0; i < Ncells; ++i)
         {
+            // One entry per emitting cell with the comoving packet energy; the
+            // frequency is sampled from the cell's thermal spectrum.
             const std::size_t nPhotonsCell = nPhotonsVec[i];
-            plan.photonOffsets[i + 1] =
-                plan.photonOffsets[i] + nPhotonsCell;
-            if(nPhotonsCell == 0)
+            if(nPhotonsCell > 0)
             {
-                continue;
+                plan.addEntry(i, nPhotonsCell,
+                    energyToCreateVec[i] / static_cast<double>(nPhotonsCell));
             }
-            const double energyToCreate = energyToCreateVec[i];
-            const double gamma = gammaVec[i];
-            if(!owner_.parameters_.noHydroFeedback)
-            {
-                // Isotropic comoving emission of energyToCreate carries the
-                // lab four-momentum (gamma E, gamma E v/c^2); remove exactly
-                // that from the material.  The internal-energy debit becomes
-                // E/gamma rather than E (O(beta^2)), the price of keeping the
-                // Newtonian material total energy conserved.
-                PointT emittedMomentum{};
-                if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-                {
-                    if(owner_.parameters_.withHydro &&
-                        !owner_.parameters_.staticScatterers &&
-                        !owner_.parameters_.diffusionPressureGradient)
-                    {
-                        emittedMomentum = energyToCreate * gamma *
-                            owner_.cells_[i].velocity * owner_.inverseLightSpeedSquared();
-                    }
-                }
-                owner_.applyMaterialExchange(i, -energyToCreate * gamma, -1.0 * emittedMomentum);
-            }
-            plan.energyPerPhoton[i] =
-                energyToCreate * gamma / static_cast<double>(nPhotonsCell);
-            plan.emittedEnergy += energyToCreate * gamma;
         }
-        plan.totalPhotons = plan.photonOffsets.back();
 
         const bool useSharedThermalEmit =
             !owner_.postProcessExternalSourceMode_ &&
@@ -691,6 +714,11 @@ public:
             return newParticles;
         }
 
+        // The per-packet sampling below (external sources, learned group
+        // sampling) is host-only, but it emits the plan's entries and is
+        // debited through them like the shared emitter.
+        std::vector<double> legacyFourMomentum(4 * plan.entryCount(), 0.0);
+        std::size_t legacyEntry = 0;
         for(std::size_t i = 0; i < Ncells; ++i)
         {
             CellT &cell = owner_.cells_[i];
@@ -710,7 +738,7 @@ public:
                 cellDecomposition = &owner_.scratchDecomposition_;
             }
 
-            double energyPerPhoton = plan.energyPerPhoton[i];
+            double energyPerPhoton = energyToCreate / static_cast<double>(nPhotonsCell);
 
             bool useGroupFreqSampling = owner_.adaptiveSourceCellGroupScoresEnabled_
                 && owner_.parameters_.withMultigroupOpacity
@@ -907,6 +935,12 @@ public:
                 owner_.lastGroupSamplingDiagnostics_.invalidPdfFallbackPackets += nPhotonsCell;
             }
 
+            double cellLabEnergy = 0.0;
+            PointT cellLabMomentum{};
+            if(legacyEntry >= plan.entryCount() || plan.entryCell[legacyEntry] != i)
+            {
+                throw StormError("Source emission loop is out of step with the source plan");
+            }
             for(std::size_t j = 0; j < nPhotonsCell; ++j)
             {
                 MCParticle particle;
@@ -1142,9 +1176,17 @@ public:
                     particle.weight = energyPerPhoton;
                 }
                 owner_.setInitialWeightFromWeight(particle);
+                source::AddPacketFourMomentum(particle.weight, particle.velocity,
+                    owner_.inverseLightSpeedSquared(), cellLabEnergy, cellLabMomentum);
                 newParticles.push_back(particle);
             }
+            legacyFourMomentum[4 * legacyEntry] = cellLabEnergy;
+            legacyFourMomentum[4 * legacyEntry + 1] = cellLabMomentum.x;
+            legacyFourMomentum[4 * legacyEntry + 2] = cellLabMomentum.y;
+            legacyFourMomentum[4 * legacyEntry + 3] = cellLabMomentum.z;
+            ++legacyEntry;
         }
+        this->debitPlanEmission(plan, legacyFourMomentum);
 
         return newParticles;
     }

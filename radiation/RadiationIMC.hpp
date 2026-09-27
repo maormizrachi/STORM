@@ -622,7 +622,7 @@ private:
     void buildComptonSources(double sourceDt, ComptonCellData &data) const;
     void buildComptonEventData(ComptonCellData &data) const;
     void computeComptonRiskForCell(double fullDt, ComptonCellData &data) const;
-    std::vector<MCParticle> generateComptonParticles(double fullDt);
+    void buildComptonSourcePlan(source::Plan &plan) const;
     void applyComptonEndOfStepCorrection(double fullDt);
     void reconcileComptonParticles(std::vector<MCParticle> &particles);
     void splitComptonRiskyParticles(std::vector<MCParticle> &particles, double fullDt);

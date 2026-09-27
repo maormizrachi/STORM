@@ -22,17 +22,73 @@ namespace STORM
 namespace source
 {
 
+// What a step emits, independent of which source model filled it (thermal
+// emission, Compton): a list of entries, each a number of packets of one comoving
+// energy from one cell.  A cell's entries are contiguous, and entry e owns the
+// packet slots [entryOffsets[e], entryOffsets[e + 1]).  Every entry is emitted
+// by EmitSourcePacket and debited from its cell by the four-momentum its
+// packets actually carry.
 struct Plan
 {
-    std::vector<std::size_t> nPhotons;
-    std::vector<std::size_t> photonOffsets;
+    std::vector<std::size_t> entryCell;
+    std::vector<std::size_t> entryOffsets{0};
+    // Comoving energy of each packet of the entry.
     std::vector<double> energyPerPhoton;
-    std::vector<double> energyToCreate;
-    std::vector<double> gamma;
+    // Comoving frequency of each packet of the entry; used only when
+    // fixedFrequencies is set, otherwise the frequency is sampled from the
+    // cell's thermal spectrum (or left zero for grey transport).
+    std::vector<double> fixedFrequency;
+    bool fixedFrequencies = false;
+    // Clamp the Doppler-shifted lab frequency to the group range.
+    bool clampLabFrequency = false;
     std::size_t totalPhotons = 0;
     std::uint64_t rngStreamBase = 0;
+    // Lab-frame energy of the emitted packets, summed after emission.
     double emittedEnergy = 0.0;
+
+    void reset(const std::uint64_t streamBase)
+    {
+        entryCell.clear();
+        entryOffsets.assign(1, 0);
+        energyPerPhoton.clear();
+        fixedFrequency.clear();
+        fixedFrequencies = false;
+        clampLabFrequency = false;
+        totalPhotons = 0;
+        rngStreamBase = streamBase;
+        emittedEnergy = 0.0;
+    }
+
+    void addEntry(const std::size_t cellIndex, const std::size_t packets, const double comovingEnergyPerPhoton,
+                  const double comovingFrequency = 0.0)
+    {
+        if(packets == 0)
+        {
+            return;
+        }
+        entryCell.push_back(cellIndex);
+        energyPerPhoton.push_back(comovingEnergyPerPhoton);
+        fixedFrequency.push_back(comovingFrequency);
+        totalPhotons += packets;
+        entryOffsets.push_back(totalPhotons);
+    }
+
+    std::size_t entryCount() const
+    {
+        return entryCell.size();
+    }
 };
+
+// Lab-frame four-momentum (energy, momentum) carried by one packet.
+template<typename PointT>
+STORM_SOURCE_INLINE void AddPacketFourMomentum(const double weight, const PointT &velocity, const double invClight2,
+                                                double &energy, PointT &momentum)
+{
+    energy += weight;
+    momentum.x += weight * velocity.x * invClight2;
+    momentum.y += weight * velocity.y * invClight2;
+    momentum.z += weight * velocity.z * invClight2;
+}
 
 template<typename PointT>
 struct SampleViews
@@ -55,6 +111,7 @@ struct SampleViews
     double invClight2 = 0.0;
     std::uint8_t sampleFrequency = 0;
     std::uint8_t applyLabFrame = 0;
+    std::uint8_t clampLabFrequency = 0;
 };
 
 struct EmittedScalars
@@ -216,10 +273,10 @@ STORM_SOURCE_INLINE void LorentzBoostToLab(PointT &velocity, double &frequency, 
     }
 }
 
-STORM_SOURCE_INLINE std::size_t CellFromPhotonSlot(const std::size_t *offsets, const std::size_t cellCount, const std::size_t slot)
+STORM_SOURCE_INLINE std::size_t EntryFromPhotonSlot(const std::size_t *offsets, const std::size_t entryCount, const std::size_t slot)
 {
     std::size_t lo = 0;
-    std::size_t hi = cellCount;
+    std::size_t hi = entryCount;
     while(lo + 1 < hi)
     {
         const std::size_t mid = lo + (hi - lo) / 2;
@@ -235,9 +292,13 @@ STORM_SOURCE_INLINE std::size_t CellFromPhotonSlot(const std::size_t *offsets, c
     return lo;
 }
 
+// One source packet: position in the cell, isotropic comoving direction,
+// comoving energy energyPerPhoton and comoving frequency (fixedFrequency when
+// given, else sampled from the cell's thermal spectrum), all boosted to the lab.
 template<typename PointT>
-STORM_SOURCE_INLINE void EmitThermalPacket(const SampleViews<PointT> &views, const std::size_t cellIndex, const std::uint64_t rngKey,
-                                            const double energyPerPhoton, PointT &location, PointT &velocity, EmittedScalars &scalars)
+STORM_SOURCE_INLINE void EmitSourcePacket(const SampleViews<PointT> &views, const std::size_t cellIndex, const std::uint64_t rngKey,
+                                           const double energyPerPhoton, const double *fixedFrequency, PointT &location, PointT &velocity,
+                                           EmittedScalars &scalars)
 {
     scalars.rngKey = rngKey;
     scalars.rngCounter = 0;
@@ -256,10 +317,18 @@ STORM_SOURCE_INLINE void EmitThermalPacket(const SampleViews<PointT> &views, con
 
     scalars.timeLeft = views.fullDt * CounterRNG::unitOpen(rngKey, scalars.rngCounter++);
 
-    if(views.sampleFrequency != 0)
+    if(fixedFrequency != nullptr or views.sampleFrequency != 0)
     {
-        const double random = CounterRNG::unitOpen(rngKey, scalars.rngCounter++);
-        const double freqCo = ddmc::SampleFrequencyFromCellCdf(views.energyBoundaries, views.thermalEmissionCdf, views.groupCount, cellIndex, random, views.thermalFrequencyLaw, views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
+        double freqCo = 0.0;
+        if(fixedFrequency != nullptr)
+        {
+            freqCo = *fixedFrequency;
+        }
+        else
+        {
+            const double random = CounterRNG::unitOpen(rngKey, scalars.rngCounter++);
+            freqCo = ddmc::SampleFrequencyFromCellCdf(views.energyBoundaries, views.thermalEmissionCdf, views.groupCount, cellIndex, random, views.thermalFrequencyLaw, views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
+        }
         if(views.applyLabFrame != 0 and views.cellVelocities != nullptr)
         {
             const double doppler = DopplerShift(velocity, views.cellVelocities[cellIndex], views.invClight2);
@@ -276,6 +345,12 @@ STORM_SOURCE_INLINE void EmitThermalPacket(const SampleViews<PointT> &views, con
         else
         {
             scalars.frequency = freqCo;
+        }
+        if(views.clampLabFrequency != 0 and views.groupCount > 0)
+        {
+            const double lowest = views.energyBoundaries[0];
+            const double highest = views.energyBoundaries[views.groupCount];
+            scalars.frequency = (scalars.frequency < lowest)? lowest : ((scalars.frequency > highest)? highest : scalars.frequency);
         }
     }
 
