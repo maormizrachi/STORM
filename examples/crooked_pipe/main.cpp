@@ -53,6 +53,7 @@ struct Options
     std::size_t wallLayers = 4;
     std::size_t wallPoints = 0;
     double wallLayerWidth = 0.01;
+    std::vector<double> ThickLayerWidths;
     std::size_t newPhotonsPerCell = 25;
     std::size_t minPhotonsPerCell = 100;
     std::size_t channelPoints = 0;
@@ -103,13 +104,14 @@ void PrintUsage(const char *program)
               << "  --rdma-ring-size N, --rdma-ring-limit N, --transport-event-budget N, --send-max-age-us N\n";
     std::cerr << "Usage: mpirun -np <N> " << program << " [points] [new_photons] [min_photons] [options]\n"
               << "  --points <N>                 Background mesh points (default: 20000)\n"
-              << "  --wall-layers <N>            Graded refinement layers on the thick side of each interface (default: 4)\n"
-              << "  --wall-width <cm>            Width of the first refinement layer (default: 0.01)\n"
+              << "  --wall-layers <N>            Use N geometrically graded thick layers instead of the default width list\n"
+              << "  --wall-width <cm>            First geometric slab width (default: 0.01); selects geometric thick grading\n"
+              << "  --wall-thick-widths <list>   Nominal thick slab widths in cm (default: 0.002,0.003,0.004,0.006,0.008,0.01,0.1)\n"
               << "  --wall-points <N>            Points in the first refinement layer of each interface; --random-walls only (default: 4 x points)\n"
               << "  --wall-thin-layers <N>       Graded slabs mirrored on the thin side of each interface (default: 3)\n"
               << "  --wall-tangential <cm>       Lattice spacing along each interface for structured shells (default: 0.04)\n"
               << "  --random-walls               Fill interface shells with isotropic random points instead of structured slabs\n"
-              << "  --wall-growth <f>            Thickness ratio between successive structured slabs (default: 2)\n"
+              << "  --wall-growth <f>            Geometric slab ratio (default: 2); selects geometric thick grading\n"
               << "  --ddmc                       Transport cells above --ddmc-min-tau with DDMC instead of IMC\n"
               << "  --ddmc-min-tau <tau>         sigma x mean chord above which a cell is DDMC-eligible (default: 15)\n"
               << "  --thick-cv <erg/keV/cm3>     Wall heat capacity per volume; benchmark value 1e16 (bounding tests only)\n"
@@ -201,9 +203,35 @@ STORM::RDMAEngine ParseRDMAEngine(const std::string &name)
     throw std::runtime_error("Unknown RDMA engine: " + name);
 }
 
+std::vector<double> ParseThickLayerWidths(const std::string &Text)
+{
+    std::vector<double> Widths;
+    std::size_t Start = 0;
+    double TotalWidth = 0.0;
+    while(true)
+    {
+        const std::size_t End = Text.find(',', Start);
+        const std::string Token = Text.substr(Start, End - Start);
+        std::size_t Parsed = 0;
+        const double Width = std::stod(Token, &Parsed);
+        TotalWidth += Width;
+        if(Parsed != Token.size() || !std::isfinite(Width) || Width <= 0.0 || !std::isfinite(TotalWidth))
+        {
+            throw std::runtime_error("--wall-thick-widths requires finite, positive widths in cm");
+        }
+        Widths.push_back(Width);
+        if(End == std::string::npos)
+        {
+            return Widths;
+        }
+        Start = End + 1;
+    }
+}
+
 Options ParseOptions(int argc, char *argv[], bool &showHelp)
 {
     Options options;
+    bool UseDefaultThickWidths = true;
     std::vector<std::string> positional;
     showHelp = false;
     for(int i = 1; i < argc; ++i)
@@ -219,7 +247,12 @@ Options ParseOptions(int argc, char *argv[], bool &showHelp)
         }
         else if(argument == "--wall-layers")
         {
+            UseDefaultThickWidths = false;
             options.wallLayers = std::stoull(RequireValue(argc, argv, i));
+        }
+        else if(argument == "--wall-thick-widths")
+        {
+            options.ThickLayerWidths = ParseThickLayerWidths(RequireValue(argc, argv, i));
         }
         else if(argument == "--channel-points")
         {
@@ -251,6 +284,7 @@ Options ParseOptions(int argc, char *argv[], bool &showHelp)
         }
         else if(argument == "--wall-growth")
         {
+            UseDefaultThickWidths = false;
             options.wallGrowth = std::stod(RequireValue(argc, argv, i));
             if(!std::isfinite(options.wallGrowth) || options.wallGrowth < 1.0)
                 throw std::runtime_error("--wall-growth must be finite and at least 1");
@@ -327,6 +361,7 @@ Options ParseOptions(int argc, char *argv[], bool &showHelp)
         }
         else if(argument == "--wall-width")
         {
+            UseDefaultThickWidths = false;
             options.wallLayerWidth = std::stod(RequireValue(argc, argv, i));
         }
         else if(argument == "--new-photons")
@@ -484,6 +519,18 @@ Options ParseOptions(int argc, char *argv[], bool &showHelp)
     {
         options.minPhotonsPerCell = std::stoull(positional[2]);
     }
+    if(options.ThickLayerWidths.empty() && UseDefaultThickWidths && !options.randomWalls)
+    {
+        options.ThickLayerWidths = {0.002, 0.003, 0.004, 0.006, 0.008, 0.01, 0.1};
+    }
+    if(!options.ThickLayerWidths.empty())
+    {
+        if(options.randomWalls)
+        {
+            throw std::runtime_error("--wall-thick-widths requires structured walls, not --random-walls");
+        }
+        options.wallLayers = options.ThickLayerWidths.size();
+    }
     if(options.backgroundPoints == 0 or options.wallLayers == 0 or options.wallLayerWidth <= 0.0 or options.newPhotonsPerCell == 0 or options.minPhotonsPerCell == 0 or
        options.boundaryPhotonsPerFace == 0 or options.finalTime <= 0.0 or options.maximumDt <= 0.0)
     {
@@ -587,11 +634,10 @@ void AppendGradedAxialShells(std::vector<Vector3D> &points, double interfaceX, d
 // pinned --wall-width at 0.01 and left the first wall cell holding ~15x the heat
 // capacity it should. Only the interface normal needs that resolution. Here points sit
 // on a lattice with spacing `tangential` along the interface, at the mid-thickness of
-// each graded layer, so each Voronoi cell is a slab w thick and ~tangential across and
-// a layer costs A/tangential^2 instead. The same lattice is mirrored on the thin side
-// so that the Voronoi face between each mirrored pair lies exactly on the interface --
-// no labelling rule can then misplace it -- and is graded there too so the slabs hand
-// over smoothly to the channel fill. Every point is jittered by a fraction of its
+// each nominal slab; a layer costs A/tangential^2 points. Actual normal cell widths
+// depend on neighbouring seed positions, not just the nominal slab width. Thin and
+// thick layers share tangential sites, but unequal first widths shift their bisector
+// off the analytic interface. Every point is jittered by a fraction of its
 // spacing because a perfect lattice hands the Voronoi builder degenerate cospherical
 // configurations.
 // ---------------------------------------------------------------------------
@@ -607,6 +653,7 @@ struct StructuredShellSpec
     // benchmark's ~1.1x logarithmic grid at the depths the Marshak wave reaches over
     // 10-100 ns, where IMC teleportation then runs ahead of the true diffusion front.
     double growth = 2.0;
+    std::vector<double> ThickWidths;
 
     double StackThickness(std::size_t layers) const
     {
@@ -624,7 +671,7 @@ struct StructuredShellSpec
 
 // Calls place(side, distance, width) for each graded layer: side is +1 on the thick
 // side and -1 on the thin side, distance is from the interface to the layer's
-// mid-thickness, and widths double outward from the interface.
+// mid-thickness. Explicit thick-side widths replace the geometric grading there.
 template<typename PlaceLayer>
 void ForEachGradedLayer(const StructuredShellSpec &spec, PlaceLayer &&place)
 {
@@ -634,7 +681,8 @@ void ForEachGradedLayer(const StructuredShellSpec &spec, PlaceLayer &&place)
         double offset = 0.0;
         for(std::size_t layer = 0; layer < layers; ++layer)
         {
-            double width = spec.firstWidth * std::pow(spec.growth, static_cast<double>(layer));
+            double width = side > 0 && !spec.ThickWidths.empty() ? spec.ThickWidths[layer]
+                : spec.firstWidth * std::pow(spec.growth, static_cast<double>(layer));
             place(side, offset + 0.5 * width, width);
             offset += width;
         }
@@ -653,8 +701,8 @@ void AppendStructuredRadialShells(std::vector<Vector3D> &points, double interfac
     // +-15% of the 0.04-0.06 cm spacing tilts the Voronoi bisector between a mirrored
     // thin/thick pair only 1e-4 cm apart radially, turning the interface into a fuzz
     // ~0.01 cm thick in which wall-labelled cells bulge into the channel (3.5% of the
-    // channel volume at 1e-4 cm slabs). With a shared site, mirrored pairs bisect exactly
-    // on the interface regardless of slab thickness. Radial jitter stays per point.
+    // channel volume at 1e-4 cm slabs). Shared sites remove this tangential mismatch;
+    // the radial seed distances and their independent jitter still set the bisector.
     std::size_t azimuthal = std::max<std::size_t>(
         8, static_cast<std::size_t>(std::llround(twoPi * interfaceRadius / spec.tangential)));
     std::size_t axial = std::max<std::size_t>(
@@ -783,6 +831,7 @@ std::vector<Vector3D> RandomThinRegion(std::size_t pointCount, double exclusion,
 std::vector<Vector3D> GeneratePoints(std::size_t backgroundPoints, std::size_t wallLayers, std::size_t wallPoints,
                                      double width, std::size_t channelPoints, std::size_t wallThinLayers,
                                      double wallTangential, double wallGrowth, bool randomWalls,
+                                     const std::vector<double> &ThickWidths,
                                      const Vector3D &lower, const Vector3D &upper)
 {
     boost::mt19937_64 generator(42);
@@ -805,7 +854,7 @@ std::vector<Vector3D> GeneratePoints(std::size_t backgroundPoints, std::size_t w
     }
     else
     {
-        StructuredShellSpec spec{width, wallTangential, wallLayers, wallThinLayers, wallGrowth};
+        StructuredShellSpec spec{width, wallTangential, wallLayers, wallThinLayers, wallGrowth, ThickWidths};
         // Only background points exist here. They must also keep clear of every interface. Lattice sites are
         // wallTangential apart, so a random point sitting mid-gap within wallTangential/2 of
         // the interface is closer to the channel (or wall) volume in front of it than any
@@ -1282,7 +1331,7 @@ int main(int argc, char *argv[])
                 allPoints = GeneratePoints(options.backgroundPoints, options.wallLayers, options.wallPoints,
                                            options.wallLayerWidth, options.channelPoints, options.wallThinLayers,
                                            options.wallTangential, options.wallGrowth, options.randomWalls,
-                                           lower, upper);
+                                           options.ThickLayerWidths, lower, upper);
                 std::cout << "Generated " << allPoints.size() << " crooked-pipe mesh points" << std::endl;
             }
             std::vector<Vector3D> localPoints = MPI_Spread(allPoints, 0, MPI_COMM_WORLD);
@@ -1396,8 +1445,16 @@ int main(int argc, char *argv[])
                           << ", walls=" << (options.randomWalls ? "random" : "structured")
                           << " width=" << options.wallLayerWidth << " thick/thin layers=" << options.wallLayers
                           << "/" << options.wallThinLayers << " tangential=" << options.wallTangential
-                          << " growth=" << options.wallGrowth
-                          << ", ddmc=" << (options.ddmc ? "on" : "off") << " min tau=" << options.ddmcMinTau
+                          << " growth=" << options.wallGrowth;
+                if(!options.ThickLayerWidths.empty())
+                {
+                    std::cout << " nominal thick slab widths (cm)=";
+                    for(std::size_t Layer = 0; Layer < options.ThickLayerWidths.size(); ++Layer)
+                    {
+                        std::cout << (Layer == 0 ? "" : ",") << options.ThickLayerWidths[Layer];
+                    }
+                }
+                std::cout << ", ddmc=" << (options.ddmc ? "on" : "off") << " min tau=" << options.ddmcMinTau
                           << ", cv thick/thin=" << options.thickCvPerVolume << "/" << options.thinCvPerVolume
                           << ", opacity thick/thin=" << options.thickOpacity << "/" << options.thinOpacity
                           << ", reflect source/exit=" << options.reflectSource << "/" << options.reflectExit

@@ -337,7 +337,11 @@ if(STORM_MONTECARLO_POLARIZATION)
   # defining it from both sides is harmless (identical -D), and this option is what
   # lets a standalone STORM build -- and STORM's own regression tests -- exercise
   # polarized transport without RICH.
-  target_compile_definitions(storm PUBLIC MONTECARLO_POLARIZATION)
+  if(STORM_SOURCES)
+    target_compile_definitions(storm PUBLIC MONTECARLO_POLARIZATION)
+  else()
+    target_compile_definitions(storm INTERFACE MONTECARLO_POLARIZATION)
+  endif()
 endif()
 
 if(STORM_WITH_MPI)

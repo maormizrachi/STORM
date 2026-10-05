@@ -92,12 +92,17 @@ Accuracy here is limited by mesh resolution rather than by packet counts, and
 the resolution that matters is inside the optically thick wall. Radiation that
 enters the wall is absorbed in a Marshak boundary layer a few hundredths of a
 centimetre deep, so a background-sized cell at the interface spreads that
-energy over far too much heat capacity and holds the wave back. `--wall-layers`
-places geometrically graded shells on the thick side of every interface, each
-twice as thick as the previous one and holding half as many points;
-`--wall-width` sets the thickness of the first shell and `--wall-points` its
-point count. `--max-dt` caps the time step, which keeps the Fleck factor in the
-thin channel close to one.
+energy over far too much heat capacity and holds the wave back. The default
+structured thick-side slabs have nominal widths `0.002, 0.003, 0.004, 0.006,
+0.008, 0.01, 0.1 cm`, from the interface inward. Thin-side settings and the `0.04 cm`
+tangential spacing are unchanged. These are mesh-point slab widths, not exact
+Voronoi cell widths; the abrupt jump to `0.1 cm` broadens the adjacent cell.
+
+`--wall-thick-widths` overrides this list. Explicit `--wall-layers`,
+`--wall-width`, or `--wall-growth` selects geometric thick-side grading instead,
+unless an explicit width list is also supplied. `--wall-points` controls point
+counts only with `--random-walls`. `--max-dt` caps the time step, which keeps the
+Fleck factor in the thin channel close to one.
 
 Going from one shell to four graded shells speeds the heat wave up by roughly a
 factor of three at the downstream probes and is by far the most effective knob;
