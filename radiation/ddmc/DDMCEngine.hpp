@@ -1337,11 +1337,8 @@ public:
 
         if(!particle.radiationState.isResident())
         {
-            double const entrySpeed = fastabs(particle.velocity);
-            if(entrySpeed > 0.0 && std::isfinite(entrySpeed))
-            {
-                owner_.addDDMCFluxContribution(cellIndex, particle.weight * (particle.velocity / entrySpeed));
-            }
+            // Conversion inside the cell crosses no face, so it adds nothing to
+            // the face-flux moment R = sum_f E_f n_f.
             particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
             particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
             particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);
@@ -1631,7 +1628,12 @@ public:
                                             std::numeric_limits<double>::quiet_NaN(),
                                             std::numeric_limits<double>::quiet_NaN());
 
-            PointT const fluxContribution = fluxWeightComoving * dir;
+            // The face-flux moment needs the energy crossing each face along its
+            // normal, R = sum_f E_f n_f, so that M F dt = R is the least-squares
+            // fit of F.n_f = E_f/(A_f dt).  The sampled exit direction would bias
+            // R by <mu> (about 0.71 for the asymptotic exit law).  The same vector
+            // enters the target cell, whose outward normal on this face is -nOut.
+            PointT const fluxContribution = fluxWeightComoving * nOut;
             owner_.addDDMCFluxContribution(cellIndex, fluxContribution);
             if(targetDDMC)
             {
@@ -2101,11 +2103,10 @@ public:
         particle.radiationState.set(
             RadiationTransportState<PointT>::DDMCComovingFrame);
         particle.radiationState.clearPendingFlux();
-        double const admittedSpeed = fastabs(targetComoving.velocity);
-        if(admittedSpeed > 0.0 && std::isfinite(admittedSpeed))
         {
-            PointT const contribution = admittedTargetWeight *
-                (targetComoving.velocity / admittedSpeed);
+            // Energy entering the target counts as -E n_out in the face-flux
+            // moment; `normal` points into the target, so n_out = -normal.
+            PointT const contribution = admittedTargetWeight * normal;
             if(targetCellIndex < owner_.componentGrid().GetPointNo())
             {
                 owner_.addDDMCFluxContribution(targetCellIndex, contribution);
@@ -2286,7 +2287,8 @@ public:
         particle.frequency = targetComoving.frequency;
         particle.weight = targetComoving.weight;
         particle.initialWeight = std::abs(particle.weight);
-        owner_.addDDMCFluxContribution(cellIndex, particle.weight * (particle.velocity / speed));
+        // Energy entering through the source face counts as -E n_out.
+        owner_.addDDMCFluxContribution(cellIndex, -particle.weight * outwardNormal);
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);

@@ -1023,13 +1023,10 @@ InterfaceResult TryIMCToDDMCInterface(
         ~RadiationTransportState<PointT>::PendingFlux);
     cold.pendingFlux = PointT{};
 
-    const double admittedSpeed = transport::Sqrt(
-        Dot(targetComoving.velocity, targetComoving.velocity));
-    if(admittedSpeed > 0.0 && transport::IsFinite(admittedSpeed))
     {
-        const PointT contribution = Scale(
-            targetComoving.velocity,
-            admittedTargetWeight / admittedSpeed);
+        // Energy entering the target counts as -E n_out in the face-flux
+        // moment; `normal` points into the target, so n_out = -normal.
+        const PointT contribution = Scale(normal, admittedTargetWeight);
         if(targetCell < ddmc.cellCount)
         {
             AddFlux(views, targetCell, contribution);
@@ -1542,11 +1539,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
 
     if(!packetInDDMC)
     {
-        const double speed = transport::Sqrt(Dot(particle.velocity, particle.velocity));
-        if(speed > 0.0)
-        {
-            AddFlux(views, cellIndex, Scale(particle.velocity, particle.weight / speed));
-        }
+        // Conversion inside the cell crosses no face, so it adds nothing to
+        // the face-flux moment R = sum_f E_f n_f.
         radiationFlags = static_cast<std::uint8_t>(radiationFlags | ddmcFlags);
         particle.location = views.grid.cellCenters[cellIndex];
         SampleRandomVelocity(particle, views.speedOfLight);
@@ -1787,7 +1781,10 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         particle.initialWeight = transport::Abs(particle.weight);
     }
 
-    const PointT fluxContribution = Scale(direction, fluxWeight);
+    // Face-flux moment R = sum_f E_f n_f: the energy crossing the face is
+    // projected on its outward normal, not on the sampled exit direction,
+    // which would bias R by <mu>.  The target cell receives the same vector.
+    const PointT fluxContribution = Scale(normal, fluxWeight);
     AddFlux(views, cellIndex, fluxContribution);
 
     const std::size_t nextCell = static_cast<std::size_t>(ddmc.nextCellIndices[chosen]);
