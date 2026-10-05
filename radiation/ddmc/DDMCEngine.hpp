@@ -960,8 +960,12 @@ public:
                 double const rhsX = rhs[0];
                 double const rhsY = rhs[1];
                 double const rhsZ = rhs[2];
+                // Relative test: M scales as (cell size)^2, so an absolute floor
+                // on the scale would send every cell below ~0.01 length units
+                // to the fallback.
                 double const scale = std::max({std::abs(xx), std::abs(yy),
-                                                std::abs(zz), 1.0});
+                                                std::abs(zz),
+                                                std::numeric_limits<double>::min()});
                 if(std::isfinite(determinant) and std::abs(determinant) > (1.0e-12 * scale * scale * scale))
                 {
                     fluxDt = PointT(
