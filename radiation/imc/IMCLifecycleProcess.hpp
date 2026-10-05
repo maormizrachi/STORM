@@ -820,7 +820,10 @@ public:
                     eo.addEntry("cv", cv);
                     throw eo;
                 }
-                owner_.factorFleck_[i] = 1.0 / (1.0 + owner_.parameters_.fleckArgumentScale * (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * owner_.planckOpacities_[i] * owner_.lightSpeed() * fleckDt * gamma) / cv);
+                // The Fleck linearization acts on the material internal energy,
+                // which evolves in the fluid's proper time, dtau = dt / gamma
+                // (Roth et al. 2022, ApJ 933, 226, Eq. 44).
+                owner_.factorFleck_[i] = 1.0 / (1.0 + owner_.parameters_.fleckArgumentScale * (4.0 * units::arad * boost::math::pow<3>(cell.temperature) * owner_.planckOpacities_[i] * owner_.lightSpeed() * fleckDt / gamma) / cv);
                 if(owner_.postProcessVolumeEmission_)
                 {
                     // Fixed-temperature post-process with explicit volume

@@ -87,6 +87,11 @@ struct CellData
     // yz, zz.  It is optional for the core transport path but gives the
     // momentum-coupling phase a stable place to accumulate geometry.
     std::array<double, 6> fluxMatrix{};
+    // Reflecting-wall part of fluxMatrix.  A rigid wall carries no leak
+    // channel, but its zero-flux condition F.n = 0 is still a constraint on
+    // the cell flux, and keeping it in the moment matrix keeps that matrix
+    // well conditioned for cells with leak faces along one direction only.
+    std::array<double, 6> wallFluxMatrix{};
 };
 
 } // namespace STORM::ddmc

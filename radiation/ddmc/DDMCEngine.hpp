@@ -205,9 +205,14 @@ public:
                     data.sigmaA = sumBgSigADiff / totalBgDiff;
                     data.sigmaT = sumBgSigTDiff / totalBgDiff;
                     data.sigmaEnergyAbs = data.sigmaA;
-                    data.sigmaMomentum = data.sigmaT;
                     data.sigmaDiffusion = ddmc::RosselandOpacityFromBandSums(
                         totalBgDiff, sumBgOverSigTDiff);
+                    // With F_g = -(c/3 kappa_g) grad E_g and E_g proportional
+                    // to b_g, the band force sum_g kappa_g F_g / c equals
+                    // kappa_R F / c for the band flux F, so the force uses the
+                    // same flux (Rosseland-type) mean as the diffusion
+                    // coefficient, not the Planck mean of the total opacity.
+                    data.sigmaMomentum = data.sigmaDiffusion;
                     data.sigmaParticleGate = data.sigmaT;
                     data.sigmaGroupExit = data.sigmaT;
                     data.diffusionCoefficient = data.sigmaDiffusion > 0.0
@@ -510,6 +515,28 @@ public:
                             faceIdx, i, nextCellIndex);
                     if(behavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
                     {
+                        // No leak channel, but the wall's zero-flux condition
+                        // enters the flux-moment fit with E_f = 0.
+                        PointT wallNormal = owner_.componentGrid().Normal(faceIdx);
+                        double const wallNormalMag = fastabs(wallNormal);
+                        double const wallArea = owner_.componentGrid().GetArea(faceIdx);
+                        if(wallNormalMag > 0.0 && std::isfinite(wallNormalMag) &&
+                            wallArea > 0.0 && std::isfinite(wallArea))
+                        {
+                            wallNormal = wallNormal / wallNormalMag;
+                            double const nx = wallNormal[0];
+                            double const ny = wallNormal[1];
+                            double const nz = wallNormal[2];
+                            std::array<double, 6> const wallMoment{
+                                wallArea * nx * nx, wallArea * nx * ny,
+                                wallArea * nx * nz, wallArea * ny * ny,
+                                wallArea * ny * nz, wallArea * nz * nz};
+                            for(std::size_t k = 0; k < wallMoment.size(); ++k)
+                            {
+                                data.wallFluxMatrix[k] += wallMoment[k];
+                                data.fluxMatrix[k] += wallMoment[k];
+                            }
+                        }
                         continue;
                     }
                     if(behavior != DDMCBoundaryFaceBehavior::ThermalSource)
@@ -779,7 +806,7 @@ public:
         {
             data.totalLeakRate = 0.0;
             data.faceAreaSum = 0.0;
-            data.fluxMatrix.fill(0.0);
+            data.fluxMatrix = data.wallFluxMatrix;
             for(DDMCFaceLeak &face : data.faceLeaks)
             {
                 bool const targetEligible = face.nextCellIndex <
