@@ -567,18 +567,11 @@ public:
                     double const sourceDistanceToFace = std::abs(ScalarProd(
                         owner_.componentGrid().FaceCM(faceIdx) - cellCenter,
                         normal));
-                    double boundaryRate = ddmc::BoundaryLeakRate(
-                        area, volume, data.sigmaDiffusion,
-                        sourceDistanceToFace, owner_.lightSpeed());
-                    double const coefficient =
-                        ddmc::Densmore2006CellCoefficient(
-                            data.sigmaDiffusion, data.singleScatterAlbedo,
-                            sourceDistanceToFace);
-                    if(std::isfinite(coefficient))
-                    {
-                        boundaryRate = ddmc::Densmore2006BoundaryLeakRate(
-                            area, volume, owner_.lightSpeed(), coefficient);
-                    }
+                    double const boundaryRate =
+                        ddmc::InterfaceBoundaryLeakRate(
+                            area, volume, data.sigmaDiffusion,
+                            data.singleScatterAlbedo, sourceDistanceToFace,
+                            owner_.lightSpeed());
                     if(!(boundaryRate > 0.0) ||
                         !std::isfinite(boundaryRate))
                     {
@@ -592,7 +585,12 @@ public:
                     faceLeak.kind = ddmc::FaceKind::InterfaceToIMC;
                     faceLeak.rate = boundaryRate;
                     faceLeak.boundaryRate = boundaryRate;
-                    faceLeak.ddmcRate = boundaryRate;
+                    // A transport leak, like every other DDMC -> IMC face: the
+                    // packet leaves with mu = sqrt(xi) (Densmore et al. 2007).
+                    faceLeak.ddmcRate = 0.0;
+                    faceLeak.transportRate = boundaryRate;
+                    faceLeak.ddmcFraction = 0.0;
+                    faceLeak.targetDDMCEligible = false;
                     faceLeak.sourceBandMass = sourceBandMass;
                     faceLeak.commonBandMass = sourceBandMass;
                     faceLeak.area = area;
@@ -694,9 +692,13 @@ public:
                     internalRate = conductance / volume;
                 }
 
-                double boundaryRate = ddmc::BoundaryLeakRate(
+                // Computed for every face, not only when the provisional
+                // target leaves part of the band, because a face whose target
+                // is rejected later is demoted to this transport rate.
+                double const boundaryRate = ddmc::InterfaceBoundaryLeakRate(
                     area, volume, data.sigmaDiffusion,
-                    sourceDistance, owner_.lightSpeed());
+                    data.singleScatterAlbedo, sourceDistance,
+                    owner_.lightSpeed());
                 std::size_t const targetCutoff =
                     nextCellIndex < owner_.ddmcPointGroupCutoff_.size()
                     ? owner_.ddmcPointGroupCutoff_[nextCellIndex] : 0;
@@ -718,25 +720,6 @@ public:
                                 0, targetCutoff) / sourceBandMass,
                             0.0, 1.0);
                     }
-                }
-
-                if(ddmcFraction < 1.0)
-                {
-                    const double coefficient =
-                        ddmc::Densmore2006CellCoefficient(
-                            data.sigmaDiffusion,
-                            data.singleScatterAlbedo,
-                            sourceDistance);
-                    if(ddmc::IsProbabilisticDensmore2006Coefficient(
-                            coefficient))
-                    {
-                        boundaryRate =
-                            ddmc::Densmore2006BoundaryLeakRate(
-                                area, volume, owner_.lightSpeed(),
-                                coefficient);
-                    }
-                    // Outside Eq. (59)'s probabilistic range, retain the
-                    // paired legacy boundary coefficient initialized above.
                 }
 
                 double const ddmcRate = ddmcFraction * internalRate;
@@ -990,7 +973,15 @@ public:
                 {
                     continue;
                 }
-                owner_.extensives_[i].momentum += deltaP;
+                // The kick raises the kinetic energy and leaves the internal
+                // energy alone; the radiation already paid this work through
+                // the adiabatic drift.  Keep E = E_int + p^2/2m here rather
+                // than relying on the later synchronizeMaterialCell().
+                auto &ext = owner_.extensives_[i];
+                double const kineticChange =
+                    (ScalarProd(ext.momentum, deltaP) + 0.5 * ScalarProd(deltaP, deltaP)) / ext.mass;
+                ext.momentum += deltaP;
+                radiation_imc_detail::addTotalEnergyIfPresent(ext, kineticChange);
                 ++owner_.ddmcMomentumFeedbackCount_;
             }
         }
@@ -1279,8 +1270,10 @@ public:
             if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value &&
                             radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                if(owner_.parameters_.withHydro &&
-                    !owner_.parameters_.staticScatterers &&
+                // The v/c^2 momentum of isotropic comoving radiation exists
+                // only when the packet is carried in the comoving frame
+                // (not under MMC), as in the device path.
+                if(useComovingFrame && owner_.parameters_.withHydro &&
                     !owner_.parameters_.diffusionPressureGradient)
                 {
                     owner_.tallyMomentum(
@@ -1341,8 +1334,7 @@ public:
                 if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value &&
                                 radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
-                    if(owner_.parameters_.withHydro &&
-                        !owner_.parameters_.staticScatterers &&
+                    if(useComovingFrame && owner_.parameters_.withHydro &&
                         !owner_.parameters_.diffusionPressureGradient)
                     {
                         owner_.tallyMomentum(cellIndex, particle.weight * owner_.cells_[cellIndex].velocity * owner_.inverseLightSpeedSquared());
@@ -2274,6 +2266,12 @@ public:
         if(owner_.parameters_.withMultigroupOpacity)
         {
             owner_.clampFrequencyToBounds(targetComoving.frequency);
+        }
+        // Only multigroup DDMC has a diffusive band; grey DDMC leaves
+        // groupCutoff at zero and admits every frequency.
+        if(owner_.parameters_.withMultigroupDDMC &&
+           owner_.parameters_.withMultigroupOpacity)
+        {
             std::size_t const groupCutoff =
                 owner_.ddmcCellData_[cellIndex].groupCutoff;
             if(groupCutoff == 0 || groupCutoff > NumGroups ||

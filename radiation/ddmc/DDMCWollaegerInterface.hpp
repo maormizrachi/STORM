@@ -440,9 +440,12 @@ inline double SampleAsymptoticMu(double random)
     random = std::clamp(random, 0.0, 1.0);
     double lo = 0.0;
     double hi = 1.0;
-    // Detailed balance with the 2012 admission law gives
     // p(mu) = mu*(0.91 + 1.635*mu), whose normalized CDF is
-    // 0.455*mu^2 + 0.545*mu^3.
+    // 0.455*mu^2 + 0.545*mu^3.  This is the angular weight of the asymptotic
+    // admission law and is used only for the direction a packet carries into
+    // a neighboring DDMC cell.  Leakage from DDMC into transport follows
+    // Densmore et al. (2007) instead: the packet leaves with an isotropic
+    // intensity on the face, mu = sqrt(xi).
     for(size_t iteration = 0; iteration < 56; ++iteration)
     {
         double const mu = 0.5 * (lo + hi);
@@ -467,6 +470,28 @@ inline double BoundaryLeakRate(double area, double volume, double transportOpaci
     }
     double const opticalDenominator = transportOpacity * centerToFaceDistance + ExtrapolationLength;
     return lightSpeed * area / (3.0 * volume * opticalDenominator);
+}
+
+// DDMC -> transport leakage rate of an interface face.  It uses the
+// Densmore (2006) emissivity-preserving coefficient whenever that
+// coefficient is probabilistic, so that the leak is paired with the
+// admission probability of the reverse direction, and otherwise the legacy
+// boundary rate.  Every face that can become a transport interface (on
+// construction or on later demotion) must take its rate from here.
+inline double InterfaceBoundaryLeakRate(
+    double area, double volume, double transportOpacity,
+    double singleScatterAlbedo, double centerToFaceDistance,
+    double lightSpeed)
+{
+    double const coefficient = Densmore2006CellCoefficient(
+        transportOpacity, singleScatterAlbedo, centerToFaceDistance);
+    if(IsProbabilisticDensmore2006Coefficient(coefficient))
+    {
+        return Densmore2006BoundaryLeakRate(
+            area, volume, lightSpeed, coefficient);
+    }
+    return BoundaryLeakRate(
+        area, volume, transportOpacity, centerToFaceDistance, lightSpeed);
 }
 
 } // namespace STORM::ddmc

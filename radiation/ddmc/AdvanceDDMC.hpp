@@ -1491,7 +1491,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         STORM_TRANSPORT_ACCUMULATE(*ddmc.stepCount, std::size_t(1));
     }
 
-    if(transport::Abs(particle.weight) < particle.initialWeight * 1.0e-3)
+    if(transport::Abs(particle.weight) < particle.initialWeight * views.weightCutoffFraction)
     {
         if(views.depositMaterialEnergy)
         {
@@ -1627,6 +1627,9 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             views.energyBoundaries, views.thermalEmissionCdf,
             views.groupCount, cellIndex, opacityCdfCoordinate, views.thermalFrequencyLaw, views.thermalKT ? views.thermalKT[cellIndex] : 0.0);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
+        // A resident packet may still sit on the face it entered through;
+        // restart transport from the generating point, as the host does.
+        particle.location = views.grid.cellCenters[cellIndex];
         SampleRandomVelocity(particle, views.speedOfLight);
         LorentzToLab(particle, views, cellIndex);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
@@ -1693,7 +1696,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             particle.frequency = ClampFrequency(
                 views.energyBoundaries, views.groupCount,
                 particle.frequency);
-            particle.initialWeight = eventEnergy;
+            // Reference the cutoff to the boosted laboratory weight.
+            particle.initialWeight = transport::Abs(particle.weight);
             radiationFlags = static_cast<std::uint8_t>(
                 radiationFlags & ~(ddmcFlags | pending));
             cold.pendingFlux = PointT{};
