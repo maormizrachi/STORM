@@ -7,10 +7,33 @@
 #include "../particle/Particle.hpp"
 #include "../particle/ParticleStatus.hpp"
 #include "../elementary/PointOps.hpp"
+#ifdef STORM_WITH_MPI
+#include <mpi.h>
+#endif
 
 namespace STORM {
 
 using namespace STORM::fallback;
+
+// Seed for a boundary source's private generator: distinct per MPI rank (so
+// ranks do not draw identical sequences) and per source type (salt).  Call it
+// lazily, after MPI_Init.
+inline std::uint64_t BoundarySourceSeed(std::uint64_t salt)
+{
+    int rank = 0;
+#ifdef STORM_WITH_MPI
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if(initialized)
+    {
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    }
+#endif
+    std::uint64_t z = salt + 0x9E3779B97F4A7C15ULL * (static_cast<std::uint64_t>(rank) + 1);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
 
 // DDMCBoundaryFaceBehavior describes how DDMC should treat an outside-box
 // face adjacent to a candidate DDMC cell.

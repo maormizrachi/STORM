@@ -45,14 +45,28 @@ public:
         return DDMCBoundaryFaceBehavior::ReflectingRigid;
     }
 
-    void SetTemperature(double temp) { temperature = temp; }
+    void SetTemperature(double temp)
+    {
+        temperature = temp;
+        if(multigroup)
+        {
+            buildPlanckCdf();
+        }
+    }
 
 private:
+    // Fills cumulativePlanckFunction at the current temperature, normalized to
+    // one, and returns the unnormalized total (one when the groups span the
+    // spectrum).
+    double buildPlanckCdf();
+
     double temperature;
     size_t Npercell;
     std::vector<double> energyBoundaries;
     std::vector<double> cumulativePlanckFunction;
     bool multigroup;
+    std::mt19937_64 rng_;
+    bool rngSeeded_ = false;
 };
 
 template<typename T, typename Grid>
@@ -61,24 +75,37 @@ SideTemperature<T, Grid>::SideTemperature(const Grid &grid, double temperature, 
 {
     if(this->multigroup)
     {
-        size_t Ngroups = this->energyBoundaries.size() - 1;
-        double const kT = units::k_boltz * temperature;
-        this->cumulativePlanckFunction.resize(Ngroups + 1);
-        this->cumulativePlanckFunction[0] = 0.0;
-        for(size_t g = 1; g <= Ngroups; g++)
-        {
-            double const a = this->energyBoundaries[g - 1] / kT;
-            double const b = this->energyBoundaries[g] / kT;
-            this->cumulativePlanckFunction[g] = planck_integral::planck_integral(a, b);
-            this->cumulativePlanckFunction[g] += this->cumulativePlanckFunction[g - 1];
-        }
-        if(std::abs(this->cumulativePlanckFunction.back() - 1.0) > 1e-8)
+        double const sum = this->buildPlanckCdf();
+        if(std::abs(sum - 1.0) > 1e-8)
         {
             STORMError eo("Cumulative Planck function does not sum to 1");
-            eo.addEntry("Sum", this->cumulativePlanckFunction.back());
+            eo.addEntry("Sum", sum);
             throw eo;
         }
     }
+}
+
+template<typename T, typename Grid>
+double SideTemperature<T, Grid>::buildPlanckCdf()
+{
+    size_t const Ngroups = this->energyBoundaries.size() - 1;
+    double const kT = units::k_boltz * this->temperature;
+    this->cumulativePlanckFunction.assign(Ngroups + 1, 0.0);
+    for(size_t g = 1; g <= Ngroups; g++)
+    {
+        double const a = this->energyBoundaries[g - 1] / kT;
+        double const b = this->energyBoundaries[g] / kT;
+        this->cumulativePlanckFunction[g] = this->cumulativePlanckFunction[g - 1] + planck_integral::planck_integral(a, b);
+    }
+    double const total = this->cumulativePlanckFunction.back();
+    if(total > 0.0)
+    {
+        for(double &value : this->cumulativePlanckFunction)
+        {
+            value /= total;
+        }
+    }
+    return total;
 }
 
 template<typename T, typename Grid>
@@ -114,9 +141,16 @@ ParticleStatus SideTemperature<T, Grid>::apply(Particle<T> &particle)
 template<typename T, typename Grid>
 std::vector<Particle<T>> SideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
-    static const double T4 = boost::math::pow<4>(this->temperature);
+    // Per-instance state: the temperature may change between steps
+    // (SetTemperature) and two sources must not share one stream.
+    double const T4 = boost::math::pow<4>(this->temperature);
     std::uniform_real_distribution<double> unif(0, 1);
-    static std::mt19937_64 re(0);
+    if(!this->rngSeeded_)
+    {
+        this->rng_.seed(BoundarySourceSeed(0x5349444554454D50ULL));
+        this->rngSeeded_ = true;
+    }
+    std::mt19937_64 &re = this->rng_;
 
     std::vector<Particle<T>> newParticles;
     size_t N = this->grid.GetPointNo();

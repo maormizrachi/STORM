@@ -52,6 +52,8 @@ private:
     std::vector<double> cumulativePlanckFunctionLeft;
     std::vector<double> cumulativePlanckFunctionRight;
     bool multigroup;
+    std::mt19937_64 rng_;
+    bool rngSeeded_ = false;
 };
 
 template<typename T, typename Grid>
@@ -125,10 +127,17 @@ ParticleStatus TwoSidesTemperature<T, Grid>::apply(Particle<T> &particle)
 template<typename T, typename Grid>
 std::vector<Particle<T>> TwoSidesTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
-    static const double T4_L = boost::math::pow<4>(this->temperatureLeft);
-    static const double T4_R = boost::math::pow<4>(this->temperatureRight);
+    // Per-instance state: two sources (or two ranks) must not share one
+    // temperature or one stream.
+    double const T4_L = boost::math::pow<4>(this->temperatureLeft);
+    double const T4_R = boost::math::pow<4>(this->temperatureRight);
     std::uniform_real_distribution<double> unif(0, 1);
-    static std::mt19937_64 re(0);
+    if(!this->rngSeeded_)
+    {
+        this->rng_.seed(BoundarySourceSeed(0x54574F5349444553ULL));
+        this->rngSeeded_ = true;
+    }
+    std::mt19937_64 &re = this->rng_;
 
     std::vector<Particle<T>> newParticles;
     size_t N = this->grid.GetPointNo();
