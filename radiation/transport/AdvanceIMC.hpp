@@ -319,17 +319,15 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
     }
 
     particle.timeLeft -= dt;
-    const double decayRate = absorptionOpacity * fleck * views.speedOfLight;
-    const double materialExpFactor = Expm1(-dt * decayRate);
-    // In a stationary material frame the two attenuation factors are
-    // identical. Reuse the full-precision result instead of evaluating
-    // the same transcendental function twice for every transport event.
-    const double weightExpFactor = dopplerShift == 1.0 ? materialExpFactor :
-                                   Expm1(-dt * decayRate * dopplerShift);
+    // The laboratory weight decays at the comoving rate times the Doppler
+    // factor D, and the path-length estimator integrates that same weight,
+    // w (1 - exp(-lambda D dt)) / (lambda D).
+    const double weightRate = absorptionOpacity * fleck * views.speedOfLight * dopplerShift;
+    const double weightExpFactor = Expm1(-dt * weightRate);
     double integratedEnergy = particle.weight * dt;
-    if(Abs(decayRate * dt) >= 1.0e-12)
+    if(Abs(weightRate * dt) >= 1.0e-12)
     {
-        integratedEnergy = particle.weight * materialExpFactor * (-1.0 / decayRate);
+        integratedEnergy = particle.weight * weightExpFactor * (-1.0 / weightRate);
     }
 
     particle.location.x += particle.velocity.x * dt;

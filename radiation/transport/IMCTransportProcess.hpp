@@ -572,11 +572,13 @@ public:
             double tmp2 = weightEvolutionOpacity * owner_.lightSpeed();
             double tmp = -dt * tmp2;
             double expFactor1 = std::expm1(tmp * dopplerShift);
-            double expFactor2 = std::expm1(tmp);
+            // The path-length estimator integrates the laboratory weight,
+            // which decays at the rate tmp2 * D.
+            double const weightRate = tmp2 * dopplerShift;
             double integratedForTally = particle.weight * dt;
-            if(std::abs(tmp2 * dt) >= 1e-12)
+            if(std::abs(weightRate * dt) >= 1e-12)
             {
-                integratedForTally = particle.weight * expFactor2 * (-1.0 / tmp2);
+                integratedForTally = particle.weight * expFactor1 * (-1.0 / weightRate);
             }
             particle.location += particle.velocity * dt;
             if(not owner_.parameters_.noHydroFeedback and not owner_.parameters_.postProcess.enabled)
