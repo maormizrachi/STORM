@@ -24,6 +24,9 @@ struct ObserverCrossingRecord
     double weight = 0.0;
     double frequency = 0.0;
     std::size_t sourceCellID = std::numeric_limits<std::size_t>::max();
+    // Emission weight and transport steps of the packet, for diagnostics.
+    double initialWeight = 0.0;
+    std::size_t steps = 0;
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;

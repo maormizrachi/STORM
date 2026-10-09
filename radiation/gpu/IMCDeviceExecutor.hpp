@@ -69,9 +69,11 @@ public:
                 owner_.ddmcPointGroupCutoff_,
                 owner_.ddmcPointVelocity_,
                 owner_.ddmcPointCellID_,
-                owner_.parameters_.withHydro &&
+                ((owner_.parameters_.withHydro &&
                     !owner_.parameters_.MMC &&
-                    !owner_.parameters_.staticScatterers &&
+                    !owner_.parameters_.staticScatterers) ||
+                 (owner_.parameters_.postProcess.enabled &&
+                    owner_.parameters_.postProcess.useCellVelocities)) &&
                     owner_.parameters_.ddmcUseMovingInterfaceCorrection,
                 owner_.parameters_.ddmcMaxInterfaceVelocityOverC,
                 owner_.parameters_.ddmcInterfaceTargetWeightRatio,
@@ -148,7 +150,11 @@ public:
         {
             gpuData_->DisableDDMC();
         }
-        if(owner_.parameters_.withHydro)
+        // Gas velocities are needed whenever transport runs in the comoving
+        // frame: hydro, or post-process with cell velocities.
+        if(owner_.parameters_.withHydro ||
+           (owner_.parameters_.postProcess.enabled &&
+            owner_.parameters_.postProcess.useCellVelocities))
         {
             STORM_PROFILE_REGION("storm/upload/hydro");
             gpuData_->UploadHydro(owner_.transportCellVelocities_);
@@ -313,9 +319,13 @@ public:
         bool depositMomentum = false;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            comovingTransport = owner_.parameters_.withHydro and
+            // Same frame as the host transport and DDMC engine: hydro, or
+            // post-process with cell velocities.
+            comovingTransport = (owner_.parameters_.withHydro and
                 not owner_.parameters_.MMC and
-                not owner_.parameters_.staticScatterers;
+                not owner_.parameters_.staticScatterers) or
+                (owner_.parameters_.postProcess.enabled and
+                 owner_.parameters_.postProcess.useCellVelocities);
         }
         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
         {
@@ -446,9 +456,11 @@ private:
         result.staticScatterers = owner_.parameters_.staticScatterers;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            result.comovingTransport = owner_.parameters_.withHydro and
+            result.comovingTransport = (owner_.parameters_.withHydro and
                 not owner_.parameters_.MMC and
-                not owner_.parameters_.staticScatterers;
+                not owner_.parameters_.staticScatterers) or
+                (owner_.parameters_.postProcess.enabled and
+                 owner_.parameters_.postProcess.useCellVelocities);
         }
         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
         {

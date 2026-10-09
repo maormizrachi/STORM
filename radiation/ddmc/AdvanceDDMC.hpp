@@ -64,6 +64,9 @@ struct DeviceView
     const std::size_t *leakOffsets = nullptr;
     const double *leakRates = nullptr;
     const double *ddmcLeakRates = nullptr;
+    // Upwind advection with the gas into a DDMC target (part of leakRates);
+    // null means no advection.
+    const double *advectiveLeakRates = nullptr;
     const cell_index_t *nextCellIndices = nullptr;
     const std::uint8_t *faceKinds = nullptr;
     const std::uint8_t *targetDDMCEligible = nullptr;
@@ -129,6 +132,7 @@ struct HostSnapshot
     std::vector<std::size_t> leakOffsets;
     std::vector<double> leakRates;
     std::vector<double> ddmcLeakRates;
+    std::vector<double> advectiveLeakRates;
     std::vector<cell_index_t> nextCellIndices;
     std::vector<std::uint8_t> faceKinds;
     std::vector<std::uint8_t> targetDDMCEligible;
@@ -172,6 +176,7 @@ struct HostSnapshot
         this->leakOffsets.resize(cells.size() + 1);
         this->leakRates.clear();
         this->ddmcLeakRates.clear();
+        this->advectiveLeakRates.clear();
         this->nextCellIndices.clear();
         this->faceKinds.clear();
         this->targetDDMCEligible.clear();
@@ -207,6 +212,7 @@ struct HostSnapshot
             {
                 this->leakRates.push_back(face.rate);
                 this->ddmcLeakRates.push_back(face.ddmcRate);
+                this->advectiveLeakRates.push_back(face.advectiveRate);
                 this->nextCellIndices.push_back(
                     static_cast<cell_index_t>(face.nextCellIndex));
                 this->faceKinds.push_back(
@@ -367,6 +373,7 @@ struct HostSnapshot
         result.leakOffsets = this->leakOffsets.data();
         result.leakRates = this->leakRates.data();
         result.ddmcLeakRates = this->ddmcLeakRates.data();
+        result.advectiveLeakRates = this->advectiveLeakRates.data();
         result.nextCellIndices = this->nextCellIndices.data();
         result.faceKinds = this->faceKinds.data();
         result.targetDDMCEligible = this->targetDDMCEligible.data();
@@ -429,6 +436,9 @@ struct AdvanceResult
     HostFallbackReason hostFallbackReason = HostFallbackReason::None;
     std::size_t pendingLeakFace = std::numeric_limits<std::size_t>::max();
     std::size_t extraSplitCount = 0;
+    // Energy this step absorbed (comoving weight), for the post-process
+    // observer's budget.
+    double absorbedEnergy = 0.0;
     std::uint8_t taken = 0;
     std::uint8_t entered = 0;
     std::uint8_t remotePendingFlux = 0;
@@ -1012,7 +1022,11 @@ InterfaceResult TryIMCToDDMCInterface(
     // weight.  Extra unbiased copies are emitted by the resident executor.
     particle.weight = targetComoving.weight;
     particle.frequency = targetComoving.frequency;
-    particle.initialWeight = transport::Abs(particle.weight);
+    // initialWeight is the packet's emission weight and stays fixed through the
+    // time step; a split only divides it among the copies by their number.
+    // The moving-interface correction (movingFactor) and frame changes alter
+    // the weight but not this reference, so w/w0 changes by those factors.
+    particle.initialWeight /= static_cast<double>(splitCount);
     std::uint8_t &radiationFlags = RadiationFlags(particle);
     constexpr std::uint8_t ddmcFlags =
         RadiationTransportState<PointT>::DDMCMode |
@@ -1253,7 +1267,6 @@ void ExitDDMCToTransport(ParticleT &particle,
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
     }
     radiationFlags = static_cast<std::uint8_t>(radiationFlags & ~(ddmcFlags | pending));
-    particle.initialWeight = transport::Abs(particle.weight);
 }
 
 template<typename ParticleT, typename ColdT, typename ViewsT>
@@ -1395,7 +1408,8 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         eventRate;
     const double tCensus = particle.timeLeft;
     double tCutoff = DBL_MAX;
-    if(pgrw && groupCutoff > 0 && groupCutoff <= views.groupCount &&
+    // Compression only shifts frequencies in the comoving frame.
+    if(views.comovingTransport && pgrw && groupCutoff > 0 && groupCutoff <= views.groupCount &&
        velocityDivergence < 0.0)
     {
         double frequency = ClampFrequency(
@@ -1485,6 +1499,7 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         }
     }
     particle.weight *= 1.0 + expFactor;
+    result.absorbedEnergy = oldWeight - particle.weight;
     particle.timeLeft -= dt;
     if(ddmc.stepCount != nullptr)
     {
@@ -1529,7 +1544,6 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         LorentzToLab(particle, views, cellIndex);
         particle.frequency = ClampFrequency(
             views.energyBoundaries, views.groupCount, particle.frequency);
-        particle.initialWeight = transport::Abs(particle.weight);
         radiationFlags = static_cast<std::uint8_t>(
             radiationFlags & ~(ddmcFlags | pending));
         result.step.change = ParticleStatus::NO_CELL_MOVE;
@@ -1634,7 +1648,6 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         LorentzToLab(particle, views, cellIndex);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
         radiationFlags = static_cast<std::uint8_t>(radiationFlags & ~(ddmcFlags | pending));
-        particle.initialWeight = transport::Abs(particle.weight);
         result.step.change = ParticleStatus::NO_CELL_MOVE;
         result.event = AdvanceEvent::Upscatter;
         return result;
@@ -1696,8 +1709,6 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
             particle.frequency = ClampFrequency(
                 views.energyBoundaries, views.groupCount,
                 particle.frequency);
-            // Reference the cutoff to the boosted laboratory weight.
-            particle.initialWeight = transport::Abs(particle.weight);
             radiationFlags = static_cast<std::uint8_t>(
                 radiationFlags & ~(ddmcFlags | pending));
             cold.pendingFlux = PointT{};
@@ -1732,7 +1743,60 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
         return result;
     }
     const double rate = ddmc.leakRates[chosen];
-    const bool useDDMCChannel = (ddmc.ddmcLeakRates[chosen] > 0.0) and CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) < (ddmc.ddmcLeakRates[chosen] / rate);
+    // Channels of the face: advection, DDMC diffusion, transport. A face
+    // without advection draws exactly as before.
+    const double advectiveRate = ddmc.advectiveLeakRates != nullptr
+        ? ddmc.advectiveLeakRates[chosen] : 0.0;
+    bool advectiveHop = false;
+    bool useDDMCChannel = false;
+    if(advectiveRate > 0.0)
+    {
+        const double channelPick = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) * rate;
+        advectiveHop = channelPick < advectiveRate;
+        useDDMCChannel = !advectiveHop && ddmc.ddmcLeakRates[chosen] > 0.0 &&
+            channelPick < advectiveRate + ddmc.ddmcLeakRates[chosen];
+    }
+    else
+    {
+        useDDMCChannel = (ddmc.ddmcLeakRates[chosen] > 0.0) and CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++) < (ddmc.ddmcLeakRates[chosen] / rate);
+    }
+    if(advectiveHop)
+    {
+        // Carried by the gas into the downstream DDMC cell with its comoving
+        // weight and frequency, and nothing added to the face-flux moment
+        // (it estimates the diffusive flux F0).
+        particle.location = ddmc.faceCenters[chosen];
+        SampleRandomVelocity(particle, views.speedOfLight);
+        radiationFlags = static_cast<std::uint8_t>(radiationFlags | ddmcFlags);
+        result.event = AdvanceEvent::DDMCLeak;
+        AccumulateCounter(ddmc.leakCount);
+        AccumulateCounter(ddmc.residentLeakCount);
+        if(static_cast<std::size_t>(ddmc.nextCellIndices[chosen]) >= ddmc.cellCount)
+        {
+            AccumulateCounter(ddmc.remoteResidentLeakCount);
+        }
+        result.step.change = ParticleStatus::CELL_MOVE;
+        result.step.nextCellIndex = ddmc.nextCellIndices[chosen];
+        if(views.grid.cellFaceOffsets != nullptr &&
+           views.grid.nextCellIndices != nullptr &&
+           views.grid.boundaryCrossings != nullptr)
+        {
+            const std::size_t begin = views.grid.cellFaceOffsets[cellIndex];
+            const std::size_t end = views.grid.cellFaceOffsets[cellIndex + 1];
+            for(std::size_t directedFace = begin;
+                directedFace < end; ++directedFace)
+            {
+                if(views.grid.nextCellIndices[directedFace] ==
+                   result.step.nextCellIndex)
+                {
+                    result.step.boundaryCrossing =
+                        views.grid.boundaryCrossings[directedFace];
+                    break;
+                }
+            }
+        }
+        return result;
+    }
     const double mu = useDDMCChannel? SampleAsymptoticMuPortable(CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++)) : transport::Sqrt(CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++));
     const double phi = 6.28318530717958647692 * CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
     const double sinTheta = transport::Sqrt((1.0 - mu * mu) > 0.0 ? 1.0 - mu * mu : 0.0);
@@ -1782,7 +1846,6 @@ AdvanceResult<typename ViewsT::point_type> AdvanceDDMC(ParticleT &particle, Cold
     {
         LorentzToLab(particle, views, cellIndex);
         particle.frequency = ClampFrequency(views.energyBoundaries, views.groupCount, particle.frequency);
-        particle.initialWeight = transport::Abs(particle.weight);
     }
 
     // Face-flux moment R = sum_f E_f n_f: the energy crossing the face is

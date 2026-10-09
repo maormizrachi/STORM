@@ -26,7 +26,8 @@ enum class EligibilityReason : unsigned char
     NoDiffusionCoefficient,
     BoundaryExcluded,
     NoLeakage,
-    ConversionNotProbabilistic
+    ConversionNotProbabilistic,
+    AdvectionDominated
 };
 
 template<typename PointT>
@@ -39,6 +40,8 @@ struct FaceLeak
     double internalRate = 0.0;
     double boundaryRate = 0.0;
     double ddmcRate = 0.0;
+    // Upwind advection with the gas into a DDMC target, part of rate.
+    double advectiveRate = 0.0;
     double transportRate = 0.0;
     double ddmcFraction = 0.0;
     double area = 0.0;

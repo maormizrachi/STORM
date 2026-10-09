@@ -44,6 +44,45 @@ public:
     explicit DDMCEngine(Owner &owner) : Base(owner)
     {}
 
+    // DDMC residents are carried in the comoving frame of their cell.
+    bool comovingFrameActive() const
+    {
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            return (owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                    !owner_.parameters_.staticScatterers) ||
+                   (owner_.parameters_.postProcess.enabled &&
+                    owner_.parameters_.postProcess.useCellVelocities);
+        }
+        return false;
+    }
+
+    // div(v E0): packets keep lab positions on a mesh frozen during transport,
+    // so the gas carries DDMC radiation only through these upwind leaks.
+    bool advectionActive() const
+    {
+        return owner_.parameters_.ddmcAdvection && comovingFrameActive();
+    }
+
+    // Gas velocity across a face along `normal`, the mean of the two cells'.
+    // The velocity divergence and the advection leaks share it, so that the
+    // leak rates out of a cell minus those into it sum to its divergence.
+    double faceNormalVelocity(std::size_t cellIndex, std::size_t nextCellIndex, const PointT &normal) const
+    {
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            return 0.5 * ScalarProd(
+                owner_.cells_[cellIndex].velocity + owner_.ddmcPointVelocity_[nextCellIndex], normal);
+        }
+        else
+        {
+            (void) cellIndex;
+            (void) nextCellIndex;
+            (void) normal;
+            return 0.0;
+        }
+    }
+
     double computeDDMCFaceDiffusionCoefficient(const CellT &cell, double faceTemperature, std::size_t groupCutoff) const
     {
         if(!(faceTemperature > 0.0) || !std::isfinite(faceTemperature))
@@ -113,6 +152,9 @@ public:
         owner_.ddmcExternalSourceThermalizedEnergy_ = 0.0;
         owner_.ddmcExternalSourceToIMCEnergy_ = 0.0;
         owner_.ddmcExternalSourceMinimumFaceOpticalDepth_ = std::numeric_limits<double>::infinity();
+        owner_.ddmcAdvectionDominatedCellCount_ = 0;
+        owner_.ddmcMaxCellAdvectionPeclet_ = 0.0;
+        owner_.ddmcAdvectionPecletHistogram_.fill(0);
 
         // Eligibility is exchanged separately from the local cell data.  This
         // is important for Voronoi/MPI grids: a ghost index is not a local cell
@@ -298,6 +340,34 @@ public:
                 }
             }
 
+            // Advection against diffusion within the cell, |v| (L/2) / D. Like
+            // the boundary exclusions it is applied before eligibility is
+            // advertised to neighbouring ranks.
+            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+            {
+                if(data.eligible && advectionActive() && data.diffusionCoefficient > 0.0)
+                {
+                    double const peclet = fastabs(cell.velocity) * 0.5 * meanChordLength /
+                        data.diffusionCoefficient;
+                    if(std::isfinite(peclet))
+                    {
+                        owner_.ddmcMaxCellAdvectionPeclet_ = std::max(owner_.ddmcMaxCellAdvectionPeclet_, peclet);
+                        std::size_t bin = 0;
+                        for(double edge = 0.01; bin + 1 < owner_.ddmcAdvectionPecletHistogram_.size() && peclet >= edge; edge *= 10.0)
+                        {
+                            ++bin;
+                        }
+                        ++owner_.ddmcAdvectionPecletHistogram_[bin];
+                    }
+                    if(!(peclet <= owner_.parameters_.ddmcMaxCellAdvectionPeclet))
+                    {
+                        data.eligible = false;
+                        data.eligibilityReason = ddmc::EligibilityReason::AdvectionDominated;
+                        ++owner_.ddmcAdvectionDominatedCellCount_;
+                    }
+                }
+            }
+
             owner_.ddmcPointEligible_[i] = data.eligible ? 1 : 0;
             owner_.ddmcPointDiffusionCoefficient_[i] = data.diffusionCoefficient;
             owner_.ddmcPointSigmaDiffusion_[i] = data.sigmaDiffusion;
@@ -412,8 +482,15 @@ public:
                         normal = -normal;
                     }
                     PointT targetVelocity = owner_.ddmcPointVelocity_[next];
-                    divergence += 0.5 * ScalarProd(
-                        owner_.cells_[i].velocity + targetVelocity, normal) *
+                    // A CER source face re-emits in the outer cell's comoving
+                    // frame, as the IMC transport does, so the radiation there
+                    // works against that cell's gas alone.
+                    bool const sourceFace = owner_.postProcessExternalSourceMode_ &&
+                        owner_.postProcessExternalSourceFaceIndex_.count(faceIndex) > 0;
+                    double const normalVelocity = sourceFace
+                        ? ScalarProd(owner_.cells_[i].velocity, normal)
+                        : faceNormalVelocity(i, next, normal);
+                    divergence += normalVelocity *
                         owner_.componentGrid().GetArea(faceIndex);
                     maxJump = std::max(maxJump,
                         fastabs(targetVelocity - owner_.cells_[i].velocity) *
@@ -695,10 +772,23 @@ public:
                 // Computed for every face, not only when the provisional
                 // target leaves part of the band, because a face whose target
                 // is rejected later is demoted to this transport rate.
-                double const boundaryRate = ddmc::InterfaceBoundaryLeakRate(
+                double boundaryRate = ddmc::InterfaceBoundaryLeakRate(
                     area, volume, data.sigmaDiffusion,
                     data.singleScatterAlbedo, sourceDistance,
                     owner_.lightSpeed());
+                // Gas moving through an interface to IMC carries radiation
+                // across it: the DDMC side must emit cE0/4 + u_n E0/2 for the
+                // net flux to be u_n E0 (the IMC side brings cE0/4 - u_n E0/2).
+                if(advectionActive())
+                {
+                    double const normalVelocity = faceNormalVelocity(i, nextCellIndex, normal);
+                    double const limit = owner_.parameters_.ddmcMaxInterfaceVelocityOverC;
+                    double const betaNormal = std::clamp(normalVelocity * owner_.inverseLightSpeed(), -limit, limit);
+                    if(std::isfinite(betaNormal))
+                    {
+                        boundaryRate *= 1.0 + 2.0 * betaNormal;
+                    }
+                }
                 std::size_t const targetCutoff =
                     nextCellIndex < owner_.ddmcPointGroupCutoff_.size()
                     ? owner_.ddmcPointGroupCutoff_[nextCellIndex] : 0;
@@ -725,7 +815,19 @@ public:
                 double const ddmcRate = ddmcFraction * internalRate;
                 double const transportRate =
                     (1.0 - ddmcFraction) * boundaryRate;
-                double const rate = ddmcRate + transportRate;
+                // First-order upwind advection into a DDMC target, for the part
+                // of the band that stays in DDMC there. Interfaces to IMC carry
+                // none: their O(v/c) balance is the moving-interface correction.
+                double advectiveRate = 0.0;
+                if(ddmcRate > 0.0 && advectionActive())
+                {
+                    double const normalVelocity = faceNormalVelocity(i, nextCellIndex, normal);
+                    if(normalVelocity > 0.0 && std::isfinite(normalVelocity))
+                    {
+                        advectiveRate = ddmcFraction * area * normalVelocity / volume;
+                    }
+                }
+                double const rate = ddmcRate + transportRate + advectiveRate;
                 if(rate > 0.0 && std::isfinite(rate))
                 {
                     DDMCFaceLeak faceLeak;
@@ -738,6 +840,7 @@ public:
                     faceLeak.internalRate = internalRate;
                     faceLeak.boundaryRate = boundaryRate;
                     faceLeak.ddmcRate = ddmcRate;
+                    faceLeak.advectiveRate = advectiveRate;
                     faceLeak.transportRate = transportRate;
                     faceLeak.ddmcFraction = ddmcFraction;
                     faceLeak.area = area;
@@ -800,6 +903,7 @@ public:
                 {
                     face.kind = ddmc::FaceKind::InterfaceToIMC;
                     face.ddmcRate = 0.0;
+                    face.advectiveRate = 0.0;
                     face.ddmcFraction = 0.0;
                     face.transportRate = face.boundaryRate;
                     face.rate = face.transportRate;
@@ -883,6 +987,41 @@ public:
                     ++owner_.ddmcLeakReciprocityCheckCount_;
                     break;
                 }
+            }
+        }
+
+        // One line per step: how strongly the gas advects the DDMC cells, to
+        // choose ddmcMaxCellAdvectionPeclet from data. Collective, like the
+        // exchanges above.
+        if(advectionActive())
+        {
+            std::array<unsigned long long, 7> counts{};
+            for(std::size_t bin = 0; bin < owner_.ddmcAdvectionPecletHistogram_.size(); ++bin)
+            {
+                counts[bin] = owner_.ddmcAdvectionPecletHistogram_[bin];
+            }
+            counts[6] = owner_.ddmcAdvectionDominatedCellCount_;
+            double maxPeclet = owner_.ddmcMaxCellAdvectionPeclet_;
+            int rank = 0;
+    #ifdef STORM_WITH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, counts.data(), static_cast<int>(counts.size()),
+                          MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, &maxPeclet, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    #endif
+            unsigned long long cells = 0;
+            for(std::size_t bin = 0; bin < 6; ++bin)
+            {
+                cells += counts[bin];
+            }
+            if(rank == 0 && cells > 0)
+            {
+                std::cerr << "DDMC_ADVECTION cells=" << cells
+                          << " peclet_max=" << maxPeclet
+                          << " peclet_hist_lt0.01/lt0.1/lt1/lt10/lt100/ge100="
+                          << counts[0] << "/" << counts[1] << "/" << counts[2] << "/"
+                          << counts[3] << "/" << counts[4] << "/" << counts[5]
+                          << " advection_dominated=" << counts[6] << std::endl;
             }
         }
     }
@@ -992,15 +1131,7 @@ public:
         std::size_t cellIndex = particle.cellIndex;
         bool const packetInDDMC = particle.radiationState.isDDMC();
         bool convertedIncomingToComoving = false;
-        bool useComovingFrame = false;
-        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
-        {
-            useComovingFrame =
-                (owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                    !owner_.parameters_.staticScatterers) ||
-                (owner_.parameters_.postProcess.enabled &&
-                    owner_.parameters_.postProcess.useCellVelocities);
-        }
+        bool const useComovingFrame = comovingFrameActive();
 
         auto finalizePolarization = [&](const PointT &finalVelocity)
         {
@@ -1056,7 +1187,6 @@ public:
                 }
             }
             particle.radiationState.clearDDMC();
-            particle.initialWeight = std::abs(particle.weight);
     #ifdef MONTECARLO_POLARIZATION
             if(owner_.polarizationEnabled())
             {
@@ -1165,7 +1295,6 @@ public:
                 {
                     radiation_imc_detail::lorentzTransformToLab<PointT>(particle, owner_.cells_[cellIndex], owner_.lightSpeed());
                     owner_.clampFrequencyToBounds(particle.frequency);
-                    particle.initialWeight = std::abs(particle.weight);
                 }
             }
     #ifdef MONTECARLO_POLARIZATION
@@ -1205,7 +1334,9 @@ public:
         double tEvent = -std::log(owner_.randomUnitOpen(particle)) / eventRate;
         double tCensus = particle.timeLeft;
         double tCutoff = std::numeric_limits<double>::max();
-        if(owner_.parameters_.withMultigroupDDMC &&
+        // Compression only shifts frequencies when the packet is in the gas
+        // frame; the divergence exists even when velocities are ignored.
+        if(useComovingFrame && owner_.parameters_.withMultigroupDDMC &&
             data.groupCutoff > 0 && data.groupCutoff <= NumGroups &&
             data.velocityDivergence < 0.0)
         {
@@ -1243,9 +1374,7 @@ public:
 
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
-            if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                !owner_.parameters_.staticScatterers &&
-                data.velocityDivergence != 0.0)
+            if(useComovingFrame && data.velocityDivergence != 0.0)
             {
                 double const logShift = -data.velocityDivergence * dt / 3.0;
                 if(std::isfinite(logShift) && logShift != 0.0)
@@ -1321,11 +1450,22 @@ public:
             }
         }
 
+        double const weightBeforeAbsorption = particle.weight;
         particle.weight *= 1.0 + expFactor;
         particle.timeLeft -= dt;
+        // The observer's energy budget counts what DDMC absorbs, cuts off and
+        // leaves at census, as the IMC transport does for its packets.
+        if(owner_.parameters_.postProcess.enabled and owner_.observer_)
+        {
+            owner_.observer_->addAbsorbedEnergy(weightBeforeAbsorption - particle.weight);
+        }
 
         if(std::abs(particle.weight) < particle.initialWeight * owner_.parameters_.weightCutoffFraction)
         {
+            if(owner_.parameters_.postProcess.enabled and owner_.observer_)
+            {
+                owner_.observer_->addCutoffEnergy(particle.weight);
+            }
             particle.radiationState.clearDDMC();
             functionality.change = ParticleStatus::REMOVE;
             if(!owner_.parameters_.noHydroFeedback)
@@ -1429,6 +1569,10 @@ public:
             finalizePolarization(particle.velocity);
             convertResidentToLab();
             particle.radiationState.clearDDMC();
+            if(owner_.observer_)
+            {
+                owner_.observer_->addTimedOutEnergy(particle.weight);
+            }
             functionality.change = ParticleStatus::DONE;
             ++owner_.ddmcCensusCount_;
             return true;
@@ -1528,7 +1672,6 @@ public:
                     static constexpr double nudge = 1.0e-8;
                     particle.location = (1.0 - nudge) * source.location + nudge * owner_.componentGrid().GetMeshPoint(cellIndex);
                     particle.radiationState.clearDDMC();
-                    particle.initialWeight = std::abs(particle.weight);
                     functionality.change = ParticleStatus::NO_CELL_MOVE;
                     ++owner_.ddmcExternalSourceToIMCCount_;
                     owner_.ddmcExternalSourceToIMCEnergy_ += eventEnergy;
@@ -1558,7 +1701,45 @@ public:
             }
 
             constexpr double DDMC_PI = 3.14159265358979323846;
-            bool const useDDMCChannel = chosen->ddmcRate > 0.0 and owner_.randomUnitOpen(particle) < chosen->ddmcRate / chosen->rate;
+            // Channels of the face: advection, DDMC diffusion, transport. A face
+            // without advection draws exactly as before.
+            bool advectiveHop = false;
+            bool useDDMCChannel = false;
+            if(chosen->advectiveRate > 0.0)
+            {
+                double const channelPick = owner_.randomUnitOpen(particle) * chosen->rate;
+                advectiveHop = channelPick < chosen->advectiveRate;
+                useDDMCChannel = !advectiveHop && chosen->ddmcRate > 0.0 &&
+                    channelPick < chosen->advectiveRate + chosen->ddmcRate;
+            }
+            else
+            {
+                useDDMCChannel = chosen->ddmcRate > 0.0 and owner_.randomUnitOpen(particle) < chosen->ddmcRate / chosen->rate;
+            }
+            if(advectiveHop)
+            {
+                // Carried by the gas into the downstream DDMC cell. The resident
+                // keeps its comoving weight and frequency (neighbouring comoving
+                // frames differ at O(beta^2) for isotropic radiation) and adds
+                // nothing to the face-flux moment, which estimates the diffusive
+                // flux F0.
+                particle.location = leakFaceCenter;
+                particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
+                particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+                particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
+                particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);
+                functionality.change = ParticleStatus::CELL_MOVE;
+                functionality.nextCellIndex = chosen->nextCellIndex;
+                functionality.boundaryCrossing = owner_.componentGrid().IsPointOutsideBox(chosen->nextCellIndex);
+                ++owner_.ddmcResidentLeakCount_;
+                if(chosen->nextCellIndex >= owner_.componentGrid().GetPointNo())
+                {
+                    ++owner_.ddmcRemoteResidentLeakCount_;
+                }
+                ++owner_.ddmcAdvectiveLeakCount_;
+                ++owner_.ddmcLeakCount_;
+                return true;
+            }
             double mu = useDDMCChannel
                 ? ddmc::SampleAsymptoticMu(owner_.randomUnitOpen(particle))
                 : std::sqrt(owner_.randomUnitOpen(particle));
@@ -1629,7 +1810,7 @@ public:
             double const fluxWeightComoving = particle.weight;
             if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
             {
-                if(owner_.parameters_.withHydro && !owner_.parameters_.MMC && !owner_.parameters_.staticScatterers && !targetDDMC)
+                if(useComovingFrame && !targetDDMC)
                 {
                     CellT sourceCell = owner_.cells_[cellIndex];
                     sourceCell.velocity = owner_.cells_[cellIndex].velocity;
@@ -1638,7 +1819,6 @@ public:
                     particle.velocity = transportParticle.velocity;
                     particle.frequency = transportParticle.frequency;
                     particle.weight = transportParticle.weight;
-                    particle.initialWeight = std::abs(particle.weight);
                 }
             }
 
@@ -1705,6 +1885,10 @@ public:
             {
                 finalizePolarization(particle.velocity);
                 particle.radiationState.clearDDMC();
+                if(owner_.observer_)
+                {
+                    owner_.observer_->addTimedOutEnergy(particle.weight);
+                }
                 functionality.change = ParticleStatus::DONE;
                 ++owner_.ddmcCensusCount_;
                 return true;
@@ -2110,7 +2294,11 @@ public:
         targetComoving.weight /= static_cast<double>(splitCount);
         particle.weight = targetComoving.weight;
         particle.frequency = targetComoving.frequency;
-        particle.initialWeight = std::abs(particle.weight);
+        // initialWeight is the packet's emission weight and stays fixed through the
+        // time step; a split only divides it among the copies by their number.
+        // The moving-interface correction (movingFactor) and frame changes alter
+        // the weight but not this reference, so w/w0 changes by those factors.
+        particle.initialWeight /= static_cast<double>(splitCount);
     #ifdef MONTECARLO_POLARIZATION
         if(owner_.polarizationEnabled())
         {
@@ -2315,7 +2503,6 @@ public:
         particle.velocity = targetComoving.velocity;
         particle.frequency = targetComoving.frequency;
         particle.weight = targetComoving.weight;
-        particle.initialWeight = std::abs(particle.weight);
         // Energy entering through the source face counts as -E n_out.
         owner_.addDDMCFluxContribution(cellIndex, -particle.weight * outwardNormal);
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);

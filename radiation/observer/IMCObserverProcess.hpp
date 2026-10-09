@@ -384,7 +384,8 @@ public:
         }
         static constexpr double nudge = 1.0e-8;
         materialParticle.location = (1.0 - nudge) * source.location + nudge * owner_.componentGrid().GetMeshPoint(cellIndex);
-        materialParticle.initialWeight = std::abs(materialParticle.weight);
+        // Re-emission keeps the packet's emission weight as the cutoff
+        // reference; it does not change within the time step.
         materialParticle.radiationState.clearDDMC();
         particle = materialParticle;
         functionality.change = ParticleStatus::NO_CELL_MOVE;
@@ -403,6 +404,8 @@ public:
         record.weight = particle.weight;
         record.frequency = particle.frequency;
         record.sourceCellID = particle.sourceCellID;
+        record.initialWeight = particle.initialWeight;
+        record.steps = static_cast<std::size_t>(particle.steps);
     #ifdef MONTECARLO_POLARIZATION
         if(owner_.polarizationEnabled())
         {

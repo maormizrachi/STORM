@@ -389,6 +389,20 @@ public:
                     }
                     if(result.taken)
                     {
+                        // The observer's energy budget counts what DDMC absorbs,
+                        // cuts off and leaves at census, as on the host path.
+                        if(owner_.parameters_.postProcess.enabled and owner_.observer_)
+                        {
+                            owner_.observer_->addAbsorbedEnergy(result.absorbedEnergy);
+                            if(result.event == ddmc::AdvanceEvent::Census)
+                            {
+                                owner_.observer_->addTimedOutEnergy(particle.weight);
+                            }
+                            else if(result.event == ddmc::AdvanceEvent::AbsorptionCutoff)
+                            {
+                                owner_.observer_->addCutoffEnergy(particle.weight);
+                            }
+                        }
                         ++owner_.ddmcStepCount_;
                         if(result.event == ddmc::AdvanceEvent::Census)
                         {
@@ -678,8 +692,7 @@ public:
                     polarization::initializeIfNeeded<PointT>(polarizationMaterialParticle);
                     if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                     {
-                        if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                           !owner_.parameters_.staticScatterers)
+                        if(useComovingTransportFrame)
                         {
                             radiation_imc_detail::lorentzTransformToComoving<PointT>(
                                 polarizationMaterialParticle, cell,
@@ -810,8 +823,10 @@ public:
                 }
                 if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                 {
-                    if(owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
-                       !owner_.parameters_.staticScatterers &&
+                    // Scatters are elastic in the comoving frame: the packet
+                    // goes back to the lab frame whenever it was taken out of
+                    // it (hydro, or post-process with cell velocities).
+                    if(useComovingTransportFrame &&
                        !isComptonScatter && !comptonTransformedToLab)
                     {
                         double weightBefore = particle.weight;

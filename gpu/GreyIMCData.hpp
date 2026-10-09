@@ -56,6 +56,7 @@ public:
           ddmcLeakOffsets_("storm_ddmc_leak_offsets", 0),
           ddmcLeakRates_("storm_ddmc_leak_rates", 0),
           ddmcLeakDDMCRates_("storm_ddmc_leak_ddmc_rates", 0),
+          ddmcLeakAdvectiveRates_("storm_ddmc_leak_advective_rates", 0),
           ddmcNextCellIndices_("storm_ddmc_next_cells", 0),
           ddmcFaceKinds_("storm_ddmc_face_kinds", 0),
           ddmcTargetEligible_("storm_ddmc_target_eligible", 0),
@@ -362,6 +363,7 @@ public:
         Resize(this->ddmcLeakOffsets_, snapshot.leakOffsets.size());
         Resize(this->ddmcLeakRates_, leakCount);
         Resize(this->ddmcLeakDDMCRates_, leakCount);
+        Resize(this->ddmcLeakAdvectiveRates_, leakCount);
         Resize(this->ddmcNextCellIndices_, leakCount);
         Resize(this->ddmcFaceKinds_, leakCount);
         Resize(this->ddmcTargetEligible_, leakCount);
@@ -418,6 +420,8 @@ public:
                 snapshot.leakRates[leak];
             this->ddmcLeakDDMCRates_.h_view(leak) =
                 snapshot.ddmcLeakRates[leak];
+            this->ddmcLeakAdvectiveRates_.h_view(leak) =
+                snapshot.advectiveLeakRates[leak];
             this->ddmcNextCellIndices_.h_view(leak) =
                 snapshot.nextCellIndices[leak];
             this->ddmcFaceKinds_.h_view(leak) =
@@ -484,6 +488,7 @@ public:
         SyncToDevice(this->ddmcLeakOffsets_);
         SyncToDevice(this->ddmcLeakRates_);
         SyncToDevice(this->ddmcLeakDDMCRates_);
+        SyncToDevice(this->ddmcLeakAdvectiveRates_);
         SyncToDevice(this->ddmcNextCellIndices_);
         SyncToDevice(this->ddmcFaceKinds_);
         SyncToDevice(this->ddmcTargetEligible_);
@@ -701,6 +706,8 @@ public:
             this->ddmcLeakRates_.d_view.data();
         result.ddmc.ddmcLeakRates =
             this->ddmcLeakDDMCRates_.d_view.data();
+        result.ddmc.advectiveLeakRates =
+            this->ddmcLeakAdvectiveRates_.d_view.data();
         result.ddmc.nextCellIndices =
             this->ddmcNextCellIndices_.d_view.data();
         result.ddmc.faceKinds =
@@ -1044,6 +1051,7 @@ private:
     Kokkos::DualView<std::size_t*> ddmcLeakOffsets_;
     Kokkos::DualView<double*> ddmcLeakRates_;
     Kokkos::DualView<double*> ddmcLeakDDMCRates_;
+    Kokkos::DualView<double*> ddmcLeakAdvectiveRates_;
     Kokkos::DualView<cell_index_t*> ddmcNextCellIndices_;
     Kokkos::DualView<std::uint8_t*> ddmcFaceKinds_;
     Kokkos::DualView<std::uint8_t*> ddmcTargetEligible_;

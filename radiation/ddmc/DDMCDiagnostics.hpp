@@ -1,6 +1,7 @@
 #ifndef STORM_RADIATION_DDMC_DIAGNOSTICS_HPP
 #define STORM_RADIATION_DDMC_DIAGNOSTICS_HPP
 
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <map>
@@ -97,6 +98,13 @@ struct IMCDDMCDiagnostics
     std::size_t ddmcFallbackCount_ = 0;
     std::size_t ddmcMovingInterfaceBypassCount_ = 0;
     double ddmcMovingInterfaceMaxFactor_ = 0.0;
+    // Advection of DDMC radiation with the gas: host-path hops, and the cell
+    // Peclet number |v| (L/2) / D of the eligible cells (largest value, and a
+    // histogram with upper edges 0.01, 0.1, 1, 10, 100, infinity).
+    std::size_t ddmcAdvectiveLeakCount_ = 0;
+    std::size_t ddmcAdvectionDominatedCellCount_ = 0;
+    double ddmcMaxCellAdvectionPeclet_ = 0.0;
+    std::array<std::size_t, 6> ddmcAdvectionPecletHistogram_{};
 };
 
 } // namespace STORM::radiation_imc_detail

@@ -167,6 +167,13 @@ public:
                 "RadiationIMC DDMC interface controls are outside their valid ranges");
         }
         if(owner_.parameters_.withDDMC &&
+            !(owner_.parameters_.ddmcMaxCellAdvectionPeclet > 0.0))
+        {
+            StormError eo("RadiationIMC DDMC max cell advection Peclet number must be positive (infinity disables the limit)");
+            eo.addEntry("ddmcMaxCellAdvectionPeclet", owner_.parameters_.ddmcMaxCellAdvectionPeclet);
+            throw eo;
+        }
+        if(owner_.parameters_.withDDMC &&
             (!std::isfinite(owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection) ||
             owner_.parameters_.ddmcMaxMovingInterfaceWeightCorrection <= 0.0))
         {
@@ -911,6 +918,7 @@ public:
                 owner_.ddmcFallbackCount_ = 0;
                 owner_.ddmcMovingInterfaceBypassCount_ = 0;
                 owner_.ddmcMovingInterfaceMaxFactor_ = 0.0;
+                owner_.ddmcAdvectiveLeakCount_ = 0;
             }
             else
             {

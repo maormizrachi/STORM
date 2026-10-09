@@ -432,6 +432,23 @@ public:
     {
         return this->ddmcMovingInterfaceMaxFactor_;
     }
+    // Advection of DDMC radiation with the gas (this rank, this step).
+    inline std::size_t getDDMCAdvectiveLeakCount(void) const
+    {
+        return this->ddmcAdvectiveLeakCount_;
+    }
+    inline std::size_t getDDMCAdvectionDominatedCellCount(void) const
+    {
+        return this->ddmcAdvectionDominatedCellCount_;
+    }
+    inline double getDDMCMaxCellAdvectionPeclet(void) const
+    {
+        return this->ddmcMaxCellAdvectionPeclet_;
+    }
+    inline std::array<std::size_t, 6> const& getDDMCAdvectionPecletHistogram(void) const
+    {
+        return this->ddmcAdvectionPecletHistogram_;
+    }
     inline double getDDMCLeakReciprocityResidualMax(void) const
     {
         return this->ddmcLeakReciprocityResidualMax_;

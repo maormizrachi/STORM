@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <iosfwd>
+#include <limits>
 #include <ostream>
 #include <string>
 
@@ -71,6 +72,14 @@ struct RadiationIMCParameters
     double ddmcMinCellOpticalDepth = 15.0;
     double ddmcExternalSourceMinFaceOpticalDepth = 5.0;
     bool ddmcUseMovingInterfaceCorrection = true;
+    // Advection of DDMC radiation with the gas, div(v E0) of the O(v/c)
+    // comoving-frame diffusion equation. Packets keep lab positions on a mesh
+    // frozen during transport, so the gas would otherwise not carry DDMC
+    // radiation; it applies whenever DDMC works in the comoving frame.
+    bool ddmcAdvection = true;
+    // Cells whose advection Peclet number |v| (L/2) / D exceeds this stay in
+    // IMC. Infinite (the default) never excludes a cell.
+    double ddmcMaxCellAdvectionPeclet = std::numeric_limits<double>::infinity();
     double ddmcMaxInterfaceVelocityOverC = 0.1;
     double ddmcInterfaceTargetWeightRatio = 2.0;
     std::size_t ddmcMaxInterfaceSplits = 64;
@@ -158,6 +167,9 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
            << parameters.ddmcExternalSourceMinFaceOpticalDepth << '\n';
         os << "\tDDMC moving-interface correction: "
            << parameters.ddmcUseMovingInterfaceCorrection << '\n';
+        os << "\tDDMC advection: " << parameters.ddmcAdvection << '\n';
+        os << "\tDDMC max cell advection Peclet: "
+           << parameters.ddmcMaxCellAdvectionPeclet << '\n';
         os << "\tDDMC maximum interface velocity/c: "
            << parameters.ddmcMaxInterfaceVelocityOverC << '\n';
         os << "\tDDMC maximum group cutoff: "
