@@ -498,6 +498,17 @@ public:
                 }
                 data.velocityDivergence = divergence / volume;
                 data.maxFaceVelocityJumpOverC = maxJump;
+                // Clock rate of the frozen-flow compression limit: the faster
+                // of the cell's compression rate |div v| and its flow rate
+                // |v| / r about the post-process center, with r at least the
+                // cell size so cells at the center do not divide by zero.
+                auto const &clockCenter = owner_.parameters_.postProcess.compressionCenter;
+                PointT const compressionCenter(clockCenter[0], clockCenter[1], clockCenter[2]);
+                double const clockRadius = std::max(
+                    static_cast<double>(fastabs(center - compressionCenter)), std::cbrt(volume));
+                double const flowRate =
+                    static_cast<double>(fastabs(owner_.cells_[i].velocity)) / clockRadius;
+                data.compressionClockRate = std::max(std::abs(data.velocityDivergence), flowRate);
             }
         }
 
@@ -1334,6 +1345,11 @@ public:
         double tEvent = -std::log(owner_.randomUnitOpen(particle)) / eventRate;
         double tCensus = particle.timeLeft;
         double tCutoff = std::numeric_limits<double>::max();
+        // Compression time the packet may still receive under the post-process
+        // frozen-flow limit (infinite without one): beyond it the shift stops
+        // and the band top can no longer be reached by compression.
+        double const compressionAllowance =
+            owner_.compressionAllowance(particle, data.compressionClockRate);
         // Compression only shifts frequencies when the packet is in the gas
         // frame; the divergence exists even when velocities are ignored.
         if(useComovingFrame && owner_.parameters_.withMultigroupDDMC &&
@@ -1347,9 +1363,27 @@ public:
             if(frequency > 0.0 and frequency < cutoffFrequency and growthRate > 0.0)
             {
                 tCutoff = std::log(cutoffFrequency / frequency) / growthRate;
+                if(tCutoff > compressionAllowance)
+                {
+                    tCutoff = std::numeric_limits<double>::max();
+                }
             }
         }
         double dt = std::min({tEvent, tCensus, tCutoff});
+        // The part of this step during which the gas still compresses (or
+        // expands) the packet.
+        double const compressionDt = std::min(dt, compressionAllowance);
+        if(useComovingFrame && data.velocityDivergence != 0.0)
+        {
+            ++owner_.ddmcCompressionMovingStepCount_;
+        }
+        if(useComovingFrame && data.velocityDivergence != 0.0 &&
+           compressionAllowance > 0.0 && compressionAllowance < dt)
+        {
+            // The packet's clock runs out during this step.
+            ++owner_.ddmcCompressionLimitedStepCount_;
+        }
+        owner_.advanceCompressionClock(particle, data.compressionClockRate, dt);
         bool const censusEvent = tCensus <= tEvent && tCensus <= tCutoff;
         bool const cutoffEvent = tCutoff < tEvent && tCutoff < tCensus;
 
@@ -1376,14 +1410,32 @@ public:
         {
             if(useComovingFrame && data.velocityDivergence != 0.0)
             {
-                double const logShift = -data.velocityDivergence * dt / 3.0;
+                double const logShift = -data.velocityDivergence * compressionDt / 3.0;
                 if(std::isfinite(logShift) && logShift != 0.0)
                 {
                     double const boundedLogShift = std::clamp(logShift, -50.0, 50.0);
                     double const shift = std::exp(boundedLogShift);
+                    double const weightBeforeShift = particle.weight;
                     particle.frequency *= shift;
                     particle.weight *= shift;
                     owner_.clampFrequencyToBounds(particle.frequency);
+                    // pdV work of the gas on the packet: no source or sink
+                    // tallies it, so the energy budget lists it. (Frame
+                    // changes at DDMC exits and IMC scatterings also change
+                    // weights and stay untallied.)
+                    double const work = particle.weight - weightBeforeShift;
+                    if(work > 0.0)
+                    {
+                        owner_.ddmcCompressionWorkGain_ += work;
+                    }
+                    else
+                    {
+                        owner_.ddmcCompressionWorkLoss_ -= work;
+                    }
+                    if(owner_.parameters_.postProcess.enabled and owner_.observer_)
+                    {
+                        owner_.observer_->addCompressionWork(work);
+                    }
                 }
             }
         }
@@ -1489,6 +1541,9 @@ public:
 
         if(cutoffEvent)
         {
+            ++owner_.ddmcCompressionCutoffCount_;
+            owner_.ddmcCompressionCutoffEnergy_ += particle.weight;
+            particle.radiationState.set(RadiationTransportState<PointT>::CompressionConverted);
             particle.frequency = std::nextafter(owner_.energyBoundaries_[data.groupCutoff], std::numeric_limits<double>::max());
             particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
             finalizePolarization(particle.velocity);

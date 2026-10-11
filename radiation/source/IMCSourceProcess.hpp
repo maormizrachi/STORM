@@ -204,6 +204,9 @@ public:
             particle.id = std::numeric_limits<std::size_t>::max();
             particle.timeLeft = scalars.timeLeft;
             particle.steps = 0;
+            particle.compressionClock = 0.0;
+            particle.radiationState.set(
+                RadiationTransportState<PointT>::CompressionConverted, false);
 #ifdef MONTECARLO_POLARIZATION
             if(owner_.polarizationEnabled())
             {
@@ -563,10 +566,32 @@ public:
             }
         }
 
+        std::size_t weightCappedCells = 0;
+        std::size_t weightCapExtraPhotons = 0;
         if(owner_.postProcessExternalSourceMode_)
         {
             for(std::size_t i = 0; i < Ncells; ++i)
             {
+                if(energyToCreateVec[i] > 0.0 && nPhotonsVec[i] > 0 &&
+                    owner_.postProcessLearnedMaxWeight_ > 0.0)
+                {
+                    // An allocated cell that emits far more than the escaping
+                    // luminosity but gets few packets (rare escapes leave its
+                    // learned variance small) would send packets carrying a
+                    // large fraction of a generation's escaping energy; bound
+                    // them like exploration packets.
+                    double const wanted = std::ceil(energyToCreateVec[i] / owner_.postProcessLearnedMaxWeight_);
+                    if(std::isfinite(wanted) && wanted > static_cast<double>(nPhotonsVec[i]))
+                    {
+                        std::size_t const raised = static_cast<std::size_t>(std::min(wanted, 1.0e7));
+                        if(raised > nPhotonsVec[i])
+                        {
+                            ++weightCappedCells;
+                            weightCapExtraPhotons += raised - nPhotonsVec[i];
+                            nPhotonsVec[i] = raised;
+                        }
+                    }
+                }
                 if(energyToCreateVec[i] > 0.0 && nPhotonsVec[i] == 0)
                 {
                     // Every emitting cell keeps at least one packet: face cells so
@@ -591,6 +616,8 @@ public:
         }
         owner_.lastSourcePhotonsPerCell_ = nPhotonsVec;
         owner_.lastSourceAllocationSummary_ = SourceAllocationSummary{};
+        owner_.lastSourceAllocationSummary_.weightCappedCells = weightCappedCells;
+        owner_.lastSourceAllocationSummary_.weightCapExtraPhotons = weightCapExtraPhotons;
         owner_.lastSourceAllocationSummary_.adaptiveEnabled =
             owner_.sourceEmissionControlEnabled_ && owner_.sourceEmissionUseLearnedScores_ && owner_.adaptiveSourceScoresEnabled_;
         std::vector<double> adaptiveScores;
@@ -747,7 +774,12 @@ public:
             GroupArray samplingPdf{};
             bool groupPdfValid = false;
             bool groupScoreAvailable = false;
-            if(useGroupFreqSampling)
+            // With external sources the learned group sampling serves the
+            // face packets only (volume packets skip it), so a cell without
+            // source faces has no face spectrum to build.
+            bool const cellHasFacePackets = !owner_.postProcessExternalSourceMode_ ||
+                externalSourceOffsets[i] != externalSourceOffsets[i + 1];
+            if(useGroupFreqSampling && cellHasFacePackets)
             {
                 std::size_t cellId = radiation_imc_detail::cellID(cell);
                 auto it = owner_.adaptiveSourceCellGroupScores_.find(cellId);
@@ -1263,6 +1295,9 @@ public:
 
         particle.timeLeft = 0.0;
         particle.steps = 0;
+        particle.compressionClock = 0.0;
+        particle.radiationState.set(
+            RadiationTransportState<PointT>::CompressionConverted, false);
         return particle;
     }
 

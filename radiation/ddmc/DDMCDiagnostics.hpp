@@ -102,6 +102,19 @@ struct IMCDDMCDiagnostics
     // Peclet number |v| (L/2) / D of the eligible cells (largest value, and a
     // histogram with upper edges 0.01, 0.1, 1, 10, 100, infinity).
     std::size_t ddmcAdvectiveLeakCount_ = 0;
+    // Comoving-frame compression in DDMC, since the last preStep: packets the
+    // shift carried across the top of their diffusive band (converted to
+    // IMC) and their energy at conversion; steps in which a packet's
+    // post-process compression clock ran out; and the work of the shift on packet
+    // weights, split into compression gains and expansion losses.
+    std::size_t ddmcCompressionCutoffCount_ = 0;
+    double ddmcCompressionCutoffEnergy_ = 0.0;
+    std::size_t ddmcCompressionLimitedStepCount_ = 0;
+    // DDMC steps in moving gas (comoving frame active and div v != 0), where
+    // the shift applies unless the compression clock has run out.
+    std::size_t ddmcCompressionMovingStepCount_ = 0;
+    double ddmcCompressionWorkGain_ = 0.0;
+    double ddmcCompressionWorkLoss_ = 0.0;
     std::size_t ddmcAdvectionDominatedCellCount_ = 0;
     double ddmcMaxCellAdvectionPeclet_ = 0.0;
     std::array<std::size_t, 6> ddmcAdvectionPecletHistogram_{};

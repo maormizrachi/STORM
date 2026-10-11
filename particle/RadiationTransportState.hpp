@@ -19,7 +19,11 @@ struct RadiationTransportState
         DDMCMode = 1u << 0,
         DDMCCellResident = 1u << 1,
         DDMCComovingFrame = 1u << 2,
-        PendingFlux = 1u << 3
+        PendingFlux = 1u << 3,
+        // Set when the DDMC compression shift carried the packet across the
+        // top of its cell's diffusive band and converted it to IMC; kept for
+        // the rest of the packet's life (escape diagnostics).
+        CompressionConverted = 1u << 4
     };
 
     std::uint8_t flags = 0;

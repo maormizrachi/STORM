@@ -81,6 +81,9 @@ struct CellData
     double diffusionCoefficient = 0.0;
     double gamma = 1.0;
     double velocityDivergence = 0.0;
+    // Rate at which a packet's post-process compression clock advances in
+    // this cell: max(|div v|, |v| / max(r, cell size)), in 1/s.
+    double compressionClockRate = 0.0;
     double maxFaceVelocityJumpOverC = 0.0;
     double totalLeakRate = 0.0;
     double faceAreaSum = 0.0;

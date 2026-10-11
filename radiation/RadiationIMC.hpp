@@ -220,6 +220,10 @@ public:
         double adaptiveScoreSpanHigh = 0.0;
         std::size_t learnedPhotonsAtLeast1000 = 0;
         std::size_t learnedPhotonsAtLeast2000 = 0;
+        // Allocated cells raised to ceil(E / learned max weight) packets, and
+        // the packets that added (setPostProcessLearnedMaxWeight).
+        std::size_t weightCappedCells = 0;
+        std::size_t weightCapExtraPhotons = 0;
     };
 
     struct GroupSamplingDiagnostics
@@ -505,6 +509,88 @@ public:
     {
         this->postProcessExplorationMaxWeight_ = (std::isfinite(maxWeight) && maxWeight > 0.0) ? maxWeight : 0.0;
     }
+    // The same bound for cells the allocation did give packets: each gets at
+    // least ceil(E / maxWeight) (at most 1e7). 0 = no bound.
+    inline void setPostProcessLearnedMaxWeight(double maxWeight)
+    {
+        this->postProcessLearnedMaxWeight_ = (std::isfinite(maxWeight) && maxWeight > 0.0) ? maxWeight : 0.0;
+    }
+    // Post-process weight window (importance splitting). A packet that starts
+    // a step in local cell c with |weight| > maxWeight / importance[c]
+    // becomes n = ceil(|weight| importance[c] / maxWeight) equal packets (at
+    // most maxCopies), each with its own random stream; the total weight is
+    // unchanged. importance is indexed by local cell with values in [0, 1];
+    // maxWeight <= 0 or an empty vector disables splitting.
+    // At most copyBudget copies are made on this rank until the next call;
+    // a split that does not fit is reduced or refused (counted). Resets the
+    // split counters.
+    inline void setPostProcessWeightSplit(double maxWeight, std::vector<double> importance, std::size_t maxCopies,
+                                          std::size_t copyBudget)
+    {
+        this->postProcessSplitMaxWeight_ = (std::isfinite(maxWeight) && maxWeight > 0.0) ? maxWeight : 0.0;
+        this->postProcessSplitImportance_ = std::move(importance);
+        this->postProcessSplitMaxCopies_ = std::max<std::size_t>(1, maxCopies);
+        this->postProcessSplitCopyBudget_ = copyBudget;
+        this->postProcessSplitEvents_ = 0;
+        this->postProcessSplitCopies_ = 0;
+        this->postProcessSplitCapped_ = 0;
+        this->postProcessSplitRefused_ = 0;
+    }
+    // Post-process face sources: temperature of the Planck spectrum given to a
+    // packet emitted at, or re-emitted by, a source face, keyed by the ID of
+    // the source (outer) cell. Empty = the cell's gas temperature. When set,
+    // every source cell must have a positive finite entry.
+    inline void setPostProcessExternalSourceSpectrumTemperatures(
+        std::unordered_map<std::size_t, double> temperatures)
+    {
+        for(auto const &entry : temperatures)
+        {
+            if(!(entry.second > 0.0) || !std::isfinite(entry.second))
+            {
+                throw StormError("External source spectrum temperature must be positive and finite");
+            }
+        }
+        this->postProcessExternalSourceSpectrumTemperature_ = std::move(temperatures);
+    }
+    // DDMC comoving-frame compression since the last preStep (see
+    // DDMCDiagnostics): band-top conversions and their energy, steps in which
+    // a packet's compression clock ran out, and the work gained and lost.
+    inline std::size_t getDDMCCompressionCutoffCount(void) const { return this->ddmcCompressionCutoffCount_; }
+    inline double getDDMCCompressionCutoffEnergy(void) const { return this->ddmcCompressionCutoffEnergy_; }
+    inline std::size_t getDDMCCompressionLimitedStepCount(void) const { return this->ddmcCompressionLimitedStepCount_; }
+    inline std::size_t getDDMCCompressionMovingStepCount(void) const { return this->ddmcCompressionMovingStepCount_; }
+    inline double getDDMCCompressionWorkGain(void) const { return this->ddmcCompressionWorkGain_; }
+    inline double getDDMCCompressionWorkLoss(void) const { return this->ddmcCompressionWorkLoss_; }
+    // Compression time a packet may still receive in a cell whose clock
+    // advances at `rate` (postProcess.compressionMaxDynamicalTimes); infinite
+    // without a limit.
+    inline double compressionAllowance(MCParticle const &particle, double rate) const
+    {
+        double const maxClock = this->parameters_.postProcess.compressionMaxDynamicalTimes;
+        if(!this->parameters_.postProcess.enabled || !std::isfinite(maxClock))
+        {
+            return std::numeric_limits<double>::infinity();
+        }
+        double const remaining = maxClock - particle.compressionClock;
+        if(!(remaining > 0.0))
+        {
+            return 0.0;
+        }
+        return (rate > 0.0) ? remaining / rate : std::numeric_limits<double>::infinity();
+    }
+    // Advances a packet's compression clock by rate dt (post-process only).
+    inline void advanceCompressionClock(MCParticle &particle, double rate, double dt) const
+    {
+        if(!this->parameters_.postProcess.enabled || !(rate > 0.0) || !(dt > 0.0))
+        {
+            return;
+        }
+        particle.compressionClock = std::min(particle.compressionClock + rate * dt, 1.0e300);
+    }
+    inline std::size_t getPostProcessSplitEvents(void) const { return this->postProcessSplitEvents_; }
+    inline std::size_t getPostProcessSplitCopies(void) const { return this->postProcessSplitCopies_; }
+    inline std::size_t getPostProcessSplitCapped(void) const { return this->postProcessSplitCapped_; }
+    inline std::size_t getPostProcessSplitRefused(void) const { return this->postProcessSplitRefused_; }
     inline bool hasPostProcessVolumeEmission(void) const
     {
         return this->postProcessVolumeEmission_;
@@ -749,6 +835,22 @@ private:
     // Exploration packets (cells the allocation left at zero) are split so
     // that no packet carries more than this energy; 0 = one packet per cell.
     double postProcessExplorationMaxWeight_ = 0.0;
+    // Allocated (learned) cells are raised to packets of at most this energy;
+    // 0 = no bound. Without it a cell the allocation gives few packets but
+    // that emits far more than the escaping luminosity sends rare packets that
+    // carry a large fraction of a generation's escaping energy.
+    double postProcessLearnedMaxWeight_ = 0.0;
+    // Weight window (setPostProcessWeightSplit) and its counters since the
+    // last call.
+    double postProcessSplitMaxWeight_ = 0.0;
+    std::vector<double> postProcessSplitImportance_;
+    std::size_t postProcessSplitMaxCopies_ = 1;
+    std::size_t postProcessSplitEvents_ = 0;
+    std::size_t postProcessSplitCopies_ = 0;
+    std::size_t postProcessSplitCapped_ = 0;
+    std::size_t postProcessSplitCopyBudget_ = 0;
+    std::size_t postProcessSplitRefused_ = 0;
+    std::unordered_map<std::size_t, double> postProcessExternalSourceSpectrumTemperature_;
     std::vector<std::uint8_t> postProcessVolumeEmissionMask_;
     bool postProcessGroupFleck_ = false;
     std::vector<std::uint16_t> postProcessGroupOutsideBits_;

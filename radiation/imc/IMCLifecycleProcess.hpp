@@ -919,6 +919,12 @@ public:
                 owner_.ddmcMovingInterfaceBypassCount_ = 0;
                 owner_.ddmcMovingInterfaceMaxFactor_ = 0.0;
                 owner_.ddmcAdvectiveLeakCount_ = 0;
+                owner_.ddmcCompressionCutoffCount_ = 0;
+                owner_.ddmcCompressionCutoffEnergy_ = 0.0;
+                owner_.ddmcCompressionLimitedStepCount_ = 0;
+                owner_.ddmcCompressionMovingStepCount_ = 0;
+                owner_.ddmcCompressionWorkGain_ = 0.0;
+                owner_.ddmcCompressionWorkLoss_ = 0.0;
             }
             else
             {

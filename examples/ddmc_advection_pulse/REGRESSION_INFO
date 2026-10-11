@@ -1,0 +1,10 @@
+# STORM regression test configuration
+# A radiation pulse in uniformly moving scattering gas: its centroid must move
+# by v t for IMC and for DDMC (ddmcAdvection) on a static and a moving mesh,
+# with the comoving energy conserved. DDMC without advection is recorded only.
+TEST_ID="ddmc_advection_pulse"
+TAGS="serial"
+CATEGORY="physics"
+TIMEOUT=1800
+CHECK_LIBRARY="examples/ddmc_advection/regression_checks.sh"
+CHECK_FUNCTION="check_ddmc_advection_pulse_case"

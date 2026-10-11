@@ -512,10 +512,16 @@ public:
 #if defined(STORM_DEBUG) || defined(STORM_WITH_TRACING_HISTORY)
         return false;
 #else
+        // A post-process run with moving gas and a finite compression limit
+        // stays on the host DDMC path, which carries the frozen-flow
+        // compression clock (and the compression-work tally and band-top
+        // conversion flag, which the shared kernel does not record).
         return owner_.parameters_.withDDMC &&
                !owner_.parameters_.withCompton &&
                (!owner_.parameters_.postProcess.enabled ||
-                owner_.postProcessExternalSourceMode_) &&
+                (owner_.postProcessExternalSourceMode_ &&
+                 !(owner_.parameters_.postProcess.useCellVelocities &&
+                   std::isfinite(owner_.parameters_.postProcess.compressionMaxDynamicalTimes)))) &&
                !owner_.polarizationEnabled() &&
                ddmcThermalSamplingEligible_ && this->PortableSpectralEligible();
 #endif

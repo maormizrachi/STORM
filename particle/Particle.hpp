@@ -92,6 +92,18 @@ struct ParticleTransportData
 #endif
     particle_step_t steps = 0;
     std::uint8_t on_track = 0;
+    // Product of the weight-window splits this packet descends from (1 when
+    // never split). Observers multiply weight^2 by it for the adaptive
+    // statistics, so the allocation sees the variance of the unsplit packet.
+    float splitFactor = 1.0f;
+    // Post-process compression clock: the local dynamical times this packet
+    // has spent in the frozen flow, the sum of rate dt over its DDMC and IMC
+    // steps with rate = max(|div v|, |v| / max(r, cell size)). DDMC stops the
+    // comoving-frame compression and expansion shift once it reaches the
+    // configured limit.
+    // A double fills the padding after splitFactor, so it costs no memory
+    // over a float and keeps tiny per-step increments.
+    double compressionClock = 0.0;
 
     ParticleTransportData() = default;
 
@@ -267,6 +279,8 @@ size_t Particle<T>::dump(Serializer *serializer) const
 #endif
     bytes += serializer->insert(this->steps);
     bytes += serializer->insert(this->on_track);
+    bytes += serializer->insert(this->splitFactor);
+    bytes += serializer->insert(this->compressionClock);
     bytes += serializer->insert(this->sent);
     #ifdef STORM_DEBUG
     bytes += serializer->insert(this->checkedHere);
@@ -328,6 +342,8 @@ size_t Particle<T>::load(const Serializer *serializer, size_t byteOffset)
 #endif
     bytes += serializer->extract(this->steps, byteOffset + bytes);
     bytes += serializer->extract(this->on_track, byteOffset + bytes);
+    bytes += serializer->extract(this->splitFactor, byteOffset + bytes);
+    bytes += serializer->extract(this->compressionClock, byteOffset + bytes);
     bytes += serializer->extract(this->sent, byteOffset + bytes);
     #ifdef STORM_DEBUG
     bytes += serializer->extract(this->checkedHere, byteOffset + bytes);

@@ -205,10 +205,27 @@ public:
         return mu * normal + sinTheta * (std::cos(phi) * tangent1 + std::sin(phi) * tangent2);
     }
 
+    // Temperature of the Planck spectrum of a source face's packets
+    // (RadiationIMC::setPostProcessExternalSourceSpectrumTemperatures).
+    double postProcessExternalSourceSpectrumTemperature(const CellT &cell) const
+    {
+        auto const &temperatures = owner_.postProcessExternalSourceSpectrumTemperature_;
+        if(temperatures.empty())
+        {
+            return cell.temperature;
+        }
+        auto const it = temperatures.find(radiation_imc_detail::cellID(cell));
+        if(it == temperatures.end())
+        {
+            throw StormError("External source spectrum temperature is missing for a source cell");
+        }
+        return it->second;
+    }
+
     typename Owner::GroupArray buildPostProcessExternalSourcePlanckPdf(const CellT &cell) const
     {
         GroupArray pdf{};
-        double const kT = units::k_boltz * cell.temperature;
+        double const kT = units::k_boltz * postProcessExternalSourceSpectrumTemperature(cell);
         if(not (kT > 0.0) or not std::isfinite(kT))
         {
             throw StormError("External source Planck spectrum requires positive finite temperature");
@@ -245,7 +262,7 @@ public:
         group = std::min(group, NumGroups - 1);
         double const left = owner_.energyBoundaries_[group];
         double const right = owner_.energyBoundaries_[group + 1];
-        double const kT = units::k_boltz * cell.temperature;
+        double const kT = units::k_boltz * postProcessExternalSourceSpectrumTemperature(cell);
         double const groupMass = planck_integral::planck_integral(left / kT, right / kT);
         if(not (groupMass > 0.0) or not std::isfinite(groupMass))
         {
@@ -406,6 +423,9 @@ public:
         record.sourceCellID = particle.sourceCellID;
         record.initialWeight = particle.initialWeight;
         record.steps = static_cast<std::size_t>(particle.steps);
+        record.splitFactor = static_cast<double>(particle.splitFactor);
+        record.compressionConverted = particle.radiationState.has(
+            RadiationTransportState<PointT>::CompressionConverted);
     #ifdef MONTECARLO_POLARIZATION
         if(owner_.polarizationEnabled())
         {

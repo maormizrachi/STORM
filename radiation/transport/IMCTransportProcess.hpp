@@ -144,8 +144,13 @@ public:
     {
 
         #ifndef STORM_IMC_DIFF
+            applyPostProcessWeightSplit(particle, particlesToAdd);
             return owner_.stepImpl(particle, particlesToAdd);
         #else
+            if(owner_.postProcessSplitMaxWeight_ > 0.0)
+            {
+                throw StormError("The post-process weight window is not supported in the STORM_IMC_DIFF harness");
+            }
             if(!owner_.SharedFullIMCKernelEligible())
             {
                 return owner_.stepImpl(particle, particlesToAdd);
@@ -322,6 +327,81 @@ public:
         #endif
     }
 
+    // Post-process weight window (RadiationIMC::setPostProcessWeightSplit):
+    // a packet that starts a step in cell c heavier than
+    // maxWeight / importance(c) is split into equal copies. The copies take
+    // the packet's state before the step (a valid position in its own local
+    // cell) and fresh RNG streams, so each then takes its own step.
+    void applyPostProcessWeightSplit(
+        MCParticle &particle,
+        std::vector<MCParticle> &particlesToAdd)
+    {
+        if(!(owner_.postProcessSplitMaxWeight_ > 0.0))
+        {
+            return;
+        }
+        // A DDMC resident is a cell-wide state, and a pending DDMC flux would
+        // be credited once per copy; such packets split on a later IMC step.
+        if(particle.radiationState.isDDMC() || particle.radiationState.hasPendingFlux())
+        {
+            return;
+        }
+        std::size_t const cell = particle.cellIndex;
+        if(cell >= owner_.postProcessSplitImportance_.size())
+        {
+            return;
+        }
+        double const importance = std::min(1.0, owner_.postProcessSplitImportance_[cell]);
+        if(!(importance > 0.0))
+        {
+            return;
+        }
+        double const window = owner_.postProcessSplitMaxWeight_ / importance;
+        double const weight = std::abs(particle.weight);
+        if(!(weight > window) || !std::isfinite(weight))
+        {
+            return;
+        }
+        double const wanted = std::ceil(weight / window);
+        std::size_t copies = owner_.postProcessSplitMaxCopies_;
+        if(wanted < static_cast<double>(copies))
+        {
+            copies = static_cast<std::size_t>(wanted);
+        }
+        else
+        {
+            ++owner_.postProcessSplitCapped_;
+        }
+        if(copies < 2)
+        {
+            return;
+        }
+        std::size_t const room = owner_.postProcessSplitCopyBudget_ > owner_.postProcessSplitCopies_
+            ? owner_.postProcessSplitCopyBudget_ - owner_.postProcessSplitCopies_ : 0;
+        if(copies - 1 > room)
+        {
+            ++owner_.postProcessSplitRefused_;
+            if(room == 0)
+            {
+                return;
+            }
+            copies = room + 1;
+        }
+        double const scale = 1.0 / static_cast<double>(copies);
+        particle.weight *= scale;
+        particle.initialWeight *= scale;
+        particle.splitFactor *= static_cast<float>(copies);
+        for(std::size_t copy = 1; copy < copies; ++copy)
+        {
+            MCParticle extra = particle;
+            extra.id = std::numeric_limits<std::size_t>::max();
+            owner_.initializeParticleRNG(extra);
+            particlesToAdd.push_back(std::move(extra));
+        }
+        ++owner_.postProcessSplitEvents_;
+        owner_.postProcessSplitCopies_ += copies - 1;
+    }
+
     typename Owner::Functionality stepImpl(MCParticle &particle, std::vector<MCParticle> &particlesToAdd)
     {
 
@@ -354,9 +434,17 @@ public:
                owner_.parameters_.withRandomWalk && !owner_.parameters_.withCompton &&
                owner_.randomWalk_ && owner_.rwCellEligible_[cellIndex])
             {
+                double const timeBeforeRandomWalk = particle.timeLeft;
                 if(owner_.tryRandomWalkStep(particle, functionality))
                 {
                     ++owner_.rwStepCount_;
+                    // Random-walk time counts on the compression clock too.
+                    if(owner_.parameters_.withDDMC && cellIndex < owner_.ddmcCellData_.size())
+                    {
+                        owner_.advanceCompressionClock(
+                            particle, owner_.ddmcCellData_[cellIndex].compressionClockRate,
+                            timeBeforeRandomWalk - particle.timeLeft);
+                    }
                     return functionality;
                 }
             }
@@ -582,6 +670,14 @@ public:
             double dt = min.second;
 
             particle.timeLeft -= dt;
+            // The post-process compression clock counts time in the frozen
+            // flow on IMC (and random-walk) steps too, so packets alternating
+            // between them and DDMC cannot exceed their compression budget.
+            if(owner_.parameters_.withDDMC && cellIndex < owner_.ddmcCellData_.size())
+            {
+                owner_.advanceCompressionClock(
+                    particle, owner_.ddmcCellData_[cellIndex].compressionClockRate, dt);
+            }
             double weightEvolutionOpacity = absorptionOpacity * transportFleck;
             double tmp2 = weightEvolutionOpacity * owner_.lightSpeed();
             double tmp = -dt * tmp2;

@@ -1,0 +1,10 @@
+# STORM regression test configuration
+# Uniform radiation in uniformly moving scattering gas, carried from a DDMC
+# region into an IMC region: the profile must stay flat to 3 % next to the
+# interface with the default settings. Other variants are recorded only.
+TEST_ID="ddmc_advection_interface"
+TAGS="serial"
+CATEGORY="physics"
+TIMEOUT=1800
+CHECK_LIBRARY="examples/ddmc_advection/regression_checks.sh"
+CHECK_FUNCTION="check_ddmc_advection_interface_case"

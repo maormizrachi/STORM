@@ -27,6 +27,11 @@ struct ObserverCrossingRecord
     // Emission weight and transport steps of the packet, for diagnostics.
     double initialWeight = 0.0;
     std::size_t steps = 0;
+    // Weight-window split factor of the packet (Particle::splitFactor).
+    double splitFactor = 1.0;
+    // The packet reached the band through the DDMC compression cutoff
+    // (RadiationTransportState::CompressionConverted).
+    bool compressionConverted = false;
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -62,6 +67,13 @@ public:
     virtual void addBoxEscapeEnergy(double energy) = 0;
     virtual void addTimedOutEnergy(double energy) = 0;
     virtual void addCutoffEnergy(double energy) = 0;
+    // Signed work of the comoving-frame compression (positive) and expansion
+    // (negative) on DDMC packets. It changes packet weights without a source
+    // or sink, so the energy budget lists it. Default: ignored.
+    virtual void addCompressionWork(double energy)
+    {
+        (void) energy;
+    }
     virtual void resetTallies() = 0;
     // Transport owns the polarization switch.  Observers that expose
     // polarization tallies may override this; other observers can ignore it.

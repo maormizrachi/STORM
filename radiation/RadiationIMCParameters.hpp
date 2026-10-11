@@ -120,6 +120,15 @@ struct RadiationIMCParameters
         double sourceDt = 0.0;
         double transportTime = 0.0;
         bool useCellVelocities = true;
+        // Frozen-flow limit on the DDMC comoving-frame compression shift. Each
+        // packet's clock advances by rate dt on every DDMC and IMC step, with
+        // rate = max(|div v|, |v| / max(r, cell size)) of its cell and r the
+        // distance from compressionCenter; once the clock reaches
+        // compressionMaxDynamicalTimes, DDMC no longer shifts the packet's
+        // frequency and weight. Infinity keeps the unlimited shift, 0 turns it
+        // off.
+        double compressionMaxDynamicalTimes = std::numeric_limits<double>::infinity();
+        std::array<double, 3> compressionCenter{0.0, 0.0, 0.0};
 
         struct PolarizationParameters
         {
@@ -196,6 +205,8 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
         os << "\tpost-process source dt: " << parameters.postProcess.sourceDt << '\n';
         os << "\tpost-process transport time: " << parameters.postProcess.transportTime << '\n';
         os << "\tpost-process use cell velocities: " << parameters.postProcess.useCellVelocities << '\n';
+        os << "\tpost-process compression max dynamical times: "
+           << parameters.postProcess.compressionMaxDynamicalTimes << '\n';
         os << "\tpost-process polarization: " << parameters.postProcess.polarization.enabled << '\n';
     }
     return os;

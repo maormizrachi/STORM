@@ -29,6 +29,7 @@ Defaults in parentheses.
 |---|---|
 | `TAGS` | **Required.** `"serial"` or `"mpi"` |
 | `CHECK_FUNCTION` | **Required.** Validation function from `regression_checks.sh` |
+| `CHECK_LIBRARY` | Shell file defining `CHECK_FUNCTION` instead of `regression_checks.sh`, relative to the STORM root (e.g. `examples/ddmc_advection/regression_checks.sh`, which sources `regression_checks.sh` for its helpers) |
 | `BUILD_TARGET` | CMake target name (directory name) |
 | `BINARY` | Executable path when a test reuses another target |
 | `RUN_COMMAND` | Command to run (binary for serial, `mpirun` for mpi) |
