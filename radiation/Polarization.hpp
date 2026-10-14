@@ -84,6 +84,31 @@ void resetUnpolarized(ParticleT &p)
     p.radiationState.pendingMeanScatterings = 0.0;
 }
 
+// Stokes (q, u) of a packet travelling along the unit vector k with polarization
+// basis `basis`, re-expressed against `reference` projected on the plane of the
+// sky (perpendicular to k).  Observers use it to resolve tallies in a fixed
+// frame.  Returns false, leaving qOut and uOut untouched, when the basis or the
+// reference has no component perpendicular to k.
+template<typename PointT>
+bool stokesInReferenceFrame(double q, double u, const PointT &basis, const PointT &k,
+                            const PointT &reference, double &qOut, double &uOut)
+{
+    PointT const e = basis - k * fallback::ScalarProd(basis, k);
+    PointT const projected = reference - k * fallback::ScalarProd(reference, k);
+    double const projectedNorm = fallback::abs(projected);
+    if(!(fallback::abs(e) > 0.0) || !(projectedNorm > 0.0))
+        return false;
+    PointT const eUnit = fallback::normalize(e);
+    PointT const sky = projected / projectedNorm;
+    double const c = std::max(-1.0, std::min(1.0, fallback::ScalarProd(eUnit, sky)));
+    double const s = fallback::ScalarProd(fallback::CrossProduct(eUnit, sky), k);
+    double const c2 = c * c - s * s;
+    double const s2 = 2.0 * s * c;
+    qOut = q * c2 + u * s2;
+    uOut = -q * s2 + u * c2;
+    return true;
+}
+
 template<typename PointT, typename ParticleT>
 void rotateStokesToBasis(ParticleT &p, const PointT &newBasis)
 {

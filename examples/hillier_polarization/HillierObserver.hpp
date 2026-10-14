@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "radiation/Observer.hpp"
+#include "radiation/Polarization.hpp"
 
 namespace STORM {
 namespace examples {
@@ -224,26 +225,14 @@ private:
     void accumulatePolarization(const CrossingRecord &record, std::size_t observer,
                                 const PointT &k, double w)
     {
-        PointT basis = record.polarizationBasis;
-        if (!(abs(basis) > 0.0))
+        double qSky = 0.0, uSky = 0.0;
+        if (!polarization::stokesInReferenceFrame(record.stokesQ, record.stokesU,
+                                                  record.polarizationBasis, k,
+                                                  PointT(0.0, 0.0, 1.0), qSky, uSky))
             return;
-        basis = normalize(basis - k * ScalarProd(basis, k));
-
-        PointT const axis = PointT(0.0, 0.0, 1.0);
-        PointT const projected = axis - k * ScalarProd(axis, k);
-        double const projectedNorm = abs(projected);
-        if (!(projectedNorm > 0.0))
-            return;
-        PointT const sky = projected / projectedNorm;
-
-        double const cosine = std::max(-1.0, std::min(1.0, ScalarProd(basis, sky)));
-        double const sine = ScalarProd(CrossProduct(basis, sky), k);
-        double const c2 = cosine * cosine - sine * sine;
-        double const s2 = 2.0 * sine * cosine;
-
-        double const q = w * (record.stokesQ * c2 + record.stokesU * s2);
+        double const q = w * qSky;
         observerStokesQ_[observer] += q;
-        observerStokesU_[observer] += w * (-record.stokesQ * s2 + record.stokesU * c2);
+        observerStokesU_[observer] += w * uSky;
         observerStokesQSquared_[observer] += q * q;
     }
 #endif
