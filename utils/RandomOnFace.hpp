@@ -22,13 +22,29 @@ T RandomPointOnFace(const Grid &grid, size_t faceIndex)
     static size_t cachedBuildGeneration = SIZE_MAX;
     static std::vector<double> cumAreas;
     static std::vector<std::array<size_t, 3>> tris;
+    static std::vector<T> cachedVertices;
     static double totalArea = 0;
 
-    if(faceIndex != cachedFace or &grid != cachedGrid or grid.GetBuildGeneration() != cachedBuildGeneration)
+    // The address and build generation alone do not identify a grid: a new grid
+    // can reuse both.  The face's vertices confirm the cached triangulation.
+    const auto &faceVertexIndices = grid.GetPointsInFace(faceIndex);
+    const auto &facePoints = grid.GetFacePoints();
+    bool sameVertices = cachedVertices.size() == faceVertexIndices.size();
+    for(size_t i = 0; sameVertices && i < faceVertexIndices.size(); i++)
+    {
+        const T &v = facePoints[faceVertexIndices[i]];
+        sameVertices = v.x == cachedVertices[i].x && v.y == cachedVertices[i].y && v.z == cachedVertices[i].z;
+    }
+
+    if(faceIndex != cachedFace or &grid != cachedGrid or grid.GetBuildGeneration() != cachedBuildGeneration or
+       not sameVertices)
     {
         cachedFace = faceIndex;
         cachedGrid = &grid;
         cachedBuildGeneration = grid.GetBuildGeneration();
+        cachedVertices.clear();
+        for(size_t i = 0; i < faceVertexIndices.size(); i++)
+            cachedVertices.push_back(facePoints[faceVertexIndices[i]]);
 
         cumAreas.clear();
         tris.clear();

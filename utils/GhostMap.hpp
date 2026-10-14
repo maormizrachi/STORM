@@ -54,19 +54,14 @@ size_t ResolvePhysicalCellIndex(const Grid &grid, size_t meshIndex, size_t cellN
 
 #ifdef STORM_WITH_MPI
 template<typename Grid>
+// Collective: every rank calls it at the same point.  Not cached: a cache keyed
+// on the grid's address and build generation returned the previous grid's map
+// when a new grid reused both (one grid per case in a loop, each built once),
+// sending every inter-rank crossing to the boundary condition.  The rebuild is
+// one small exchange per call, twice per transport step.
 boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const Grid &grid)
 {
-    static const Grid *cachedGrid = nullptr;
-    static size_t cachedBuildGeneration = SIZE_MAX;
-    static boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
-    
-    if(grid.GetBuildGeneration() == cachedBuildGeneration and cachedGrid == &grid)
-    {
-        return ranks_ghost_map;
-    }
-    cachedGrid = &grid;
-    cachedBuildGeneration = grid.GetBuildGeneration();
-    ranks_ghost_map.clear();
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
     const std::vector<int> &dupProcs = grid.GetDuplicatedProcs();
     std::vector<std::vector<size_t>> incoming = ::MPI_exchange_data(dupProcs, grid.GetDuplicatedPoints());
     const std::vector<std::vector<size_t>> &ghosts = grid.GetGhostIndeces();
