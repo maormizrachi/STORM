@@ -362,6 +362,31 @@ check_olson_2d_2020() {
 # Hillier (1994) polarized electron-scattering benchmark.
 # The example prints its own verdict after comparing against the analytic
 # single-scattering limit, so the harness only has to read it back.
+check_shapiro_sutherland_polarization_case() {
+    local run_dir="$1"
+    local start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+
+    if grep -q '^FAIL shapiro_sutherland_polarization' "$stdout_log"; then
+        local detail
+        detail="$(grep -m1 '^  FAIL: ' "$stdout_log" | sed 's/^ *FAIL: *//')"
+        set_check_msg "Shapiro & Sutherland plane-parallel benchmark failed${detail:+: ${detail}}"
+        return 1
+    fi
+    # Three cases per invocation (pure scattering and two absorption laws).
+    local verdicts
+    verdicts="$(grep -c '^PASS shapiro_sutherland_polarization' "$stdout_log" || true)"
+    if [ "${verdicts:-0}" -lt 3 ]; then
+        set_check_msg "Shapiro & Sutherland benchmark produced ${verdicts:-0} verdict(s), expected 3"
+        return 1
+    fi
+    set_check_msg "plane-parallel I/F and Q/I match the deterministic reference in all three cases"
+    return 0
+}
+
 check_hillier_polarization_case() {
     local run_dir="$1"
     local start_epoch="$2"

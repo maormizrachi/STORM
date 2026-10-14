@@ -34,10 +34,11 @@ foreach(_storm_info_file IN LISTS _storm_example_info_files)
   # does not merely misbehave, it fails to compile.  Examples build as one group,
   # so that failure would take every other regression test down with it.  Skip it
   # instead, loudly.
-  if(_storm_example_name STREQUAL "hillier_polarization" AND
+  if((_storm_example_name STREQUAL "hillier_polarization" OR
+      _storm_example_name STREQUAL "shapiro_sutherland_polarization") AND
      NOT STORM_MONTECARLO_POLARIZATION)
     message(STATUS
-      "STORM: skipping example hillier_polarization -- it needs "
+      "STORM: skipping example ${_storm_example_name} -- it needs "
       "-DSTORM_MONTECARLO_POLARIZATION=ON")
     continue()
   endif()

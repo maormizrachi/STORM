@@ -1,0 +1,24 @@
+# Shapiro & Sutherland (1982) Table 1: polarized plane-parallel atmosphere.
+#
+# Emergent I(mu)/F and Q/I of a semi-infinite plane-parallel atmosphere with
+# Thomson scattering: pure scattering (Chandrasekhar 1960, 11.7% at the limb)
+# and two scattering-plus-absorption cases (lambda = 1/6, lambda = tau/(1+tau);
+# Harrington 1969, u0 = h nu / k Teff = 20).  Each case is checked bin by bin
+# against a deterministic solution (ReferenceTables.hpp, from
+# planeparallel_reference.py), which itself reproduces the paper's pure
+# scattering column to 2e-5.  One invocation runs all three cases, so the
+# harness must see three PASS lines.
+#
+# One cell per layer with mirror side walls (every escaping photon counts) and
+# the per-case default photon numbers: about 1.5M packets per generation for
+# the scattering and lambda = 1/6 cases and 5M for lambda = tau/(1+tau), 32
+# generations (~20 min on 16 ranks; the gate is 5 generation-scatter sigmas).
+#
+# Requires -DSTORM_MONTECARLO_POLARIZATION=ON.
+TEST_ID="shapiro_sutherland_polarization"
+TAGS="mpi"
+CATEGORY="physics"
+MPI_NP=16
+RUN_ARGS=["--case", "all", "--generations", "32"]
+CHECK_FUNCTION="check_shapiro_sutherland_polarization_case"
+TIMEOUT=3600
