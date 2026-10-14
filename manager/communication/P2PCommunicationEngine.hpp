@@ -141,10 +141,9 @@ public:
             buffers->Add(destination, particle);
     }
 
-    void AppendLocal(const std::vector<MCParticle> &particles) override
+    void AppendLocal(std::vector<MCParticle> &&particles) override
     {
-        std::vector<MCParticle> &queue = incoming[rank];
-        queue.insert(queue.end(), particles.begin(), particles.end());
+        this->AdoptOrAppend(incoming[rank], std::move(particles));
     }
 
     void Detach(rank_t source, std::vector<MCParticle> &particles) override

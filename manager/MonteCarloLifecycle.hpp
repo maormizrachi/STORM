@@ -293,15 +293,15 @@ void MonteCarloManager<T, Grid, Physics>::step(dt_t fullDt)
             }
             else
             {
-                this->AddParticles(newParticles1);
+                this->AddParticles(std::move(newParticles1));
             }
         }
         else
         {
-            this->AddParticles(newParticles1);
+            this->AddParticles(std::move(newParticles1));
         }
 #else
-        this->AddParticles(newParticles1);
+        this->AddParticles(std::move(newParticles1));
 #endif
         std::vector<MCParticle>().swap(newParticles1);
     }

@@ -32,15 +32,34 @@ void MonteCarloManager<T, Grid, Physics>::AddParticles(const std::vector<MCParti
     {
         return;
     }
-
     std::vector<MCParticle> initialized(particles);
+    this->AddParticles(std::move(initialized));
+}
+
+template<typename T, typename Grid, typename Physics>
+void MonteCarloManager<T, Grid, Physics>::AddParticles(std::vector<MCParticle> &&particles)
+{
+    if(particles.empty())
+    {
+        return;
+    }
+    size_t const particlesNum = particles.size();
+    this->StampNewParticles(particles);
+    this->engine->AppendLocal(std::move(particles));
+
+    this->localDecrementAmount -= static_cast<CompletionCounter>(particlesNum);
+}
+
+template<typename T, typename Grid, typename Physics>
+void MonteCarloManager<T, Grid, Physics>::StampNewParticles(std::vector<MCParticle> &particles)
+{
     size_t particlesNum = particles.size();
     size_t firstID = this->myIDCounter;
     this->myIDCounter += particles.size();
 
     for(size_t i = 0; i < particlesNum; ++i)
     {
-        MCParticle &destination = initialized[i];
+        MCParticle &destination = particles[i];
 #ifdef STORM_WITH_MPI
         destination.rank = this->rankWorld;
 #endif
@@ -76,9 +95,6 @@ void MonteCarloManager<T, Grid, Physics>::AddParticles(const std::vector<MCParti
         }
 #endif // STORM_DEBUG
     }
-    this->engine->AppendLocal(initialized);
-
-    this->localDecrementAmount -= static_cast<CompletionCounter>(particlesNum);
 }
 
 template<typename T, typename Grid, typename Physics>
@@ -122,11 +138,8 @@ void MonteCarloManager<T, Grid, Physics>::PutSelfParticles(std::vector<MCParticl
             destination.id = this->myIDCounter++;
         }
     }
-    this->engine->AppendLocal(particles);
-
-    // don't waste memory - remove current particles from the input vector
-    std::vector<MCParticle> empty;
-    particles.swap(empty);
+    // Hands the census to the engine without copying and frees the input.
+    this->engine->AppendLocal(std::move(particles));
 }
 
 template<typename T, typename Grid, typename Physics>

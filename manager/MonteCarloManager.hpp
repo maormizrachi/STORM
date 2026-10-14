@@ -416,6 +416,15 @@ private:
 
     void AddParticles(const std::vector<MCParticle> &particles);
 
+    // Same as AddParticles, but stamps the packets in place and hands their
+    // storage to the engine instead of copying it (the step's generated
+    // packets are the largest allocation of a generation). Leaves particles
+    // empty with its memory freed.
+    void AddParticles(std::vector<MCParticle> &&particles);
+
+    // Gives packets their owner rank and per-rank id, with debug checks.
+    void StampNewParticles(std::vector<MCParticle> &particles);
+
     void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
 };
 

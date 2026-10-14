@@ -265,9 +265,9 @@ public:
         NoteSendBufferGrowth(destination, previous, buffer, 1);
     }
 
-    void AppendLocal(const std::vector<MCParticle> &particles) override
+    void AppendLocal(std::vector<MCParticle> &&particles) override
     {
-        this->localParticles.insert(this->localParticles.end(), particles.begin(), particles.end());
+        this->AdoptOrAppend(this->localParticles, std::move(particles));
     }
 
     void Detach(rank_t source, std::vector<MCParticle> &particles) override

@@ -40,9 +40,9 @@ public:
         throw std::runtime_error("Serial transport cannot send to another rank");
     }
 
-    void AppendLocal(const std::vector<MCParticle> &particles) override
+    void AppendLocal(std::vector<MCParticle> &&particles) override
     {
-        this->particles.insert(this->particles.end(), particles.begin(), particles.end());
+        this->AdoptOrAppend(this->particles, std::move(particles));
     }
 
     void Detach(rank_t, std::vector<MCParticle> &particles) override

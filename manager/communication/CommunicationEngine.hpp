@@ -38,7 +38,11 @@ public:
     virtual void FlushAll() = 0;
     virtual bool Pending() const = 0;
     virtual void Send(rank_t destination, const MCParticle &particle) = 0;
-    virtual void AppendLocal(const std::vector<MCParticle> &particles) = 0;
+    // Takes ownership of packets for this rank's local queue. An engine whose
+    // queue is empty adopts the storage without copying (the generated packets
+    // are a generation's largest allocation). Leaves particles empty with its
+    // memory freed.
+    virtual void AppendLocal(std::vector<MCParticle> &&particles) = 0;
     virtual void Detach(rank_t source, std::vector<MCParticle> &particles) = 0;
     virtual size_t LocalSize(rank_t source) const = 0;
     virtual const std::vector<rank_t> &Neighbors() const = 0;
@@ -212,6 +216,18 @@ public:
             MPI_Wait(&counterRequest, MPI_STATUS_IGNORE);
         }
 #endif
+    }
+
+protected:
+    // AppendLocal for engines whose local queue is a vector: adopt when empty,
+    // append in order otherwise.
+    static void AdoptOrAppend(std::vector<MCParticle> &queue, std::vector<MCParticle> &&particles)
+    {
+        if(queue.empty())
+            queue.swap(particles);
+        else
+            queue.insert(queue.end(), particles.begin(), particles.end());
+        std::vector<MCParticle>().swap(particles);
     }
 
 private:
