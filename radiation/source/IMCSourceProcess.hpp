@@ -468,6 +468,13 @@ public:
                         MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
+        // Most packets the weight bounds below may split one cell into: 1e7
+        // shared among the emitting cells, but at least 1e4 per cell, so a few
+        // very energetic cells cannot create tens of millions of packets. A
+        // capped cell keeps its energy in fewer, heavier packets.
+        double const maxPhotonsPerWeightBoundedCell = std::max(
+            1.0e7 / static_cast<double>(std::max<std::size_t>(1, globalSourceCells)), 1.0e4);
+
         std::size_t const budgetCells = owner_.postProcessExternalSourceMode_
             ? globalSourceCells : globalTotalCells;
         if(owner_.parameters_.newPhotonsPerCell >
@@ -583,7 +590,8 @@ public:
                     double const wanted = std::ceil(energyToCreateVec[i] / owner_.postProcessLearnedMaxWeight_);
                     if(std::isfinite(wanted) && wanted > static_cast<double>(nPhotonsVec[i]))
                     {
-                        std::size_t const raised = static_cast<std::size_t>(std::min(wanted, 1.0e7));
+                        std::size_t const raised = static_cast<std::size_t>(
+                            std::min(wanted, maxPhotonsPerWeightBoundedCell));
                         if(raised > nPhotonsVec[i])
                         {
                             ++weightCappedCells;
@@ -608,7 +616,8 @@ public:
                     {
                         double const wanted = std::ceil(energyToCreateVec[i] / owner_.postProcessExplorationMaxWeight_);
                         if(std::isfinite(wanted) && wanted > 1.0)
-                            exploration = static_cast<std::size_t>(std::min(wanted, 1.0e7));
+                            exploration = static_cast<std::size_t>(
+                                std::min(wanted, maxPhotonsPerWeightBoundedCell));
                     }
                     nPhotonsVec[i] = exploration;
                 }

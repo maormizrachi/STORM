@@ -510,7 +510,8 @@ public:
         this->postProcessExplorationMaxWeight_ = (std::isfinite(maxWeight) && maxWeight > 0.0) ? maxWeight : 0.0;
     }
     // The same bound for cells the allocation did give packets: each gets at
-    // least ceil(E / maxWeight) (at most 1e7). 0 = no bound.
+    // least ceil(E / maxWeight), at most max(1e7 / emitting cells, 1e4) (the
+    // same limit as the exploration split). 0 = no bound.
     inline void setPostProcessLearnedMaxWeight(double maxWeight)
     {
         this->postProcessLearnedMaxWeight_ = (std::isfinite(maxWeight) && maxWeight > 0.0) ? maxWeight : 0.0;
