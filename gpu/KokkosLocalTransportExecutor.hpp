@@ -90,17 +90,20 @@ struct CompletedBatch
     std::size_t createdParticles = 0;
 };
 
+// Each counter is updated atomically by every transport thread; give each its own
+// cache line so updates to different counters (e.g. census and censusSteps, both
+// bumped per census particle) do not contend for the same line.
 struct WaveCounters
 {
-    std::size_t terminal = 0;
-    std::size_t fallback = 0;
-    std::size_t remote = 0;
-    std::size_t survivor = 0;
-    std::size_t census = 0;
-    std::size_t physicsSteps = 0;
-    std::size_t censusSteps = 0;
-    std::size_t appended = 0;
-    std::size_t overflow = 0;
+    alignas(64) std::size_t terminal = 0;
+    alignas(64) std::size_t fallback = 0;
+    alignas(64) std::size_t remote = 0;
+    alignas(64) std::size_t survivor = 0;
+    alignas(64) std::size_t census = 0;
+    alignas(64) std::size_t physicsSteps = 0;
+    alignas(64) std::size_t censusSteps = 0;
+    alignas(64) std::size_t appended = 0;
+    alignas(64) std::size_t overflow = 0;
 };
 static_assert(std::is_trivially_copyable<WaveCounters>::value,
               "WaveCounters must be safe for device-host copies");
@@ -488,8 +491,17 @@ public:
         {
             // Capacity changes and previous kernels must finish before host writes.
             execution.fence("STORM direct ingest");
-            for(std::size_t i = 0; i < incoming; ++i)
-                PackParticle(arrivals[i], this->packets_(offset + i), this->coldPackets_(offset + i));
+            // Independent per particle; run on all host threads instead of the caller's.
+            const auto packets = this->packets_;
+            const auto coldPackets = this->coldPackets_;
+            const auto *source = arrivals.data();
+            Kokkos::parallel_for("storm_direct_ingest",
+                Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace, Kokkos::Schedule<Kokkos::Static>>(0, incoming),
+                [=](const std::size_t i)
+                {
+                    PackParticle(source[i], packets(offset + i), coldPackets(offset + i));
+                });
+            execution.fence("STORM direct ingest pack");
             ++this->metrics_.synchronizationCount;
         }
         else
@@ -886,6 +898,10 @@ public:
 #if defined(KOKKOS_ENABLE_OPENMP) && !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__)
             const auto &particleViews = usePrivateEnergy ? threadViews(omp_get_thread_num()) : views;
 #else
+            // nvcc requires identical captures, in the same order of first use,
+            // in the host and device passes (see the branch above)
+            (void)usePrivateEnergy;
+            (void)threadViews;
             const auto &particleViews = views;
 #endif
             const auto workCellCount = cellSteps.extent(0);
@@ -1333,14 +1349,19 @@ private:
         auto hostCold = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),
                                                                 Kokkos::subview(this->censusCold_, std::pair<std::size_t, std::size_t>(0, count)));
         this->EnsureCapacity(this->hostEventTransports_, count);
-        for(std::size_t i = 0; i < count; ++i)
-        {
-            this->hostEventTransports_(i).particle = hostPackets(i);
-            this->hostEventTransports_(i).cold = hostCold(i);
-            this->hostEventTransports_(i).result = TransportResult{};
-            // The dedicated census pool contains completed packets only.
-            this->hostEventTransports_(i).result.step.change = MonteCarloParticleStatus::DONE;
-        }
+        // Host-memory views in every build: copy with the host threads.
+        const auto transports = this->hostEventTransports_;
+        Kokkos::parallel_for("storm_census_copy_back",
+            Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace>(0, count),
+            [=](const std::size_t i)
+            {
+                transports(i).particle = hostPackets(i);
+                transports(i).cold = hostCold(i);
+                transports(i).result = TransportResult{};
+                // The dedicated census pool contains completed packets only.
+                transports(i).result.step.change = MonteCarloParticleStatus::DONE;
+            });
+        Kokkos::DefaultHostExecutionSpace().fence("storm_census_copy_back");
         completed.census = CompletedTransportSpan{this->hostEventTransports_.data(), count};
         this->metrics_.censusCopyCount += this->pendingCensusCount_;
         completed.copyBackSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - copyBackStart).count();

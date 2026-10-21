@@ -346,14 +346,14 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
         // Lab-frame energy the packet loses (same factor as the weight
         // update); the host derives the internal-energy share from it and
         // the momentum tally.
-        STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], -weightExpFactor * particle.weight);
+        ::STORM::transport::AccumulateEnergy(views, views.pendingMaterialEnergy[cellIndex], -weightExpFactor * particle.weight);
     }
     const double inverseC2 = 1.0 / (views.speedOfLight * views.speedOfLight);
     AddMomentum(views, cellIndex,
             -weightExpFactor * particle.weight * particle.velocity.x * inverseC2,
             -weightExpFactor * particle.weight * particle.velocity.y * inverseC2,
             -weightExpFactor * particle.weight * particle.velocity.z * inverseC2);
-    STORM_TRANSPORT_ACCUMULATE(views.pendingRadiationEnergy[cellIndex], integratedEnergy);
+    ::STORM::transport::AccumulateEnergy(views, views.pendingRadiationEnergy[cellIndex], integratedEnergy);
     opacity.TallyGroupRadiation(particle, views, cellIndex, opacityState, integratedEnergy);
 
     particle.weight *= 1.0 + weightExpFactor;
@@ -361,7 +361,7 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
     {
         if(views.depositMaterialEnergy)
         {
-            STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], particle.weight);
+            ::STORM::transport::AccumulateEnergy(views, views.pendingMaterialEnergy[cellIndex], particle.weight);
             AddMomentum(views, cellIndex,
                     particle.weight * particle.velocity.x * inverseC2,
                     particle.weight * particle.velocity.y * inverseC2,
@@ -421,7 +421,7 @@ STORM_TRANSPORT_INLINE TransportResult AdvanceIMC(ParticleT &particle, const Vie
             }
             if(views.depositMaterialEnergy)
             {
-                STORM_TRANSPORT_ACCUMULATE(views.pendingMaterialEnergy[cellIndex], weightBeforeTransform - particle.weight);
+                ::STORM::transport::AccumulateEnergy(views, views.pendingMaterialEnergy[cellIndex], weightBeforeTransform - particle.weight);
             }
             AddMomentum(views, cellIndex,
                     (weightBeforeTransform * oldVelocityX - particle.weight * particle.velocity.x) * inverseC2,

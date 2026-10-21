@@ -310,7 +310,21 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 if(STORM_WITH_GPU)
-  find_package(Kokkos CONFIG REQUIRED)
+  # launch_compiler keeps CMAKE_CXX_COMPILER (e.g. mpicxx) and redirects only
+  # Kokkos-dependent compiles/links to the compiler Kokkos was built with
+  # (nvcc_wrapper for CUDA, hipcc/amdclang++ for HIP).
+  find_package(Kokkos CONFIG QUIET COMPONENTS launch_compiler)
+  if(NOT Kokkos_FOUND)
+    message(FATAL_ERROR
+      "STORM_WITH_GPU needs a Kokkos installation built with a GPU backend, and none was found.\n"
+      "Point CMake at it, e.g. 'export Kokkos_ROOT=/path/to/kokkos/install' (or load a Kokkos module) "
+      "and re-run the build.")
+  endif()
+  message(STATUS "Kokkos devices: ${Kokkos_DEVICES}; Kokkos compiler: ${Kokkos_CXX_COMPILER}")
+  get_directory_property(_storm_parent_dir PARENT_DIRECTORY)
+  if(_storm_parent_dir)
+    set(Kokkos_DEVICES "${Kokkos_DEVICES}" PARENT_SCOPE)
+  endif()
   get_target_property(_storm_gpu_target_type storm TYPE)
   if(_storm_gpu_target_type STREQUAL "INTERFACE_LIBRARY")
     set(_storm_gpu_scope INTERFACE)
@@ -319,8 +333,13 @@ if(STORM_WITH_GPU)
   endif()
   target_compile_definitions(storm ${_storm_gpu_scope} STORM_WITH_GPU)
 
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
-     CMAKE_CXX_COMPILER MATCHES "(hipcc|amdclang\\+\\+)$")
+  if("OPENMP" IN_LIST Kokkos_DEVICES)
+    # A host compiler flag such as RICH's static "-lgomp" can hide libgomp from
+    # FindOpenMP, leaving OpenMP::OpenMP_CXX without it; link the runtime explicitly.
+    target_link_options(storm ${_storm_gpu_scope} $<$<LINK_LANGUAGE:CXX>:-fopenmp>)
+  endif()
+
+  if("HIP" IN_LIST Kokkos_DEVICES)
     target_compile_options(
       storm ${_storm_gpu_scope} -fno-optimize-sibling-calls)
   endif()

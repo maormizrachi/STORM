@@ -152,15 +152,17 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
     Kokkos::deep_copy(targets, hostTargets);
     Kokkos::deep_copy(combOffsets, hostCombOffsets);
 
-    Kokkos::parallel_for("storm_comb_prefix_cell_counts",
-        Kokkos::RangePolicy<>(0, 1),
-        KOKKOS_LAMBDA(const int)
+    Kokkos::parallel_scan("storm_comb_prefix_cell_counts",
+        Kokkos::RangePolicy<>(0, cellCount),
+        KOKKOS_LAMBDA(const std::size_t cell, std::size_t &partial, const bool final)
         {
-            cellOffsets(0) = 0;
-            for(std::size_t cell = 0; cell < cellCount; ++cell)
+            if(final)
             {
-                cellOffsets(cell + 1) = cellOffsets(cell) + cellCounts(cell);
+                if(cell == 0)
+                    cellOffsets(0) = 0;
+                cellOffsets(cell + 1) = partial + cellCounts(cell);
             }
+            partial += cellCounts(cell);
         });
     Kokkos::deep_copy(cellWriteCursor,
         Kokkos::subview(cellOffsets, std::pair<std::size_t, std::size_t>(0, cellCount)));
@@ -200,16 +202,21 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
         Kokkos::deep_copy(hostIDKeys, idKeys);
         Kokkos::deep_copy(hostCellOffsets, cellOffsets);
 
-        std::vector<std::size_t> order;
-        std::vector<std::size_t> reordered;
-        for(std::size_t cell = 0; cell < cellCount; ++cell)
+        // Cells are disjoint and each shuffle is keyed by its own cell, so the loop
+        // runs in parallel on the host threads with results independent of the
+        // schedule. Dynamic scheduling balances the uneven cell populations.
+        Kokkos::parallel_for("storm_comb_sort_shuffle_cells",
+            Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace, Kokkos::Schedule<Kokkos::Dynamic>>(0, cellCount),
+            [=](const std::size_t cell)
         {
             const std::size_t begin = hostCellOffsets(cell);
             const std::size_t count = hostCellOffsets(cell + 1) - begin;
             if(count == 0)
             {
-                continue;
+                return;
             }
+            std::vector<std::size_t> order;
+            std::vector<std::size_t> reordered;
             order.resize(count);
             for(std::size_t i = 0; i < count; ++i)
             {
@@ -235,7 +242,8 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
             {
                 hostSortedIndices(begin + i) = reordered[i];
             }
-        }
+        });
+        Kokkos::DefaultHostExecutionSpace().fence("storm_comb_sort_shuffle_cells");
         Kokkos::deep_copy(sortedIndices, hostSortedIndices);
     }
 
@@ -257,15 +265,17 @@ inline void ActivateCombOnDeviceCensus(DevicePopulationContext &context)
             outputCounts(cell) = comb::CountBin(particleWeights.data(), sortedIndices.data() + begin, count, cellWeights(cell), targets(cell), combOffsets(cell));
         });
 
-    Kokkos::parallel_for("storm_comb_prefix_output_counts",
-        Kokkos::RangePolicy<>(0, 1),
-        KOKKOS_LAMBDA(const int)
+    Kokkos::parallel_scan("storm_comb_prefix_output_counts",
+        Kokkos::RangePolicy<>(0, cellCount),
+        KOKKOS_LAMBDA(const std::size_t cell, std::size_t &partial, const bool final)
         {
-            outputOffsets(0) = 0;
-            for(std::size_t cell = 0; cell < cellCount; ++cell)
+            if(final)
             {
-                outputOffsets(cell + 1) = outputOffsets(cell) + outputCounts(cell);
+                if(cell == 0)
+                    outputOffsets(0) = 0;
+                outputOffsets(cell + 1) = partial + outputCounts(cell);
             }
+            partial += outputCounts(cell);
         });
 
     Kokkos::View<std::size_t*>::HostMirror hostOutputOffsets = Kokkos::create_mirror_view(outputOffsets);
