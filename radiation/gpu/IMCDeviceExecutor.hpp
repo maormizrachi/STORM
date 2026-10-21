@@ -94,10 +94,7 @@ public:
         {
             return;
         }
-        if(!gpuRuntime_)
-        {
-            gpuRuntime_ = std::make_unique<gpu::KokkosRuntime>();
-        }
+        gpu::KokkosInitializer::Instance();
         if(!gpuData_)
         {
             gpuData_ = std::make_unique<gpu::GreyIMCData>();
@@ -596,7 +593,6 @@ private:
     bool slabTransport_ = false;
     double slabBounds_[4] = {};
 #ifdef STORM_WITH_GPU
-    std::unique_ptr<gpu::KokkosRuntime> gpuRuntime_;
     std::unique_ptr<gpu::GreyIMCData> gpuData_;
     bool gpuTransportEnabled_ = false;
     std::size_t gpuGridBuildGeneration_ = std::numeric_limits<std::size_t>::max();

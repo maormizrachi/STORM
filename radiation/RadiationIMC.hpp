@@ -66,7 +66,7 @@
 
 #ifdef STORM_WITH_GPU
     #include "../gpu/GreyIMCData.hpp"
-    #include "../gpu/KokkosRuntime.hpp"
+    #include "../gpu/KokkosInitializer.hpp"
     #include "../gpu/DeviceSourceContext.hpp"
 #endif
 

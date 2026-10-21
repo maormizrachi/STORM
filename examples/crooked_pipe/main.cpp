@@ -1609,7 +1609,7 @@ int main(int argc, char *argv[])
     // Release fabric and device resources while MPI is still available.
     RMAFactory::Finalize(RDMA_Type::AUTO_RDMA);
 #ifdef STORM_WITH_GPU
-    STORM::gpu::KokkosRuntime::Finalize();
+    STORM::gpu::KokkosInitializer::FinalizeIfInitialized();
 #endif
     MPI_Finalize();
     return 0;

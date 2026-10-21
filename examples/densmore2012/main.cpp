@@ -446,11 +446,11 @@ int main(int argc, char *argv[])
 #ifdef STORM_WITH_MPI
     RMAFactory::Finalize(RDMA_Type::AUTO_RDMA);
 #ifdef STORM_WITH_GPU
-    STORM::gpu::KokkosRuntime::Finalize();
+    STORM::gpu::KokkosInitializer::FinalizeIfInitialized();
 #endif
     MPI_Finalize();
 #elif defined(STORM_WITH_GPU)
-    STORM::gpu::KokkosRuntime::Finalize();
+    STORM::gpu::KokkosInitializer::FinalizeIfInitialized();
 #endif
     return 0;
 }
