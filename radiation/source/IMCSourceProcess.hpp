@@ -350,6 +350,11 @@ public:
                 throw StormError("Post-process volume emission mask does not match the cell count");
             }
             volumeEnergyVec.assign(Ncells, 0.0);
+            if(!owner_.postProcessVolumeEmissionScale_.empty() &&
+               owner_.postProcessVolumeEmissionScale_.size() != Ncells)
+            {
+                throw StormError("Post-process volume emission scale does not match the cell count");
+            }
         }
         owner_.lastVolumeEmissionEnergy_ = 0.0;
         owner_.lastVolumeEmissionCells_ = 0;
@@ -425,7 +430,9 @@ public:
                         emissionOpacity,
                         fullDt,
                         units::arad,
-                        owner_.lightSpeed());
+                        owner_.lightSpeed()) *
+                        (owner_.postProcessVolumeEmissionScale_.empty()
+                            ? 1.0 : owner_.postProcessVolumeEmissionScale_[i]);
                     if(volumeEnergy > 0.0 && std::isfinite(volumeEnergy))
                     {
                         ++owner_.lastVolumeEmissionCells_;
@@ -776,6 +783,23 @@ public:
 
             double energyPerPhoton = energyToCreate / static_cast<double>(nPhotonsCell);
 
+            // Face luminosity of cell `cellIndex` per group, summed over its
+            // faces (faces with group spectra only).
+            auto cellFaceGroupLuminosity = [&](std::size_t cellIndex) {
+                GroupArray total{};
+                for(std::size_t offset = externalSourceOffsets[cellIndex];
+                    offset < externalSourceOffsets[cellIndex + 1]; ++offset)
+                {
+                    GroupArray const &groups =
+                        owner_.postProcessExternalSources_[externalSourceIndices[offset]].groupLuminosity;
+                    for(std::size_t g = 0; g < NumGroups; ++g)
+                    {
+                        total[g] += groups[g];
+                    }
+                }
+                return total;
+            };
+
             bool useGroupFreqSampling = owner_.adaptiveSourceCellGroupScoresEnabled_
                 && owner_.parameters_.withMultigroupOpacity
                 && !owner_.parameters_.withCompton;
@@ -795,10 +819,12 @@ public:
                 if(it != owner_.adaptiveSourceCellGroupScores_.end())
                 {
                     groupScoreAvailable = true;
-                    physicalPdf = owner_.postProcessExternalSourceMode_
-                        ? owner_.buildPostProcessExternalSourcePlanckPdf(cell)
-                        : owner_.opacity_->GetThermalGroupPdf(
-                            cell, owner_.energyBoundaries_);
+                    physicalPdf = !owner_.postProcessExternalSourceMode_
+                        ? owner_.opacity_->GetThermalGroupPdf(
+                            cell, owner_.energyBoundaries_)
+                        : owner_.postProcessExternalSourceGroupSpectra_
+                            ? cellFaceGroupLuminosity(i)
+                            : owner_.buildPostProcessExternalSourcePlanckPdf(cell);
                     double totalPhys = 0.0;
                     std::size_t nPhysGroups = 0;
                     for(std::size_t g = 0; g < NumGroups; ++g)
@@ -987,6 +1013,10 @@ public:
                 MCParticle particle;
                 owner_.initializeParticleRNG(particle);
                 bool volumePacket = false;
+                // Face packets of faces with group spectra: the group chosen
+                // with the face, and the weight correction of that choice.
+                std::size_t faceGroup = NumGroups;
+                double faceGroupCorrection = 1.0;
                 if(owner_.postProcessExternalSourceMode_)
                 {
                     std::size_t const begin = externalSourceOffsets[i];
@@ -1007,6 +1037,75 @@ public:
                     {
                         volumePacket = true;
                         particle = owner_.generateSingleParticle(i, cell, cellDecomposition);
+                    }
+                    else if(owner_.postProcessExternalSourceGroupSpectra_)
+                    {
+                        // The group first (from the learned sampling pdf when
+                        // there is one, with its weight correction), then the
+                        // face in proportion to its luminosity in that group.
+                        GroupArray const cellGroups = cellFaceGroupLuminosity(i);
+                        double cellTotal = 0.0;
+                        for(double const value : cellGroups)
+                        {
+                            cellTotal += value;
+                        }
+                        if(!(cellTotal > 0.0))
+                        {
+                            throw StormError("External source cell has face packets but no group luminosity");
+                        }
+                        double const groupTarget = owner_.randomUnitOpen(particle);
+                        double groupCumulative = 0.0;
+                        std::size_t group = NumGroups;
+                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        {
+                            groupCumulative += groupPdfValid ? samplingPdf[g] : cellGroups[g] / cellTotal;
+                            if(groupTarget <= groupCumulative)
+                            {
+                                group = g;
+                                break;
+                            }
+                        }
+                        if(group == NumGroups || !(cellGroups[group] > 0.0))
+                        {
+                            // Roundoff at the top of the cumulative sum: the
+                            // last group with luminosity.
+                            for(std::size_t g = NumGroups; g-- > 0;)
+                            {
+                                if(cellGroups[g] > 0.0 && (!groupPdfValid || samplingPdf[g] > 0.0))
+                                {
+                                    group = g;
+                                    break;
+                                }
+                            }
+                        }
+                        faceGroup = group;
+                        faceGroupCorrection = groupPdfValid
+                            ? (cellGroups[group] / cellTotal) / samplingPdf[group] : 1.0;
+                        double const faceTarget = owner_.randomUnitOpen(particle) * cellGroups[group];
+                        double cumulative = 0.0;
+                        std::size_t selectedSource = std::numeric_limits<std::size_t>::max();
+                        for(std::size_t offset = begin; offset < end; ++offset)
+                        {
+                            std::size_t const sourceIndex = externalSourceIndices[offset];
+                            double const value = owner_.postProcessExternalSources_[sourceIndex].groupLuminosity[group];
+                            if(!(value > 0.0))
+                            {
+                                continue;
+                            }
+                            selectedSource = sourceIndex;
+                            cumulative += value;
+                            if(faceTarget <= cumulative)
+                            {
+                                break;
+                            }
+                        }
+                        if(selectedSource == std::numeric_limits<std::size_t>::max())
+                        {
+                            throw StormError("External source cell has no face with luminosity in the sampled group");
+                        }
+                        particle = owner_.generatePostProcessExternalSourceParticle(
+                            i, cell,
+                            owner_.postProcessExternalSources_[selectedSource]);
                     }
                     else
                     {
@@ -1105,7 +1204,46 @@ public:
                     }
                 }
 
-                if(groupPdfValid && !volumePacket)
+                if(faceSpectrum && faceGroup < NumGroups)
+                {
+                    // The face spectrum gives the luminosity per group only:
+                    // within the group the frequency is uniform in log energy.
+                    double const left = owner_.energyBoundaries_[faceGroup];
+                    double const right = owner_.energyBoundaries_[faceGroup + 1];
+                    double freqCo = (left > 0.0 && right > left)
+                        ? left * std::pow(right / left, owner_.randomUnitOpen(particle))
+                        : 0.5 * (left + right);
+                    owner_.clampFrequencyToBounds(freqCo);
+                    weightCorrection = faceGroupCorrection;
+                    if(groupPdfValid)
+                    {
+                        auto &diagnostics = owner_.lastGroupSamplingDiagnostics_;
+                        diagnostics.weightCorrectionMin = diagnostics.weightCorrectionCount == 0
+                            ? weightCorrection : std::min(diagnostics.weightCorrectionMin, weightCorrection);
+                        diagnostics.weightCorrectionMax = diagnostics.weightCorrectionCount == 0
+                            ? weightCorrection : std::max(diagnostics.weightCorrectionMax, weightCorrection);
+                        diagnostics.weightCorrectionSum += weightCorrection;
+                        ++diagnostics.weightCorrectionCount;
+                        ++diagnostics.totalSampled;
+                        diagnostics.sampledEnergy += energyPerPhoton;
+                    }
+                    if((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                        !owner_.parameters_.staticScatterers) ||
+                       (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities))
+                    {
+                        double D = radiation_imc_detail::computeDopplerShift<PointT>(
+                            particle, cell, owner_.lightSpeed());
+                        particle.frequency = freqCo / D;
+                        particle.weight = energyToCreate / (nPhotonsCell * D) * weightCorrection;
+                    }
+                    else
+                    {
+                        particle.frequency = freqCo;
+                        particle.weight = energyPerPhoton * weightCorrection;
+                    }
+                    usedGroupFrequencySampling = true;
+                }
+                else if(groupPdfValid && !volumePacket)
                 {
                     double rndGroup = owner_.randomUnitOpen(particle);
                     double cumul = 0.0;

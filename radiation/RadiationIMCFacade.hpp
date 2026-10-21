@@ -455,9 +455,37 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
         throw eo;
     }
     this->postProcessVolumeEmissionMask_ = std::move(mask);
+    this->postProcessVolumeEmissionScale_.clear();
     this->postProcessVolumeEmissionSubsample_ = subsampleFraction;
     this->postProcessVolumeEmissionSeed_ = seed;
     this->postProcessVolumeEmission_ = true;
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                  TraitsT, PositionSamplerT>::setPostProcessVolumeEmissionScale(
+    std::vector<double> scale)
+{
+    if(!scale.empty() && scale.size() != this->grid.GetPointNo())
+    {
+        StormError eo("setPostProcessVolumeEmissionScale: size does not match the local cell count");
+        eo.addEntry("Scale size", scale.size());
+        eo.addEntry("Local cells", this->grid.GetPointNo());
+        throw eo;
+    }
+    for(std::size_t i = 0; i < scale.size(); ++i)
+    {
+        if(!(scale[i] > 0.0) || !std::isfinite(scale[i]))
+        {
+            StormError eo("setPostProcessVolumeEmissionScale: scale must be positive and finite");
+            eo.addEntry("Cell", i);
+            eo.addEntry("Scale", scale[i]);
+            throw eo;
+        }
+    }
+    this->postProcessVolumeEmissionScale_ = std::move(scale);
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
@@ -484,6 +512,7 @@ void RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
                   TraitsT, PositionSamplerT>::clearPostProcessVolumeEmission()
 {
     this->postProcessVolumeEmissionMask_.clear();
+    this->postProcessVolumeEmissionScale_.clear();
     this->postProcessVolumeEmissionSubsample_ = 1.0;
     this->postProcessVolumeEmission_ = false;
     this->postProcessGroupOutsideBits_.clear();

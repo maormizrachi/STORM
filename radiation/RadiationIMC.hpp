@@ -275,6 +275,11 @@ public:
         PointT location{};
         PointT outwardNormal{};
         double luminosity = 0.0;
+        // Luminosity of the face per group (erg/s). All zero: the face emits
+        // a Planck spectrum at its spectrum temperature. Otherwise the groups
+        // sum to `luminosity`; either every emitting face carries them or
+        // none does (setPostProcessExternalSources).
+        GroupArray groupLuminosity{};
     };
 
     RadiationIMC(const GridT &grid,
@@ -500,6 +505,10 @@ public:
         return this->factorFleck_[cellIndex];
     }
     void setPostProcessVolumeEmissionSubsample(double subsampleFraction, std::uint64_t seed);
+    // Per local cell factor on the volume emission energy (positive, finite;
+    // empty = 1). setPostProcessVolumeEmission clears it, so set it after
+    // every call to that.
+    void setPostProcessVolumeEmissionScale(std::vector<double> scale);
     void clearPostProcessVolumeEmission();
     inline void setPostProcessVolumeEmissionExactBase(bool exact)
     {
@@ -828,6 +837,8 @@ private:
     SourceAllocationSummary lastSourceAllocationSummary_;
     GroupSamplingDiagnostics lastGroupSamplingDiagnostics_;
     bool postProcessExternalSourceMode_ = false;
+    // The installed faces carry per-group luminosities (groupLuminosity).
+    bool postProcessExternalSourceGroupSpectra_ = false;
     std::vector<PostProcessExternalSource> postProcessExternalSources_;
     bool postProcessVolumeEmission_ = false;
     // Burn-in (base) allocation gives every emitting cell exactly
@@ -853,6 +864,7 @@ private:
     std::size_t postProcessSplitRefused_ = 0;
     std::unordered_map<std::size_t, double> postProcessExternalSourceSpectrumTemperature_;
     std::vector<std::uint8_t> postProcessVolumeEmissionMask_;
+    std::vector<double> postProcessVolumeEmissionScale_;
     bool postProcessGroupFleck_ = false;
     std::vector<std::uint16_t> postProcessGroupOutsideBits_;
     double postProcessVolumeEmissionSubsample_ = 1.0;

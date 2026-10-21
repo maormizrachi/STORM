@@ -144,6 +144,43 @@ public:
             localInteriorIDSet.insert(source.interiorCellID);
         }
 
+        // Face spectra: either every emitting face carries its luminosity per
+        // group, summing to its luminosity, or none does (Planck faces).
+        std::size_t emittingFaces = 0;
+        std::size_t facesWithGroups = 0;
+        for(PostProcessExternalSource const &source : sources)
+        {
+            double groupTotal = 0.0;
+            for(double const value : source.groupLuminosity)
+            {
+                if(!(value >= 0.0) || !std::isfinite(value))
+                {
+                    throw StormError("External source face has an invalid group luminosity");
+                }
+                groupTotal += value;
+            }
+            if(source.luminosity > 0.0)
+            {
+                ++emittingFaces;
+            }
+            if(groupTotal > 0.0)
+            {
+                ++facesWithGroups;
+                if(std::abs(groupTotal - source.luminosity) > 1.0e-10 * std::max(groupTotal, source.luminosity))
+                {
+                    throw StormError("External source face group luminosities do not sum to its luminosity");
+                }
+            }
+        }
+        if(facesWithGroups > 0 && facesWithGroups != emittingFaces)
+        {
+            throw StormError("Either every emitting external-source face carries group luminosities or none does");
+        }
+        if(facesWithGroups > 0 && !owner_.parameters_.withMultigroupOpacity)
+        {
+            throw StormError("External-source group luminosities require multigroup opacity");
+        }
+
         std::unordered_set<std::size_t> globalInteriorIDs = localInteriorIDSet;
     #ifdef STORM_WITH_MPI
         if(owner_.parameters_.withDDMC)
@@ -169,6 +206,7 @@ public:
         owner_.postProcessExternalSourceFaceIndex_ = std::move(faceIndex);
         owner_.postProcessExternalSourceInteriorCellIDs_ = std::move(globalInteriorIDs);
         owner_.postProcessExternalSourceMode_ = true;
+        owner_.postProcessExternalSourceGroupSpectra_ = facesWithGroups > 0;
     }
 
     void clearPostProcessExternalSources()
@@ -178,6 +216,7 @@ public:
         owner_.postProcessExternalSourceFaceIndex_.clear();
         owner_.postProcessExternalSourceInteriorCellIDs_.clear();
         owner_.postProcessExternalSourceMode_ = false;
+        owner_.postProcessExternalSourceGroupSpectra_ = false;
     }
 
     PointT samplePostProcessExternalSourceDirection(const PointT &outwardNormal, MCParticle &particle)
