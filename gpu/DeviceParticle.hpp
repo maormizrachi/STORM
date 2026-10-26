@@ -54,6 +54,10 @@ struct DeviceParticleCold
     cell_id_t sourceCellID = 0;
     DeviceVec3 pendingFlux{};
     cell_id_t bypassCellID = std::numeric_limits<cell_id_t>::max();
+    // Weight-window split product and post-process compression clock
+    // (ParticleTransportData); the P2P wire carries the packet in this form.
+    double compressionClock = 0.0;
+    float splitFactor = 1.0f;
 #ifdef MONTECARLO_POLARIZATION
     double pendingMeanScatterings = 0.0;
     double stokesQ = 0.0;
@@ -80,6 +84,8 @@ void AssignCold(DeviceParticleCold &destination, const DeviceParticleCold &sourc
     destination.pendingFlux.y = source.pendingFlux.y;
     destination.pendingFlux.z = source.pendingFlux.z;
     destination.bypassCellID = source.bypassCellID;
+    destination.compressionClock = source.compressionClock;
+    destination.splitFactor = source.splitFactor;
 #ifdef MONTECARLO_POLARIZATION
     destination.pendingMeanScatterings = source.pendingMeanScatterings;
     destination.stokesQ = source.stokesQ;
@@ -104,6 +110,8 @@ struct DeviceParticleColdLayout
     cell_id_t sourceCellID;
     DeviceVec3 pendingFlux;
     cell_id_t bypassCellID;
+    double compressionClock;
+    float splitFactor;
 #ifdef MONTECARLO_POLARIZATION
     double pendingMeanScatterings;
     double stokesQ;
@@ -143,6 +151,8 @@ void PackParticle(const ParticleTransportData<PointT> &source, DeviceParticle &p
     cold.sourceCellID = source.sourceCellID;
     cold.pendingFlux = DeviceVec3(source.radiationState.pendingFlux.x, source.radiationState.pendingFlux.y, source.radiationState.pendingFlux.z);
     cold.bypassCellID = source.radiationState.bypassCellID;
+    cold.compressionClock = source.compressionClock;
+    cold.splitFactor = source.splitFactor;
 #ifdef MONTECARLO_POLARIZATION
     cold.pendingMeanScatterings = source.radiationState.pendingMeanScatterings;
     cold.stokesQ = source.stokesQ;
@@ -171,6 +181,8 @@ void UnpackParticle(const DeviceParticle &particle, const DeviceParticleCold &co
     destination.radiationState.flags = particle.radiationFlags;
     destination.radiationState.pendingFlux = PointT(cold.pendingFlux.x, cold.pendingFlux.y, cold.pendingFlux.z);
     destination.radiationState.bypassCellID = cold.bypassCellID;
+    destination.compressionClock = cold.compressionClock;
+    destination.splitFactor = cold.splitFactor;
 #ifdef MONTECARLO_POLARIZATION
     destination.radiationState.pendingMeanScatterings = cold.pendingMeanScatterings;
     destination.stokesQ = cold.stokesQ;
