@@ -2296,11 +2296,15 @@ public:
     #ifdef MONTECARLO_POLARIZATION
             if(owner_.polarizationEnabled())
             {
-                particle.stokesQ = faceComoving.stokesQ;
-                particle.stokesU = faceComoving.stokesU;
-                particle.polarizationBasis = polarization::projectBasisToDirection(
-                    faceComoving.polarizationBasis, particle.velocity);
-                particle.polarizationInitialized = faceComoving.polarizationInitialized;
+                // The reflected light is the diffusive side's isotropic
+                // re-emission, which carries no memory of the incident
+                // polarization: unpolarized, as on the leak paths. Keeping
+                // the incident Q/U on the new direction (with the basis
+                // projected onto it) made up polarization oriented by the
+                // projection geometry.
+                particle.stokesQ = 0.0;
+                particle.stokesU = 0.0;
+                particle.polarizationInitialized = false;
             }
     #endif
             particle.location = (1.0 - 1.0e-10) * owner_.componentGrid().FaceCM(faceIndex) +
