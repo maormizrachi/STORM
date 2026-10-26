@@ -800,6 +800,186 @@ public:
                 return total;
             };
 
+            // Learned group sampling pdf for a cell: the physical pdf (normalized in
+            // place) blended with the learned group scores, floored and bounded by
+            // the maximum bias and weight correction. False when no valid pdf
+            // exists (the caller then samples the physical pdf).
+            auto buildGroupSamplingPdf = [&](GroupArray &physical, GroupArray const &learnedScoreRaw,
+                                             GroupArray &sampling) -> bool
+            {
+                sampling = GroupArray{};
+                bool valid = false;
+                double totalPhys = 0.0;
+                std::size_t nPhysGroups = 0;
+                for(std::size_t g = 0; g < NumGroups; ++g)
+                {
+                    if(physical[g] > 0.0)
+                    {
+                        ++nPhysGroups;
+                        totalPhys += physical[g];
+                    }
+                }
+                if(totalPhys > 0.0 && nPhysGroups > 0)
+                {
+                    for(std::size_t g = 0; g < NumGroups; ++g)
+                    {
+                        physical[g] = (physical[g] > 0.0) ? physical[g] / totalPhys : 0.0;
+                    }
+                                            double const scoreFloor = 1e-12;
+                    GroupArray learnedPdf{};
+                    double learnedTotal = 0.0;
+                    for(std::size_t g = 0; g < NumGroups; ++g)
+                    {
+                        if(physical[g] > 0.0)
+                        {
+                            learnedPdf[g] = std::max(learnedScoreRaw[g], scoreFloor);
+                            learnedTotal += learnedPdf[g];
+                        }
+                    }
+                    if(learnedTotal > 0.0)
+                    {
+                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        {
+                            learnedPdf[g] /= learnedTotal;
+                        }
+                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        {
+                            sampling[g] = (1.0 - owner_.adaptiveGroupStrength_) * physical[g]
+                                + owner_.adaptiveGroupStrength_ * learnedPdf[g];
+                        }
+                        double floorPerGroup = (nPhysGroups > 0) ? owner_.adaptiveGroupPdfFloor_ / static_cast<double>(nPhysGroups) : 0.0;
+                        GroupArray lowerBound{};
+                        GroupArray upperBound{};
+                        double lowerTotal = 0.0;
+                        double upperTotal = 0.0;
+                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        {
+                            if(physical[g] > 0.0)
+                            {
+                                lowerBound[g] = std::max(floorPerGroup, physical[g] / owner_.adaptiveGroupMaxWeightCorrection_);
+                                upperBound[g] = std::min(1.0, owner_.adaptiveGroupMaxBias_ * physical[g]);
+                                lowerBound[g] = std::min(lowerBound[g], upperBound[g]);
+                                lowerTotal += lowerBound[g];
+                                upperTotal += upperBound[g];
+                            }
+                            else
+                            {
+                                sampling[g] = 0.0;
+                            }
+                        }
+
+                        if(lowerTotal <= 1.0 + 1e-12 && upperTotal >= 1.0 - 1e-12)
+                        {
+                            std::array<bool, NumGroups> fixed{};
+                            double remaining = 1.0;
+                            for(std::size_t g = 0; g < NumGroups; ++g)
+                            {
+                                if(!(physical[g] > 0.0))
+                                {
+                                    fixed[g] = true;
+                                    sampling[g] = 0.0;
+                                }
+                            }
+
+                            for(std::size_t iter = 0; iter < NumGroups + 2; ++iter)
+                            {
+                                double freeTotal = 0.0;
+                                for(std::size_t g = 0; g < NumGroups; ++g)
+                                {
+                                    if(!fixed[g])
+                                    {
+                                        freeTotal += std::max(sampling[g], 0.0);
+                                    }
+                                }
+                                if(!(freeTotal > 0.0))
+                                {
+                                    valid = false;
+                                    break;
+                                }
+
+                                bool clamped = false;
+                                double const scale = remaining / freeTotal;
+                                for(std::size_t g = 0; g < NumGroups; ++g)
+                                {
+                                    if(fixed[g])
+                                    {
+                                        continue;
+                                    }
+                                    double const candidate = std::max(sampling[g], 0.0) * scale;
+                                    if(candidate < lowerBound[g])
+                                    {
+                                        sampling[g] = lowerBound[g];
+                                        fixed[g] = true;
+                                        remaining -= lowerBound[g];
+                                        clamped = true;
+                                    }
+                                    else if(candidate > upperBound[g])
+                                    {
+                                        sampling[g] = upperBound[g];
+                                        fixed[g] = true;
+                                        remaining -= upperBound[g];
+                                        clamped = true;
+                                    }
+                                }
+
+                                if(!clamped)
+                                {
+                                    for(std::size_t g = 0; g < NumGroups; ++g)
+                                    {
+                                        if(!fixed[g])
+                                        {
+                                            sampling[g] = std::max(sampling[g], 0.0) * scale;
+                                        }
+                                    }
+                                    remaining = 0.0;
+                                    break;
+                                }
+                                if(remaining < 0.0)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            for(std::size_t g = 0; g < NumGroups; ++g)
+                            {
+                                sampling[g] = 0.0;
+                            }
+                        }
+
+                        double sampTotal = 0.0;
+                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        {
+                            sampTotal += sampling[g];
+                        }
+                        if(sampTotal > 0.0)
+                        {
+                            for(std::size_t g = 0; g < NumGroups; ++g)
+                            {
+                                sampling[g] /= sampTotal;
+                            }
+                            valid = true;
+                            for(std::size_t g = 0; g < NumGroups; ++g)
+                            {
+                                if(physical[g] > 0.0)
+                                {
+                                    double const correction = physical[g] / sampling[g];
+                                    if(!(sampling[g] > 0.0)
+                                        || correction > owner_.adaptiveGroupMaxWeightCorrection_ * (1.0 + 1e-10)
+                                        || sampling[g] > owner_.adaptiveGroupMaxBias_ * physical[g] * (1.0 + 1e-10))
+                                    {
+                                        valid = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return valid;
+            };
+
             bool useGroupFreqSampling = owner_.adaptiveSourceCellGroupScoresEnabled_
                 && owner_.parameters_.withMultigroupOpacity
                 && !owner_.parameters_.withCompton;
@@ -807,9 +987,9 @@ public:
             GroupArray samplingPdf{};
             bool groupPdfValid = false;
             bool groupScoreAvailable = false;
-            // With external sources the learned group sampling serves the
-            // face packets only (volume packets skip it), so a cell without
-            // source faces has no face spectrum to build.
+            // With external sources this pdf serves the face packets (a cell
+            // without source faces has no face spectrum to build); volume
+            // packets get their own below, from the cell's thermal spectrum.
             bool const cellHasFacePackets = !owner_.postProcessExternalSourceMode_ ||
                 externalSourceOffsets[i] != externalSourceOffsets[i + 1];
             if(useGroupFreqSampling && cellHasFacePackets)
@@ -825,181 +1005,41 @@ public:
                         : owner_.postProcessExternalSourceGroupSpectra_
                             ? cellFaceGroupLuminosity(i)
                             : owner_.buildPostProcessExternalSourcePlanckPdf(cell);
-                    double totalPhys = 0.0;
-                    std::size_t nPhysGroups = 0;
-                    for(std::size_t g = 0; g < NumGroups; ++g)
-                    {
-                        if(physicalPdf[g] > 0.0)
-                        {
-                            ++nPhysGroups;
-                            totalPhys += physicalPdf[g];
-                        }
-                    }
-                    if(totalPhys > 0.0 && nPhysGroups > 0)
-                    {
-                        for(std::size_t g = 0; g < NumGroups; ++g)
-                        {
-                            physicalPdf[g] = (physicalPdf[g] > 0.0) ? physicalPdf[g] / totalPhys : 0.0;
-                        }
-                        GroupArray const &learnedScoreRaw = it->second;
-                        double const scoreFloor = 1e-12;
-                        GroupArray learnedPdf{};
-                        double learnedTotal = 0.0;
-                        for(std::size_t g = 0; g < NumGroups; ++g)
-                        {
-                            if(physicalPdf[g] > 0.0)
-                            {
-                                learnedPdf[g] = std::max(learnedScoreRaw[g], scoreFloor);
-                                learnedTotal += learnedPdf[g];
-                            }
-                        }
-                        if(learnedTotal > 0.0)
-                        {
-                            for(std::size_t g = 0; g < NumGroups; ++g)
-                            {
-                                learnedPdf[g] /= learnedTotal;
-                            }
-                            for(std::size_t g = 0; g < NumGroups; ++g)
-                            {
-                                samplingPdf[g] = (1.0 - owner_.adaptiveGroupStrength_) * physicalPdf[g]
-                                    + owner_.adaptiveGroupStrength_ * learnedPdf[g];
-                            }
-                            double floorPerGroup = (nPhysGroups > 0) ? owner_.adaptiveGroupPdfFloor_ / static_cast<double>(nPhysGroups) : 0.0;
-                            GroupArray lowerBound{};
-                            GroupArray upperBound{};
-                            double lowerTotal = 0.0;
-                            double upperTotal = 0.0;
-                            for(std::size_t g = 0; g < NumGroups; ++g)
-                            {
-                                if(physicalPdf[g] > 0.0)
-                                {
-                                    lowerBound[g] = std::max(floorPerGroup, physicalPdf[g] / owner_.adaptiveGroupMaxWeightCorrection_);
-                                    upperBound[g] = std::min(1.0, owner_.adaptiveGroupMaxBias_ * physicalPdf[g]);
-                                    lowerBound[g] = std::min(lowerBound[g], upperBound[g]);
-                                    lowerTotal += lowerBound[g];
-                                    upperTotal += upperBound[g];
-                                }
-                                else
-                                {
-                                    samplingPdf[g] = 0.0;
-                                }
-                            }
-
-                            if(lowerTotal <= 1.0 + 1e-12 && upperTotal >= 1.0 - 1e-12)
-                            {
-                                std::array<bool, NumGroups> fixed{};
-                                double remaining = 1.0;
-                                for(std::size_t g = 0; g < NumGroups; ++g)
-                                {
-                                    if(!(physicalPdf[g] > 0.0))
-                                    {
-                                        fixed[g] = true;
-                                        samplingPdf[g] = 0.0;
-                                    }
-                                }
-
-                                for(std::size_t iter = 0; iter < NumGroups + 2; ++iter)
-                                {
-                                    double freeTotal = 0.0;
-                                    for(std::size_t g = 0; g < NumGroups; ++g)
-                                    {
-                                        if(!fixed[g])
-                                        {
-                                            freeTotal += std::max(samplingPdf[g], 0.0);
-                                        }
-                                    }
-                                    if(!(freeTotal > 0.0))
-                                    {
-                                        groupPdfValid = false;
-                                        break;
-                                    }
-
-                                    bool clamped = false;
-                                    double const scale = remaining / freeTotal;
-                                    for(std::size_t g = 0; g < NumGroups; ++g)
-                                    {
-                                        if(fixed[g])
-                                        {
-                                            continue;
-                                        }
-                                        double const candidate = std::max(samplingPdf[g], 0.0) * scale;
-                                        if(candidate < lowerBound[g])
-                                        {
-                                            samplingPdf[g] = lowerBound[g];
-                                            fixed[g] = true;
-                                            remaining -= lowerBound[g];
-                                            clamped = true;
-                                        }
-                                        else if(candidate > upperBound[g])
-                                        {
-                                            samplingPdf[g] = upperBound[g];
-                                            fixed[g] = true;
-                                            remaining -= upperBound[g];
-                                            clamped = true;
-                                        }
-                                    }
-
-                                    if(!clamped)
-                                    {
-                                        for(std::size_t g = 0; g < NumGroups; ++g)
-                                        {
-                                            if(!fixed[g])
-                                            {
-                                                samplingPdf[g] = std::max(samplingPdf[g], 0.0) * scale;
-                                            }
-                                        }
-                                        remaining = 0.0;
-                                        break;
-                                    }
-                                    if(remaining < 0.0)
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                for(std::size_t g = 0; g < NumGroups; ++g)
-                                {
-                                    samplingPdf[g] = 0.0;
-                                }
-                            }
-
-                            double sampTotal = 0.0;
-                            for(std::size_t g = 0; g < NumGroups; ++g)
-                            {
-                                sampTotal += samplingPdf[g];
-                            }
-                            if(sampTotal > 0.0)
-                            {
-                                for(std::size_t g = 0; g < NumGroups; ++g)
-                                {
-                                    samplingPdf[g] /= sampTotal;
-                                }
-                                groupPdfValid = true;
-                                for(std::size_t g = 0; g < NumGroups; ++g)
-                                {
-                                    if(physicalPdf[g] > 0.0)
-                                    {
-                                        double const correction = physicalPdf[g] / samplingPdf[g];
-                                        if(!(samplingPdf[g] > 0.0)
-                                            || correction > owner_.adaptiveGroupMaxWeightCorrection_ * (1.0 + 1e-10)
-                                            || samplingPdf[g] > owner_.adaptiveGroupMaxBias_ * physicalPdf[g] * (1.0 + 1e-10))
-                                        {
-                                            groupPdfValid = false;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    groupPdfValid = buildGroupSamplingPdf(physicalPdf, it->second, samplingPdf);
                 }
             }
             if(useGroupFreqSampling && groupScoreAvailable && !groupPdfValid)
             {
                 ++owner_.lastGroupSamplingDiagnostics_.invalidPdfFallback;
                 owner_.lastGroupSamplingDiagnostics_.invalidPdfFallbackPackets += nPhotonsCell;
+            }
+            // Volume packets: the learned group sampling of the cell's thermal
+            // emission spectrum over the groups it may emit in, so groups the
+            // observers lack (hard bands carrying a tiny share of the light)
+            // get more packets, each with the weight correction
+            // physical / sampling of its group.
+            GroupArray volumePhysicalPdf{};
+            GroupArray volumeSamplingPdf{};
+            bool volumePdfValid = false;
+            if(useGroupFreqSampling && volumeEmission && volumeEnergyVec[i] > 0.0 &&
+               owner_.postProcessGroupFleck_ && i < owner_.postProcessGroupOutsideBits_.size())
+            {
+                auto const it = owner_.adaptiveSourceCellGroupScores_.find(radiation_imc_detail::cellID(cell));
+                if(it != owner_.adaptiveSourceCellGroupScores_.end())
+                {
+                    GroupArray const thermalPdf =
+                        owner_.opacity_->GetThermalGroupPdf(cell, owner_.energyBoundaries_);
+                    std::uint16_t const bits = owner_.postProcessGroupOutsideBits_[i];
+                    for(std::size_t g = 0; g < NumGroups; ++g)
+                    {
+                        volumePhysicalPdf[g] = ((bits >> g) & 1u) ? thermalPdf[g] : 0.0;
+                    }
+                    volumePdfValid = buildGroupSamplingPdf(volumePhysicalPdf, it->second, volumeSamplingPdf);
+                    if(!volumePdfValid)
+                    {
+                        ++owner_.lastGroupSamplingDiagnostics_.invalidPdfFallback;
+                    }
+                }
             }
 
             double cellLabEnergy = 0.0;
@@ -1136,8 +1176,8 @@ public:
                     particle = owner_.generateSingleParticle(i, cell, cellDecomposition);
                 }
                 // Volume packets sample the thermal emission spectrum of the
-                // cell (kappa_a B_nu), not the face Planck spectrum, and skip
-                // the learned group sampling built for the face spectrum.
+                // cell (kappa_a B_nu), not the face Planck spectrum, through
+                // their own learned group pdf (volumeSamplingPdf).
                 bool const faceSpectrum = owner_.postProcessExternalSourceMode_ && !volumePacket;
                 particle.cellID = radiation_imc_detail::cellID(cell);
                 particle.sourceCellID = particle.cellID;
@@ -1167,20 +1207,59 @@ public:
                     }
                     if(allowedTotal > 0.0 && lastAllowed < NumGroups)
                     {
-                        double const target = owner_.randomUnitOpen(particle) * allowedTotal;
-                        double cumulative = 0.0;
                         std::size_t selectedGroup = lastAllowed;
-                        for(std::size_t g = 0; g < NumGroups; ++g)
+                        if(volumePdfValid)
                         {
-                            if(!((bits >> g) & 1u))
+                            double const target = owner_.randomUnitOpen(particle);
+                            double cumulative = 0.0;
+                            std::size_t lastSampled = NumGroups;
+                            selectedGroup = NumGroups;
+                            for(std::size_t g = 0; g < NumGroups; ++g)
                             {
-                                continue;
+                                if(!(volumeSamplingPdf[g] > 0.0))
+                                {
+                                    continue;
+                                }
+                                lastSampled = g;
+                                cumulative += volumeSamplingPdf[g];
+                                if(target <= cumulative)
+                                {
+                                    selectedGroup = g;
+                                    break;
+                                }
                             }
-                            cumulative += thermalPdf[g];
-                            if(target <= cumulative)
+                            if(selectedGroup == NumGroups)
                             {
-                                selectedGroup = g;
-                                break;
+                                // Roundoff at the top of the cumulative sum.
+                                selectedGroup = lastSampled;
+                            }
+                            weightCorrection = volumePhysicalPdf[selectedGroup] / volumeSamplingPdf[selectedGroup];
+                            auto &diagnostics = owner_.lastGroupSamplingDiagnostics_;
+                            diagnostics.weightCorrectionMin = diagnostics.weightCorrectionCount == 0
+                                ? weightCorrection : std::min(diagnostics.weightCorrectionMin, weightCorrection);
+                            diagnostics.weightCorrectionMax = diagnostics.weightCorrectionCount == 0
+                                ? weightCorrection : std::max(diagnostics.weightCorrectionMax, weightCorrection);
+                            diagnostics.weightCorrectionSum += weightCorrection;
+                            ++diagnostics.weightCorrectionCount;
+                            ++diagnostics.totalSampled;
+                            diagnostics.sampledEnergy += energyPerPhoton;
+                        }
+                        else
+                        {
+                            double const target = owner_.randomUnitOpen(particle) * allowedTotal;
+                            double cumulative = 0.0;
+                            for(std::size_t g = 0; g < NumGroups; ++g)
+                            {
+                                if(!((bits >> g) & 1u))
+                                {
+                                    continue;
+                                }
+                                cumulative += thermalPdf[g];
+                                if(target <= cumulative)
+                                {
+                                    selectedGroup = g;
+                                    break;
+                                }
                             }
                         }
                         double const freqCo = owner_.opacity_->SampleThermalEnergyInGroup(
@@ -1193,12 +1272,12 @@ public:
                             double D = radiation_imc_detail::computeDopplerShift<PointT>(
                                 particle, cell, owner_.lightSpeed());
                             particle.frequency = freqCo / D;
-                            particle.weight = energyToCreate / (nPhotonsCell * D);
+                            particle.weight = energyToCreate / (nPhotonsCell * D) * weightCorrection;
                         }
                         else
                         {
                             particle.frequency = freqCo;
-                            particle.weight = energyPerPhoton;
+                            particle.weight = energyPerPhoton * weightCorrection;
                         }
                         usedGroupFrequencySampling = true;
                     }
