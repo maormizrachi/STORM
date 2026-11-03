@@ -5,3 +5,7 @@
 	path = regression_tests/THUNDER
 	url = git@github.com:maormizrachi/THUNDER.git
 	branch = main
+[submodule "deps/MACE"]
+	path = deps/MACE
+	url = git@github.com:ItamarShmelo/MACE.git
+	branch = cpp-library-mpi

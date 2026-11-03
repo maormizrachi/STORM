@@ -1265,12 +1265,33 @@ template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
          typename EOST, std::size_t NumGroups, typename OpacityT,
          typename TraitsT, typename PositionSamplerT>
 double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                    TraitsT, PositionSamplerT>::comptonComovingDoppler(
+    const MCParticle &particle) const
+{
+    return this->comptonProcess_->comptonComovingDoppler(particle);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+std::size_t RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
+                         TraitsT, PositionSamplerT>::comptonComovingGroup(
+    const MCParticle &particle, double dopplerShift) const
+{
+    return this->comptonProcess_->comptonComovingGroup(particle, dopplerShift);
+}
+
+template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,
+         typename EOST, std::size_t NumGroups, typename OpacityT,
+         typename TraitsT, typename PositionSamplerT>
+double RadiationIMC<PointT, GridT, CellT, ExtensivesT, EOST, NumGroups, OpacityT,
                     TraitsT, PositionSamplerT>::applyComptonScatterEvent(
     std::size_t cellIndex, CellT &cell, std::size_t sourceGroup,
-    MCParticle &particle, const PointT &oldVelocity, double oldWeight)
+    MCParticle &particle, const PointT &oldVelocity, double oldWeight,
+    bool inGroup)
 {
     return this->comptonProcess_->applyComptonScatterEvent(
-        cellIndex, cell, sourceGroup, particle, oldVelocity, oldWeight);
+        cellIndex, cell, sourceGroup, particle, oldVelocity, oldWeight, inGroup);
 }
 
 template<typename PointT, typename GridT, typename CellT, typename ExtensivesT,

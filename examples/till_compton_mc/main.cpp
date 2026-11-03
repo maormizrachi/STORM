@@ -519,6 +519,8 @@ int main(int argc, char **argv)
             {
                 break;
             }
+            // Thinned Compton events (the default) plan each step from the census.
+            physics->adjustExistingParticles(manager.getParticles(), stepDt);
             manager.step(stepDt);
             time.push_back(time.back() + stepDt);
             gasTemperature.push_back(cells.front().temperature);

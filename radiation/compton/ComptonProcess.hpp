@@ -3,6 +3,7 @@
 
 #include "../imc/IMCComponentBase.hpp"
 #include "../source/SourceCore.hpp"
+#include "ComptonPairThrottle.hpp"
 
 namespace STORM::radiation_imc_detail {
 
@@ -44,6 +45,57 @@ public:
     explicit ComptonProcess(Owner &owner) : Base(owner)
     {}
 
+    // Number of low groups printed by the LGDIAG diagnostic for cell 0 (STORM_COMPTON_LOWGROUP_DIAG; 0 = off).
+    static std::size_t lowGroupDiagnosticGroups()
+    {
+        static std::size_t const groups = []
+        {
+            char const *value = std::getenv("STORM_COMPTON_LOWGROUP_DIAG");
+            return value ? static_cast<std::size_t>(std::max(0, std::atoi(value))) : std::size_t{0};
+        }();
+        return groups;
+    }
+
+    bool thinnedEvents() const
+    {
+        return owner_.parameters_.comptonThinnedEvents();
+    }
+
+    bool exactEvents() const
+    {
+        return !this->thinnedEvents() && (owner_.parameters_.comptonExactEventEnergy ||
+                                          owner_.parameters_.comptonEventMode == ComptonEventMode::Exact);
+    }
+
+    // Thinned mode needs a log-uniform grid with a nonempty common normalized
+    // interval (ComptonThinned.hpp); checked once, the run stops otherwise.
+    void checkThinnedGrid()
+    {
+        if(!this->thinnedEvents() || owner_.comptonThinnedGridChecked_)
+        {
+            return;
+        }
+        constexpr double gridTolerance = 1e-12;
+        constexpr double placementMargin = 1e-9;
+        owner_.comptonThinnedGrid_ = compton_thinned::BuildGrid<NumGroups>(
+            owner_.energyBoundaries_, owner_.comptonGroupCenters_, gridTolerance, placementMargin);
+        if(!owner_.comptonThinnedGrid_.valid)
+        {
+            StormError eo("Thinned Compton events need a log-uniform group grid with arithmetic centres");
+            eo.addEntry("Reason", std::string(owner_.comptonThinnedGrid_.reason));
+            eo.addEntry("Lowest boundary", owner_.energyBoundaries_[0]);
+            eo.addEntry("Highest boundary", owner_.energyBoundaries_[NumGroups]);
+            throw eo;
+        }
+        if(!(owner_.parameters_.comptonLimiterFraction > 0.0) || owner_.parameters_.comptonLimiterFraction > 1.0)
+        {
+            StormError eo("comptonLimiterFraction must lie in (0, 1]");
+            eo.addEntry("comptonLimiterFraction", owner_.parameters_.comptonLimiterFraction);
+            throw eo;
+        }
+        owner_.comptonThinnedGridChecked_ = true;
+    }
+
     void precomputeComptonData(double sourceDt)
     {
 
@@ -69,6 +121,7 @@ public:
                 owner_.comptonData_.clear();
                 return;
             }
+            this->checkThinnedGrid();
             owner_.initializeComptonMatrixGenerator();
             const std::size_t Ncells = owner_.componentGrid().GetPointNo();
             owner_.comptonData_.assign(Ncells, ComptonCellData{});
@@ -165,7 +218,9 @@ public:
                             owner_.inverseLightSpeedSquared());
                     }
                 }
-                double const cdtEff = owner_.lightSpeed() * sourceDt * gamma;
+                // The gas temperature evolves in its proper time, dtau = dt / gamma,
+                // as in the non-Compton Fleck factor.
+                double const cdtEff = owner_.lightSpeed() * sourceDt / gamma;
                 double denominator = 1.0 + data.beta * cdtEff * data.Gamma;
                 if((denominator <= 0.0 || data.Upsilon < 0.0) &&
                    owner_.parameters_.comptonAllowNZeroFallback)
@@ -213,6 +268,11 @@ public:
                     data.betaCdtF = (1.0 - data.fleck) / data.Gamma;
                 }
                 owner_.factorFleck_[i] = data.fleck;
+                data.sourceCdt = owner_.lightSpeed() * sourceDt;
+                if(this->thinnedEvents())
+                {
+                    this->limitThinnedContraction(data, sourceDt);
+                }
                 owner_.buildComptonEventData(data);
                 owner_.buildComptonSources(sourceDt, data);
                 owner_.computeComptonRiskForCell(sourceDt, data);
@@ -231,14 +291,34 @@ public:
             throw StormError(
                 "RadiationIMC requested Compton support, but STORM was built without CMMC");
         #else
-            owner_.comptonMatrixGen_ =
-                std::make_unique<CMMCComptonBackend<NumGroups>>(
-                    owner_.comptonGroupCenters_,
-                    owner_.energyBoundaries_,
+            std::vector<double> centers(owner_.comptonGroupCenters_.begin(), owner_.comptonGroupCenters_.end());
+            std::vector<double> boundaries(owner_.energyBoundaries_.begin(), owner_.energyBoundaries_.end());
+            if(owner_.parameters_.comptonTableSource == ComptonTableSource::MACE)
+            {
+                // MACE tables carry no top-group in-group energy term (plan v10 keeps it off).
+                if(owner_.parameters_.comptonTopGroupTerm)
+                {
+                    throw StormError("comptonTopGroupTerm needs CMMC tables; MACE tables have no top-group term");
+                }
+                MACEComptonTableOptions options;
+                options.cacheDir = owner_.parameters_.comptonTableCacheDir;
+                options.angleBins = owner_.parameters_.comptonTableAngleBins;
+                options.exactSolver = owner_.parameters_.comptonTableSolver == ComptonTableSolver::Exact;
+                options.threads = owner_.parameters_.comptonTableThreads;
+                owner_.comptonMatrixGen_ = std::make_unique<ComptonTableBackend<NumGroups>>(
+                    std::make_unique<MACEComptonBackendCore>(std::move(centers), std::move(boundaries), options));
+            }
+            else
+            {
+                auto core = std::make_unique<CMMCComptonBackendCore>(
+                    std::move(centers),
+                    std::move(boundaries),
                     owner_.parameters_.comptonMatrixSamples,
                     true,
                     1);
-            owner_.comptonMatrixGen_->SetTables(owner_.buildComptonTemperatures());
+                core->SetTables(owner_.buildComptonTemperatures());
+                owner_.comptonMatrixGen_ = std::make_unique<ComptonTableBackend<NumGroups>>(std::move(core));
+            }
             owner_.comptonGroupsInitialized_ = true;
         #endif
     }
@@ -336,6 +416,56 @@ public:
             double const pi = 3.141592653589793238462643383279502884;
             double const occupationFactor = boost::math::pow<3>(owner_.lightSpeed()) /
                 (8.0 * pi * units::planck_constant);
+            // Occupation cap per group: max(100, factor nP_g(T_cap)), nP_g the
+            // group-integrated Planck occupation at T_cap = max(T_e, T_rad), T_rad
+            // the radiation-density temperature; optionally also a fixed nMax.
+            GroupArray occupationCap{};
+            occupationCap.fill(100.0);
+            if(owner_.parameters_.comptonOccupationCapFactor > 0.0)
+            {
+                double radiationDensity = 0.0;
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    radiationDensity += std::max(0.0, data.oldRadiationEnergy[group]);
+                }
+                double const capTemperature = std::max(
+                    cell.temperature, std::pow(radiationDensity / units::arad, 0.25));
+                double const kTCap = units::k_boltz * capTemperature;
+                double const capRadiationDensity = units::arad * boost::math::pow<4>(capTemperature);
+                if(kTCap > 0.0 && std::isfinite(kTCap))
+                {
+                    GroupArray capFractions{};
+                    double total = 0.0;
+                    for(std::size_t group = 0; group < NumGroups; ++group)
+                    {
+                        double const mass = planck_integral::planck_integral(
+                            owner_.energyBoundaries_[group] / kTCap, owner_.energyBoundaries_[group + 1] / kTCap);
+                        capFractions[group] = (mass > 0.0 && std::isfinite(mass)) ? mass : 0.0;
+                        total += capFractions[group];
+                    }
+                    for(std::size_t group = 0; group < NumGroups; ++group)
+                    {
+                        double const nu = owner_.comptonGroupCenters_[group] / units::planck_constant;
+                        double const dnu = owner_.comptonGroupWidths_[group] / units::planck_constant;
+                        double const planckOccupation = total > 0.0
+                            ? occupationFactor * capFractions[group] / total * capRadiationDensity /
+                                (boost::math::pow<3>(nu) * dnu)
+                            : 0.0;
+                        if(std::isfinite(planckOccupation))
+                        {
+                            occupationCap[group] = std::max(
+                                100.0, owner_.parameters_.comptonOccupationCapFactor * planckOccupation);
+                        }
+                    }
+                }
+            }
+            if(owner_.parameters_.comptonOccupationMax > 0.0)
+            {
+                for(double &cap : occupationCap)
+                {
+                    cap = std::min(cap, owner_.parameters_.comptonOccupationMax);
+                }
+            }
             for(std::size_t group = 0; group < NumGroups; ++group)
             {
                 double const dnu = owner_.comptonGroupWidths_[group] /
@@ -355,14 +485,16 @@ public:
                         (boost::math::pow<3>(nu) * dnu);
                 }
                 data.occupation[group] = std::clamp(
-                    std::isfinite(occupation) ? occupation : 0.0, 0.0, 100.0);
+                    std::isfinite(occupation) ? occupation : 0.0, 0.0, occupationCap[group]);
             }
 
-            double const minimumTemperature = 0.0001 * units::kev_kelvin;
-            double const maximumTemperature =
-                owner_.comptonMatrixGen_->GetMaximumTemperature() * 0.9999;
-            double const temperature = std::clamp(
-                lteTemperature, minimumTemperature, maximumTemperature);
+            // A backend that clamps itself (MACE) gets the physical temperature, so its clamp and zero derivative
+            // outside the table apply; CMMC needs a temperature inside its table.
+            double const temperature = owner_.comptonMatrixGen_->ClampsTemperature()
+                ? std::max(lteTemperature, std::numeric_limits<double>::min())
+                : std::clamp(lteTemperature,
+                             std::max(0.0001 * units::kev_kelvin, owner_.comptonMatrixGen_->GetMinimumTemperature()),
+                             owner_.comptonMatrixGen_->GetMaximumTemperature() * 0.9999);
             double lastGroupUpScatter = 0.0;
             double lastGroupDownScatter = 0.0;
             owner_.comptonMatrixGen_->GetTauMatrix(
@@ -374,6 +506,8 @@ public:
                 data.dtau_dUm,
                 lastGroupUpScatter,
                 lastGroupDownScatter);
+            ApplyComptonPairThrottle(data.occupation, owner_.parameters_.comptonPairThrottleOccupation,
+                                     data.tau, data.dtau_dUm);
             data.rates = data.tau;
             data.derivative = data.dtau_dUm;
             data.S = GroupMatrix{};
@@ -384,12 +518,22 @@ public:
                 {
                     if(source + 1 == NumGroups && target + 1 == NumGroups)
                     {
+                        if(!owner_.parameters_.comptonTopGroupTerm)
+                        {
+                            continue;
+                        }
                         data.S[source][source] +=
                             (lastGroupUpScatter - lastGroupDownScatter) *
                             (1.0 + data.occupation[source]);
                         data.dSdUm[source][source] +=
                             data.dtau_dUm[source][source] *
                             (1.0 + data.occupation[source]);
+                        continue;
+                    }
+                    // In-group scattering moves no energy between groups; adding and then subtracting
+                    // tau_gg (1 + n_g) would only cost precision against the (possibly throttled) out rates.
+                    if(source == target)
+                    {
                         continue;
                     }
                     double const inFactor =
@@ -407,8 +551,10 @@ public:
                         data.dtau_dUm[source][target] * outFactor;
                 }
             }
-            double const derivativeScale = 1.0 /
-                (4.0 * units::arad * boost::math::pow<3>(lteTemperature));
+            double const derivativeScale =
+                owner_.parameters_.comptonLinearizeTemperature
+                ? 1.0 / (4.0 * units::arad * boost::math::pow<3>(lteTemperature))
+                : 0.0;
             for(std::size_t source = 0; source < NumGroups; ++source)
             {
                 for(std::size_t target = 0; target < NumGroups; ++target)
@@ -544,12 +690,14 @@ public:
                     kgbg * data.Um;
                 if(data.planckOpacity > 0.0)
                 {
+                    // betaCdtF = (1 - f) / Gamma is beta c dt f with the step used in
+                    // the Fleck factor, so the corrections sum to zero over groups.
                     data.Bcorr[group] = data.volume * cdt * data.planckOpacity *
                         data.Um *
                         ((kgbg / data.planckOpacity) *
-                         (1.0 - (1.0 + data.beta * cdt * data.planckOpacity) *
-                          data.fleck) -
-                         data.beta * cdt * data.fleck * data.D[group]);
+                         (1.0 - data.fleck -
+                          data.planckOpacity * data.betaCdtF) -
+                         data.betaCdtF * data.D[group]);
                 }
                 else
                 {
@@ -589,6 +737,9 @@ public:
                 }
                 data.outRate[source] = outRate;
                 data.comptonOutRate[source] = outRate;
+                // An in-group scattering only changes direction. For such a scattering, induced scattering into
+                // and out of a direction cancel exactly, so the rate has no (1 + n) factor.
+                data.comptonInGroupRate[source] = std::max(0.0, data.tau[source][source]);
                 data.targetCdf[source] = owner_.buildSafeComptonCdf(weights);
                 data.implicitEventCdf[source] = data.targetCdf[source];
                 double baseOpacity = 0.0;
@@ -619,6 +770,32 @@ public:
                 data.comptonMu[source] = mu;
                 data.comptonMh[source] =
                     1.0 + data.fleck * (mu - 1.0);
+                data.thinnedJumpProbability[source] = data.fleck;
+                if(this->thinnedEvents())
+                {
+                    // Optional non-jump throttle; comptonMh becomes the expected
+                    // multiplier of one sampled event, 1 + p (mu - 1).
+                    compton_thinned::ThrottledRate const throttled = compton_thinned::ThrottleEvents(
+                        outRate, data.fleck, data.sourceCdt, owner_.parameters_.comptonEventThrottle);
+                    data.comptonOutRate[source] = throttled.rate;
+                    data.thinnedJumpProbability[source] = throttled.jumpProbability;
+                    data.comptonMh[source] = 1.0 + throttled.jumpProbability * (mu - 1.0);
+                }
+                // Second moment of the energy ratio, for the ledger variance
+                // w^2 [f V2 - f^2 (mu - 1)^2] of a Thinned event.
+                data.thinnedV2[source] = 0.0;
+                if(outRate > 0.0)
+                {
+                    for(std::size_t target = 0; target < NumGroups; ++target)
+                    {
+                        if(target != source)
+                        {
+                            double const ratio = owner_.comptonGroupCenters_[target] /
+                                owner_.comptonGroupCenters_[source];
+                            data.thinnedV2[source] += weights[target] / outRate * (ratio - 1.0) * (ratio - 1.0);
+                        }
+                    }
+                }
                 data.meanEnergyRatio[source] = mu;
                 data.modifiedFleck[source] = data.fleck;
                 data.implicitEventRate[source] = outRate;
@@ -645,12 +822,25 @@ public:
                         : (1.0 - data.fleck) *
                             data.absorptionOpacity[source] *
                             data.baseSourceFraction[target];
-                    double const eventKernel = source == target
+                    double const eventMultiplier = this->exactEvents()
+                        ? owner_.comptonGroupCenters_[target] /
+                            owner_.comptonGroupCenters_[source]
+                        : data.comptonMh[source];
+                    double eventKernel = source == target
                         ? -outRate
                         : (outRate > 0.0
                             ? outRate * weights[target] / outRate *
-                                data.comptonMh[source]
+                                eventMultiplier
                             : 0.0);
+                    if(this->thinnedEvents())
+                    {
+                        // Thinned jumps realize H = f S exactly: a fraction f of
+                        // the events moves the packet with the centre ratio.
+                        eventKernel = source == target
+                            ? -data.fleck * outRate
+                            : data.fleck * weights[target] *
+                                owner_.comptonGroupCenters_[target] / owner_.comptonGroupCenters_[source];
+                    }
                     data.implicitKernel[source][target] = eventKernel;
                     data.implicitEventRateMatrix[source][target] = eventKernel;
                     data.residualKernel[source][target] =
@@ -762,6 +952,107 @@ public:
             owner_.tallyMaterialEnergy(cellIndex, energy);
     }
 
+    // Packets per group of a cell's Compton emission (base source), with the
+    // risk top-up; shared by the source plan and the Thinned noise predictor.
+    std::array<std::size_t, NumGroups> allocateComptonSourcePackets(const ComptonCellData &data) const
+    {
+            GroupArray sourceEnergy{};
+            GroupArray fractional{};
+            std::array<std::size_t, NumGroups> groupCounts{};
+            double totalSourceEnergy = 0.0;
+            std::size_t activeGroups = 0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                sourceEnergy[group] = std::max(0.0, data.Bbase[group]);
+                totalSourceEnergy += sourceEnergy[group];
+                if(sourceEnergy[group] > 0.0)
+                {
+                    ++activeGroups;
+                }
+            }
+            std::size_t const packetCount = std::max(
+                owner_.parameters_.newPhotonsPerCell, activeGroups);
+            if(packetCount == 0 || !(totalSourceEnergy > 0.0))
+            {
+                return groupCounts;
+            }
+
+            std::size_t allocated = 0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                if(sourceEnergy[group] > 0.0)
+                {
+                    groupCounts[group] = 1;
+                    ++allocated;
+                }
+            }
+            std::size_t const remainingBudget = packetCount - allocated;
+            std::size_t extraAllocated = 0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                if(!(sourceEnergy[group] > 0.0))
+                {
+                    continue;
+                }
+                double const exactExtra = static_cast<double>(remainingBudget) *
+                    sourceEnergy[group] / totalSourceEnergy;
+                std::size_t const extra =
+                    static_cast<std::size_t>(std::floor(exactExtra));
+                groupCounts[group] += extra;
+                fractional[group] = exactExtra - static_cast<double>(extra);
+                extraAllocated += extra;
+            }
+            while(extraAllocated < remainingBudget)
+            {
+                std::size_t bestGroup = NumGroups;
+                double bestFraction = -1.0;
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    if(sourceEnergy[group] > 0.0 &&
+                       fractional[group] > bestFraction)
+                    {
+                        bestGroup = group;
+                        bestFraction = fractional[group];
+                    }
+                }
+                if(bestGroup == NumGroups)
+                {
+                    break;
+                }
+                ++groupCounts[bestGroup];
+                fractional[bestGroup] = 0.0;
+                ++extraAllocated;
+            }
+
+            std::size_t riskBudget = std::max<std::size_t>(8, packetCount / 4);
+            std::array<std::size_t, NumGroups> riskOrder{};
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                riskOrder[group] = group;
+            }
+            std::sort(riskOrder.begin(), riskOrder.end(),
+                [&](std::size_t left, std::size_t right)
+                {
+                    return data.riskScore[left] > data.riskScore[right];
+                });
+            for(std::size_t order = 0;
+                order < NumGroups && riskBudget > 0; ++order)
+            {
+                std::size_t const group = riskOrder[order];
+                std::size_t const target = data.riskTargetPackets[group];
+                if(target == 0 || !(sourceEnergy[group] > 0.0) ||
+                   groupCounts[group] >= target)
+                {
+                    continue;
+                }
+                std::size_t const add =
+                    std::min(target - groupCounts[group], riskBudget);
+                groupCounts[group] += add;
+                riskBudget -= add;
+            }
+            return groupCounts;
+    }
+
     // Compton decides what each cell emits: the source energy per group,
     // the packets per group and their group-centre frequencies.  It adds one
     // plan entry per (cell, group); IMCSourceProcess emits the plan and
@@ -770,114 +1061,23 @@ public:
     {
 
             plan.fixedFrequencies = true;
-            plan.clampLabFrequency = true;
+            // Thinned mode: the clamp would change w/nu of edge-group packets
+            // born in moving cells (plan 1b, R1).
+            plan.clampLabFrequency = !this->thinnedEvents();
             for(std::size_t cellIndex = 0; cellIndex < owner_.comptonData_.size(); ++cellIndex)
             {
                 ComptonCellData const &data = owner_.comptonData_[cellIndex];
-                GroupArray sourceEnergy{};
-                GroupArray fractional{};
-                std::array<std::size_t, NumGroups> groupCounts{};
-                double totalSourceEnergy = 0.0;
-                std::size_t activeGroups = 0;
-                for(std::size_t group = 0; group < NumGroups; ++group)
-                {
-                    sourceEnergy[group] = std::max(0.0, data.Bbase[group]);
-                    totalSourceEnergy += sourceEnergy[group];
-                    if(sourceEnergy[group] > 0.0)
-                    {
-                        ++activeGroups;
-                    }
-                }
-                std::size_t const packetCount = std::max(
-                    owner_.parameters_.newPhotonsPerCell, activeGroups);
-                if(packetCount == 0 || !(totalSourceEnergy > 0.0))
-                {
-                    continue;
-                }
-
-                std::size_t allocated = 0;
-                for(std::size_t group = 0; group < NumGroups; ++group)
-                {
-                    if(sourceEnergy[group] > 0.0)
-                    {
-                        groupCounts[group] = 1;
-                        ++allocated;
-                    }
-                }
-                std::size_t const remainingBudget = packetCount - allocated;
-                std::size_t extraAllocated = 0;
-                for(std::size_t group = 0; group < NumGroups; ++group)
-                {
-                    if(!(sourceEnergy[group] > 0.0))
-                    {
-                        continue;
-                    }
-                    double const exactExtra = static_cast<double>(remainingBudget) *
-                        sourceEnergy[group] / totalSourceEnergy;
-                    std::size_t const extra =
-                        static_cast<std::size_t>(std::floor(exactExtra));
-                    groupCounts[group] += extra;
-                    fractional[group] = exactExtra - static_cast<double>(extra);
-                    extraAllocated += extra;
-                }
-                while(extraAllocated < remainingBudget)
-                {
-                    std::size_t bestGroup = NumGroups;
-                    double bestFraction = -1.0;
-                    for(std::size_t group = 0; group < NumGroups; ++group)
-                    {
-                        if(sourceEnergy[group] > 0.0 &&
-                           fractional[group] > bestFraction)
-                        {
-                            bestGroup = group;
-                            bestFraction = fractional[group];
-                        }
-                    }
-                    if(bestGroup == NumGroups)
-                    {
-                        break;
-                    }
-                    ++groupCounts[bestGroup];
-                    fractional[bestGroup] = 0.0;
-                    ++extraAllocated;
-                }
-
-                std::size_t riskBudget = std::max<std::size_t>(8, packetCount / 4);
-                std::array<std::size_t, NumGroups> riskOrder{};
-                for(std::size_t group = 0; group < NumGroups; ++group)
-                {
-                    riskOrder[group] = group;
-                }
-                std::sort(riskOrder.begin(), riskOrder.end(),
-                    [&](std::size_t left, std::size_t right)
-                    {
-                        return data.riskScore[left] > data.riskScore[right];
-                    });
-                for(std::size_t order = 0;
-                    order < NumGroups && riskBudget > 0; ++order)
-                {
-                    std::size_t const group = riskOrder[order];
-                    std::size_t const target = data.riskTargetPackets[group];
-                    if(target == 0 || !(sourceEnergy[group] > 0.0) ||
-                       groupCounts[group] >= target)
-                    {
-                        continue;
-                    }
-                    std::size_t const add =
-                        std::min(target - groupCounts[group], riskBudget);
-                    groupCounts[group] += add;
-                    riskBudget -= add;
-                }
-
+                std::array<std::size_t, NumGroups> const groupCounts = this->allocateComptonSourcePackets(data);
                 for(std::size_t group = 0; group < NumGroups; ++group)
                 {
                     std::size_t const groupPackets = groupCounts[group];
-                    if(groupPackets == 0 || !(sourceEnergy[group] > 0.0))
+                    double const sourceEnergy = std::max(0.0, data.Bbase[group]);
+                    if(groupPackets == 0 || !(sourceEnergy > 0.0))
                     {
                         continue;
                     }
                     plan.addEntry(cellIndex, groupPackets,
-                        sourceEnergy[group] / static_cast<double>(groupPackets),
+                        sourceEnergy / static_cast<double>(groupPackets),
                         this->frequencyForComptonGroup(group));
                 }
             }
@@ -1287,6 +1487,40 @@ public:
             return true;
     }
 
+    // Lab-to-comoving Doppler factor of a packet in its cell, with the same frame
+    // choice as setPacketFromComovingState.  The Compton correction works with
+    // comoving group energies, so the census, the path-length tallies and the
+    // reconciliation all convert packets with this factor.
+    double comptonComovingDoppler(
+        const MCParticle &particle) const
+    {
+
+            double dopplerShift = 1.0;
+            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+            {
+                if(particle.cellIndex < owner_.cells_.size() &&
+                   ((owner_.parameters_.withHydro && !owner_.parameters_.MMC &&
+                     !owner_.parameters_.staticScatterers) ||
+                    (owner_.parameters_.postProcess.enabled &&
+                     owner_.parameters_.postProcess.useCellVelocities)))
+                {
+                    dopplerShift = radiation_imc_detail::computeDopplerShift<PointT>(
+                        particle, owner_.cells_[particle.cellIndex], owner_.lightSpeed());
+                }
+            }
+            return dopplerShift;
+    }
+
+    // Comoving group of a packet, clamped to the group grid as in the Compton events.
+    std::size_t comptonComovingGroup(
+        const MCParticle &particle, double dopplerShift) const
+    {
+
+            double frequency = particle.frequency * dopplerShift;
+            owner_.clampFrequencyToBounds(frequency);
+            return owner_.opacity_->findGroup(frequency, owner_.energyBoundaries_);
+    }
+
     void setPacketFromComovingState(
         MCParticle &particle,
         const CellT &cell,
@@ -1314,7 +1548,12 @@ public:
             }
             particle.frequency = comovingFrequency / dopplerShift;
             particle.weight = comovingWeight / dopplerShift;
-            owner_.clampFrequencyToBounds(particle.frequency);
+            // Thinned mode never clamps a stored frequency (plan 1b): a lab
+            // frequency outside the grid re-enters, photons kept, in transport.
+            if(!this->thinnedEvents())
+            {
+                owner_.clampFrequencyToBounds(particle.frequency);
+            }
     }
 
     double applyComptonScatterEvent(
@@ -1323,7 +1562,8 @@ public:
         std::size_t sourceGroup,
         MCParticle &particle,
         const PointT &oldVelocity,
-        double oldWeight)
+        double oldWeight,
+        bool inGroup)
     {
 
             if(sourceGroup >= NumGroups)
@@ -1331,13 +1571,26 @@ public:
                 return 0.0;
             }
             ComptonCellData &data = owner_.comptonData_[cellIndex];
-            if(!(data.comptonOutRate[sourceGroup] > 0.0))
+            double const eventRate = inGroup
+                ? data.comptonInGroupRate[sourceGroup]
+                : data.comptonOutRate[sourceGroup];
+            if(!(eventRate > 0.0))
             {
                 return 0.0;
             }
-            std::size_t const targetGroup = owner_.sampleComptonTarget(
-                data, sourceGroup, particle);
-            if(targetGroup == sourceGroup || targetGroup >= NumGroups)
+            if(this->thinnedEvents())
+            {
+                compton_thinned::Diagnostics &costDiagnostics = owner_.comptonThinnedDiagnostics_;
+                std::vector<double> &counts = inGroup ? costDiagnostics.inGroupEventsByGroup
+                                                      : costDiagnostics.eventsByGroup;
+                if(sourceGroup < counts.size())
+                {
+                    counts[sourceGroup] += 1.0;
+                }
+            }
+            std::size_t const targetGroup = inGroup ? sourceGroup
+                : owner_.sampleComptonTarget(data, sourceGroup, particle);
+            if((!inGroup && targetGroup == sourceGroup) || targetGroup >= NumGroups)
             {
                 throw StormError("RadiationIMC Compton CDF returned an invalid target group");
             }
@@ -1405,11 +1658,57 @@ public:
                 particle.velocity = owner_.sampleScatterVelocity(cell, particle);
             }
 
-            // Deliberately use the source-group mean energy multiplier rather
-            // than the sampled target ratio. This preserves the mean Compton
-            // exchange while avoiding target-to-target packet-weight noise; the
+            // An in-group scattering changes only the direction.
+            if(inGroup)
+            {
+                return 0.0;
+            }
+
+            if(this->thinnedEvents())
+            {
+                // Plan 1a: with probability f the packet jumps, frequency and
+                // weight scaled by the centre ratio (photons w/nu kept); otherwise
+                // only its direction changed.  The gas receives the expected
+                // exchange w (1 - eta); the return value is the ledger mismatch
+                // x = w' - w eta (zero mean), from the weight before any nudge.
+                compton_thinned::Diagnostics &diagnostics = owner_.comptonThinnedDiagnostics_;
+                ++diagnostics.events;
+                double const expectedWeight = oldWeight * data.comptonMh[sourceGroup];
+                if(owner_.randomUnitOpen(particle) >= data.thinnedJumpProbability[sourceGroup])
+                {
+                    return oldWeight - expectedWeight;
+                }
+                ++diagnostics.jumps;
+                double const ratio = owner_.comptonGroupCenters_[targetGroup] /
+                    owner_.comptonGroupCenters_[sourceGroup];
+                double const jumpWeight = oldWeight * ratio;
+                double const jumpFrequency = particle.frequency * ratio;
+                // Rounding can leave the product a hair outside the target group:
+                // move it inside, photons kept; the transport tally books the
+                // (roundoff-size) energy change.
+                double const placedFrequency = compton_thinned::NudgeIntoGroup(
+                    jumpFrequency, owner_.energyBoundaries_[targetGroup], owner_.energyBoundaries_[targetGroup + 1],
+                    owner_.comptonThinnedGrid_.margin);
+                particle.frequency = placedFrequency;
+                particle.weight = jumpWeight * placedFrequency / jumpFrequency;
+                if(placedFrequency != jumpFrequency)
+                {
+                    ++diagnostics.nudges;
+                    diagnostics.nudgeEnergy += particle.weight - jumpWeight;
+                }
+                return jumpWeight - expectedWeight;
+            }
+
+            // By default use the source-group mean energy multiplier rather than
+            // the sampled target ratio. This preserves the mean Compton exchange
+            // while avoiding target-to-target packet-weight noise; the
             // deterministic residual correction carries the spectral difference.
-            double const eventMultiplier = data.comptonMh[sourceGroup];
+            // comptonExactEventEnergy uses the target ratio instead, which keeps a
+            // Planck spectrum invariant during transport.
+            double const eventMultiplier = this->exactEvents()
+                ? owner_.comptonGroupCenters_[targetGroup] /
+                    owner_.comptonGroupCenters_[sourceGroup]
+                : data.comptonMh[sourceGroup];
             if(!(eventMultiplier > 0.0) || !std::isfinite(eventMultiplier))
             {
                 throw StormError("RadiationIMC produced an invalid averaged Compton event multiplier");
@@ -1429,9 +1728,14 @@ public:
         const GroupArray &timeAvgGroupEnergy,
         double budgetBefore,
         double materialFloor,
-        double preStepRadiation) const
+        double preStepRadiation,
+        const GroupArray *bcorrOverride = nullptr,
+        double correctionScale = 1.0) const
     {
 
+            // Thinned mode passes Bcorr built from the time averages (plan 3b);
+            // it needs no rescaling with the post-transport radiation.
+            GroupArray const &bcorr = bcorrOverride ? *bcorrOverride : data.Bcorr;
             ComptonCorrectionResult result;
             result.materialEnergyBefore =
                 owner_.extensives_[cellIndex].internal_energy;
@@ -1463,7 +1767,7 @@ public:
                    rawGroupEnergy[group] < 0.0 ||
                    !std::isfinite(timeAvgGroupEnergy[group]) ||
                    timeAvgGroupEnergy[group] < 0.0 ||
-                   !std::isfinite(data.Bcorr[group]))
+                   !std::isfinite(bcorr[group]))
                 {
                     return fail(ComptonCorrectionFailure::NonFiniteState);
                 }
@@ -1479,7 +1783,7 @@ public:
             {
                 return fail(ComptonCorrectionFailure::NonFiniteState);
             }
-            double const bcorrScale = preStepRadiation > 0.0
+            double const bcorrScale = !bcorrOverride && preStepRadiation > 0.0
                 ? std::clamp(
                     totalPostTransportRadiation / preStepRadiation, 0.0, 1.0)
                 : 1.0;
@@ -1513,7 +1817,7 @@ public:
             {
                 for(std::size_t column = 0; column < NumGroups; ++column)
                 {
-                    double const Lrc = fullDt * owner_.lightSpeed() *
+                    double const Lrc = correctionScale * fullDt * owner_.lightSpeed() *
                         data.residualKernel[column][row];
                     if(!std::isfinite(Lrc))
                     {
@@ -1549,7 +1853,7 @@ public:
                         conservativeLrc * timeAvgGroupEnergy[column];
                 }
                 materialCouplingDrive[row] = bcorrScale *
-                    (data.Bcorr[row] +
+                    (correctionScale * bcorr[row] +
                      residualColumnSum[row] * oldGroupEnergy[row]);
                 drive[row] = conservativeTimeAverageDrive[row] +
                     materialCouplingDrive[row];
@@ -1580,6 +1884,54 @@ public:
             GroupArray directDelta{};
             bool const directOk = this->solveComptonGroupSystem(
                 matrix, drive, directDelta);
+            // Low-group diagnostic, off unless STORM_COMPTON_LOWGROUP_DIAG gives a group count: the drive of
+            // the lowest groups split into the (1 - f) S part and the Lambda M^T (temperature linearization)
+            // part, the material coupling and the direct correction.
+            if(correctionScale == 1.0 && cellIndex == 0 && this->lowGroupDiagnosticGroups() > 0)
+            {
+                double exchange = 0.0;
+                double sumM = 0.0;
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    exchange += data.Lambda[group] * timeAvgGroupEnergy[group];
+                    sumM += data.M[group];
+                }
+                double const lambdaScale = fullDt * owner_.lightSpeed() * data.betaCdtF;
+                std::cout << "LGDIAG correction cell " << cellIndex << " dt " << fullDt << " fleck " << data.fleck
+                          << " betaCdtF " << data.betaCdtF << " sumM " << sumM << " sumLambdaAvg " << exchange << '\n';
+                for(std::size_t group = 0; group < std::min(this->lowGroupDiagnosticGroups(), NumGroups); ++group)
+                {
+                    // M_t = D_t split into the self term and the inflow from other groups (largest source named).
+                    double const self = data.dSdUm[group][group] * data.oldRadiationEnergy[group];
+                    double inflow = 0.0;
+                    double largest = 0.0;
+                    std::size_t largestSource = group;
+                    for(std::size_t source = 0; source < NumGroups; ++source)
+                    {
+                        double const term = data.dSdUm[source][group] * data.oldRadiationEnergy[source];
+                        if(source != group)
+                        {
+                            inflow += term;
+                            if(std::abs(term) > std::abs(largest))
+                            {
+                                largest = term;
+                                largestSource = source;
+                            }
+                        }
+                    }
+                    std::cout << "LGDIAG m " << group << " self " << self << " inflow " << inflow << " largest "
+                              << largest << " from " << largestSource << " dSdUm_self " << data.dSdUm[group][group]
+                              << " dtau_self_row " << data.dtau_dUm[group][std::min(group + 1, NumGroups - 1)] << '\n';
+                    double const lambdaPart = lambdaScale *
+                        (data.M[group] * exchange - sumM * data.Lambda[group] * timeAvgGroupEnergy[group]);
+                    std::cout << "LGDIAG g " << group << " old " << oldGroupEnergy[group] << " raw "
+                              << rawGroupEnergy[group] << " avg " << timeAvgGroupEnergy[group] << " sPart "
+                              << conservativeTimeAverageDrive[group] - lambdaPart << " lambdaPart " << lambdaPart
+                              << " coupling " << materialCouplingDrive[group] << " bcorr " << bcorr[group]
+                              << " delta " << directDelta[group] << " M " << data.M[group] << " Lambda "
+                              << data.Lambda[group] << " n " << data.occupation[group] << '\n';
+                }
+            }
 
             GroupArray directEndpoint{};
             double directTotal = 0.0;
@@ -1657,6 +2009,14 @@ public:
                     perGroupNegativeTolerance,
                     totalNegativeTolerance);
                 directProjection.usedCapRepair = directCapRepair;
+            }
+            result.correctionScale = correctionScale;
+            result.directResidual = directResidual;
+            result.directTotal = directTotal;
+            if(directCandidateFinite)
+            {
+                result.directWorstNegative = directProjection.worstNegative;
+                result.directNegativeMass = directProjection.negativeMass;
             }
             bool const directClampAcceptable = directCandidateFinite &&
                 directProjection.worstNegative <= perGroupNegativeTolerance &&
@@ -1794,7 +2154,7 @@ public:
                         currentDelta[row] + fraction * drive[row];
                     for(std::size_t column = 0; column < NumGroups; ++column)
                     {
-                        double const Lrc = fullDt * owner_.lightSpeed() *
+                        double const Lrc = correctionScale * fullDt * owner_.lightSpeed() *
                             data.residualKernel[column][row];
                         fractionalMatrix[row][column] =
                             (row == column ? 1.0 : 0.0) - fraction * Lrc;
@@ -2033,6 +2393,716 @@ public:
             return result;
     }
 
+    // ----- Thinned event mode (plan v10, ComptonThinned.hpp) -----
+
+    // Same frame choice as comptonComovingDoppler and setPacketFromComovingState.
+    bool comptonMovingFrame() const
+    {
+        return (owner_.parameters_.withHydro && !owner_.parameters_.MMC && !owner_.parameters_.staticScatterers) ||
+               (owner_.parameters_.postProcess.enabled && owner_.parameters_.postProcess.useCellVelocities);
+    }
+
+    // Velocity and Lorentz factor of a cell's transport frame (zero and 1 when
+    // transport uses no moving frame).
+    std::pair<PointT, double> comptonTransportFrame(std::size_t cellIndex) const
+    {
+        PointT velocity{};
+        double gamma = 1.0;
+        if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+        {
+            if(this->comptonMovingFrame())
+            {
+                velocity = cellIndex < owner_.transportCellVelocities_.size()
+                    ? owner_.transportCellVelocities_[cellIndex] : owner_.cells_[cellIndex].velocity;
+                gamma = 1.0 / std::sqrt(1.0 - ScalarProd(velocity, velocity) * owner_.inverseLightSpeedSquared());
+            }
+        }
+        return {velocity, gamma};
+    }
+
+    // Plan 1b: a packet whose comoving frequency lies outside [B_0, B_G)
+    // re-enters next to the near edge; frequency and weight are scaled by the
+    // same factor, so photons are kept, and the lab energy and momentum
+    // difference goes to the gas as frequency-boundary work.
+    void reenterComptonGrid(std::size_t cellIndex, MCParticle &particle, double dopplerShift)
+    {
+        double const comovingFrequency = particle.frequency * dopplerShift;
+        double const factor = compton_thinned::ReentryFactor(
+            comovingFrequency, owner_.energyBoundaries_[0], owner_.energyBoundaries_[NumGroups],
+            owner_.comptonGroupCenters_[0], owner_.comptonGroupCenters_[NumGroups - 1], owner_.comptonThinnedGrid_);
+        if(factor == 1.0)
+        {
+            return;
+        }
+        if(!(factor > 0.0) || !std::isfinite(factor))
+        {
+            StormError eo("Thinned Compton re-entry received an invalid comoving frequency");
+            eo.addEntry("Cell index", cellIndex);
+            eo.addEntry("Comoving frequency", comovingFrequency);
+            throw eo;
+        }
+        double const work = (1.0 - factor) * particle.weight;
+        particle.frequency *= factor;
+        particle.weight *= factor;
+        particle.initialWeight *= factor;
+        compton_thinned::Diagnostics &diagnostics = owner_.comptonThinnedDiagnostics_;
+        if(comovingFrequency < owner_.energyBoundaries_[0])
+        {
+            ++diagnostics.reentryLower;
+            diagnostics.boundaryWorkLower += work;
+        }
+        else
+        {
+            ++diagnostics.reentryUpper;
+            diagnostics.boundaryWorkUpper += work;
+        }
+        if(!owner_.parameters_.noHydroFeedback && !owner_.parameters_.postProcess.enabled)
+        {
+            owner_.tallyMaterialEnergy(cellIndex, work);
+            if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
+            {
+                if(owner_.parameters_.withHydro && !owner_.parameters_.diffusionPressureGradient)
+                {
+                    owner_.tallyMomentum(cellIndex, particle.velocity * (work * owner_.inverseLightSpeedSquared()));
+                }
+            }
+        }
+    }
+
+    void tallyThinnedHazard(std::size_t cellIndex, std::size_t group, double energyIntegral, double squaredIntegral)
+    {
+        owner_.comptonHazardEnergy_[cellIndex][group] += energyIntegral;
+        owner_.comptonHazardWeightSquared_[cellIndex][group] += squaredIntegral;
+    }
+
+    // preStep: the census preparation (adjustExistingParticles) must have
+    // planned this step with the same dt; then the step's ledgers and hazard
+    // tallies start from zero.
+    void beginThinnedStep(std::size_t cellCount, bool reusedPreparation)
+    {
+        if(!this->thinnedEvents())
+        {
+            return;
+        }
+        if(!owner_.parameters_.postProcess.enabled && (!owner_.comptonCensusPrepared_ || !reusedPreparation))
+        {
+            StormError eo("Thinned Compton events need adjustExistingParticles(particles, dt) before every step, "
+                          "with the step's dt");
+            eo.addEntry("Census prepared", owner_.comptonCensusPrepared_);
+            eo.addEntry("Preparation reused", reusedPreparation);
+            throw eo;
+        }
+        owner_.comptonCensusPrepared_ = false;
+        owner_.comptonLedger_.assign(cellCount, 0.0);
+        owner_.comptonHazardEnergy_.assign(cellCount, GroupArray{});
+        owner_.comptonHazardWeightSquared_.assign(cellCount, GroupArray{});
+        owner_.comptonRawPhotons_.assign(cellCount, 0.0);
+        owner_.comptonEndH_.assign(cellCount, GroupArray{});
+        owner_.comptonGasSettlement_.assign(cellCount, 0.0);
+        owner_.comptonCorrectionGasChange_.assign(cellCount, 0.0);
+    }
+
+    // Census moments of the cell's packets per comoving group: energy, actual
+    // photons sum w/nu and sum w^2, all comoving.
+    void accumulateComptonCensus(const std::vector<MCParticle> &particles, std::vector<GroupArray> &energy,
+                                 std::vector<GroupArray> *photons, std::vector<GroupArray> *weightSquared) const
+    {
+        for(const MCParticle &particle : particles)
+        {
+            if(particle.cellIndex >= energy.size())
+            {
+                continue;
+            }
+            double const dopplerShift = this->comptonComovingDoppler(particle);
+            std::size_t const group = this->comptonComovingGroup(particle, dopplerShift);
+            if(group >= NumGroups)
+            {
+                continue;
+            }
+            double const weight = particle.weight * dopplerShift;
+            energy[particle.cellIndex][group] += weight;
+            if(photons)
+            {
+                (*photons)[particle.cellIndex][group] += particle.weight / particle.frequency;
+            }
+            if(weightSquared)
+            {
+                (*weightSquared)[particle.cellIndex][group] += weight * weight;
+            }
+        }
+    }
+
+    // h_g = N_g / E_g of the census, 1/eps_g for an empty group.
+    GroupArray comptonPhotonsPerEnergy(const GroupArray &energy, const GroupArray &photons) const
+    {
+        GroupArray h{};
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            h[group] = energy[group] > 0.0 && photons[group] > 0.0
+                ? photons[group] / energy[group] : 1.0 / owner_.comptonGroupCenters_[group];
+        }
+        return h;
+    }
+
+    // Plan 2b: once the census is final (after risk splitting), record its
+    // moments and fix each cell's reservoir plan for the step from the
+    // predicted ledger noise sigma^2 = sum_s c dt q_s M2_s [f V2_s - f^2 (mu_s - 1)^2],
+    // M2_s = max(Dmax (C_s + P_s), T_s^prev) (extensive, erg^2).
+    void prepareThinnedCensus(const std::vector<MCParticle> &particles, double fullDt)
+    {
+        if(!this->thinnedEvents() || owner_.parameters_.postProcess.enabled)
+        {
+            return;
+        }
+        if(owner_.comptonCensusPrepared_)
+        {
+            throw StormError("Thinned Compton census was prepared twice for one step");
+        }
+        std::size_t const Ncells = owner_.comptonData_.size();
+        owner_.comptonThinnedDiagnostics_ = compton_thinned::Diagnostics{};
+        owner_.comptonThinnedDiagnostics_.eventsByGroup.assign(NumGroups, 0.0);
+        owner_.comptonThinnedDiagnostics_.inGroupEventsByGroup.assign(NumGroups, 0.0);
+        std::vector<GroupArray> energy(Ncells, GroupArray{});
+        std::vector<GroupArray> photons(Ncells, GroupArray{});
+        std::vector<GroupArray> weightSquared(Ncells, GroupArray{});
+        this->accumulateComptonCensus(particles, energy, &photons, &weightSquared);
+        if(owner_.comptonPreviousWeightSquared_.size() != Ncells)
+        {
+            owner_.comptonPreviousWeightSquared_.assign(Ncells, GroupArray{});
+        }
+        double const cdt = owner_.lightSpeed() * fullDt;
+        compton_thinned::Diagnostics &diagnostics = owner_.comptonThinnedDiagnostics_;
+        for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+        {
+            ComptonCellData &data = owner_.comptonData_[cellIndex];
+            data.censusEnergy = energy[cellIndex];
+            data.censusPhotons = photons[cellIndex];
+            data.censusWeightSquared = weightSquared[cellIndex];
+            data.censusPrepared = true;
+            auto const [velocity, gamma] = this->comptonTransportFrame(cellIndex);
+            double const maximumDoppler = gamma *
+                (1.0 + std::sqrt(ScalarProd(velocity, velocity) * owner_.inverseLightSpeedSquared()));
+            std::array<std::size_t, NumGroups> const emission = this->allocateComptonSourcePackets(data);
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                double const emitted = emission[group] > 0
+                    ? std::max(0.0, data.Bbase[group]) * std::max(0.0, data.Bbase[group]) /
+                        static_cast<double>(emission[group])
+                    : 0.0;
+                data.plannedWeightSquared[group] = std::max(
+                    maximumDoppler * (weightSquared[cellIndex][group] + emitted),
+                    owner_.comptonPreviousWeightSquared_[cellIndex][group]);
+            }
+            double const variance = compton_thinned::PredictLedgerVariance<NumGroups>(
+                cdt, data.thinnedJumpProbability, data.comptonOutRate, data.comptonMu, data.thinnedV2,
+                data.plannedWeightSquared);
+            data.predictedSigma = std::sqrt(std::max(0.0, variance));
+            double const gasEnergy = owner_.extensives_[cellIndex].internal_energy;
+            data.plannedGas = !owner_.parameters_.noHydroFeedback &&
+                data.predictedSigma <= owner_.parameters_.comptonSettlementGasTolerance * gasEnergy;
+            GroupArray const hPre = this->comptonPhotonsPerEnergy(energy[cellIndex], photons[cellIndex]);
+            constexpr double minimumStencilRatio = 8.0;
+            data.plannedStencil = compton_thinned::SelectPlannedStencil<NumGroups>(
+                energy[cellIndex], hPre, data.predictedSigma, owner_.parameters_.comptonSettlementSigmaMargin,
+                minimumStencilRatio);
+            diagnostics.predictedSigmaSum += data.predictedSigma;
+            diagnostics.limiterActive += data.limiterActive ? 1 : 0;
+            diagnostics.limiterInfeasible += data.limiterInfeasible ? 1 : 0;
+            if(data.plannedGas)
+            {
+                ++diagnostics.gasFirstChoices;
+            }
+            else
+            {
+                ++diagnostics.radiationFirstChoices;
+                if(!data.plannedStencil.qualified)
+                {
+                    ++diagnostics.unqualifiedStencils;
+                }
+            }
+            if(data.plannedStencil.found)
+            {
+                diagnostics.maxStencilAmplification = std::max(
+                    diagnostics.maxStencilAmplification,
+                    compton_thinned::StencilAmplification(data.plannedStencil));
+            }
+        }
+        owner_.comptonCensusPrepared_ = true;
+    }
+
+    // Plan 2c, between the census tally and the correction: every cell's ledger
+    // X is paid photon-neutrally by the planned reservoir, else the other one,
+    // else any photon-neutral pair; nothing paying is a failure.  Records the
+    // actual photons before settlement and h^end for the correction.
+    void settleThinnedLedgers(const std::vector<MCParticle> &particles)
+    {
+        if(!this->thinnedEvents() || owner_.parameters_.postProcess.enabled)
+        {
+            return;
+        }
+        if constexpr(radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
+        {
+            std::size_t const Ncells = owner_.comptonData_.size();
+            std::vector<GroupArray> energy(Ncells, GroupArray{});
+            std::vector<GroupArray> photons(Ncells, GroupArray{});
+            this->accumulateComptonCensus(particles, energy, &photons, nullptr);
+            compton_thinned::Diagnostics &diagnostics = owner_.comptonThinnedDiagnostics_;
+            for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+            {
+                ComptonCellData const &data = owner_.comptonData_[cellIndex];
+                GroupArray const hEnd = this->comptonPhotonsPerEnergy(energy[cellIndex], photons[cellIndex]);
+                owner_.comptonEndH_[cellIndex] = hEnd;
+                owner_.comptonRawPhotons_[cellIndex] = this->compensatedSumComptonGroups(photons[cellIndex]);
+                diagnostics.censusPhotonsRaw += owner_.comptonRawPhotons_[cellIndex];
+                // The ledger stays recorded: the lab closure books it (plan 4).
+                double const ledger = owner_.comptonLedger_[cellIndex];
+                if(owner_.parameters_.noHydroFeedback || ledger == 0.0)
+                {
+                    continue;
+                }
+                diagnostics.ledgerAbsSum += std::abs(ledger);
+                GroupArray groupEnergy{};
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    groupEnergy[group] = owner_.extensives_[cellIndex].Eg[group];
+                }
+                compton_thinned::Settlement const settlement = compton_thinned::Settle<NumGroups>(
+                    ledger, data.plannedGas ? compton_thinned::Reservoir::Gas : compton_thinned::Reservoir::Radiation,
+                    data.plannedStencil, owner_.extensives_[cellIndex].internal_energy, 0.0, true, groupEnergy, hEnd);
+                ++diagnostics.tiers[static_cast<std::size_t>(settlement.tier)];
+                if(settlement.tier == 4)
+                {
+                    StormError eo("Thinned Compton settlement found no reservoir for the energy ledger");
+                    eo.addEntry("Cell index", cellIndex);
+                    eo.addEntry("Ledger", ledger);
+                    eo.addEntry("Predicted sigma", data.predictedSigma);
+                    eo.addEntry("Internal energy", owner_.extensives_[cellIndex].internal_energy);
+                    eo.addEntry("Radiation energy", this->compensatedSumComptonGroups(groupEnergy));
+                    throw eo;
+                }
+                if(settlement.payer == compton_thinned::Reservoir::Gas)
+                {
+                    // The gas pays the comoving energy X: lab (-gamma X, -gamma X v/c^2).
+                    auto const [velocity, gamma] = this->comptonTransportFrame(cellIndex);
+                    owner_.applyMaterialExchange(
+                        cellIndex, -gamma * ledger, velocity * (-gamma * ledger * owner_.inverseLightSpeedSquared()));
+                    owner_.comptonGasSettlement_[cellIndex] = -ledger;
+                    continue;
+                }
+                compton_thinned::ApplyStencil<NumGroups>(settlement.stencil, ledger, groupEnergy);
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    owner_.extensives_[cellIndex].Eg[group] = groupEnergy[group];
+                }
+                diagnostics.settlementPhotonChange -= ledger *
+                    (settlement.stencil.ca * hEnd[settlement.stencil.a] +
+                     settlement.stencil.cb * hEnd[settlement.stencil.b]);
+            }
+        }
+        else
+        {
+            (void) particles;
+        }
+    }
+
+    // Plan 3c, after f: the pre-step contraction D is clipped so that the
+    // linearized drive withdraws at most phi of a group's old energy,
+    // c dt (1 - f) |H_imb| |D'_t| / Gamma <= phi E_t^old, keeping sum D (so
+    // Upsilon, Gamma and f) and sum D/eps; infeasible leaves D unlimited.
+    // M (hence the kernels, sources and risk scores) is rebuilt from D'.
+    void limitThinnedContraction(ComptonCellData &data, double sourceDt) const
+    {
+        data.thinnedLimiterDelta = GroupArray{};
+        data.limiterActive = false;
+        data.limiterInfeasible = false;
+        double const cdt = owner_.lightSpeed() * sourceDt;
+        double imbalance = -data.planckOpacity * data.Um * data.volume;
+        GroupArray oldEnergy{};
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            oldEnergy[group] = std::max(0.0, data.oldRadiationEnergy[group]) * data.volume;
+            imbalance += (data.absorptionOpacity[group] - data.rowS[group]) * oldEnergy[group];
+        }
+        double const withdrawal = cdt * (1.0 - data.fleck) * std::abs(imbalance);
+        if(!(data.Gamma > 0.0) || !(withdrawal > 0.0) || !std::isfinite(withdrawal))
+        {
+            return;
+        }
+        GroupArray lower{};
+        GroupArray upper{};
+        GroupArray inverseCentre{};
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            upper[group] = owner_.parameters_.comptonLimiterFraction * oldEnergy[group] * data.Gamma / withdrawal;
+            lower[group] = -upper[group];
+            inverseCentre[group] = 1.0 / owner_.comptonGroupCenters_[group];
+        }
+        GroupArray limited = data.D;
+        // Scales = the bounds (proportional to the group energy): the adjustment that restores the moments is
+        // relative, so nearly empty groups are not pinned at their bounds.
+        if(!compton_thinned::ClipKeepingMoments<NumGroups>(limited, inverseCentre, lower, upper, &upper))
+        {
+            data.limiterInfeasible = true;
+            return;
+        }
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            data.thinnedLimiterDelta[group] = limited[group] - data.D[group];
+            data.limiterActive = data.limiterActive || data.thinnedLimiterDelta[group] != 0.0;
+            data.D[group] = limited[group];
+            data.M[group] = data.absorptionOpacity[group] * data.planckFraction[group] + data.D[group];
+        }
+    }
+
+    // Plan 3b: Bcorr from the time averages, affine in the hazard-weighted
+    // average densities u_avg (erg/cm^3): D and Upsilon contract dSdUm
+    // (d/dU_m, U_m = a T^4) with u_avg; extensive through V, current dt.
+    GroupArray thinnedAverageBcorr(const ComptonCellData &data, const GroupArray &averageDensity, double fullDt) const
+    {
+        GroupArray bcorr{};
+        if(!(data.planckOpacity > 0.0))
+        {
+            return bcorr;
+        }
+        GroupArray averageD{};
+        double averageUpsilon = 0.0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            for(std::size_t source = 0; source < NumGroups; ++source)
+            {
+                averageD[group] += data.dSdUm[source][group] * averageDensity[source];
+            }
+            averageUpsilon += averageD[group];
+        }
+        double const cdt = owner_.lightSpeed() * fullDt;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            double const kgbg = data.absorptionOpacity[group] * data.planckFraction[group];
+            bcorr[group] = data.volume * cdt * data.Um * data.betaCdtF *
+                (kgbg * averageUpsilon - data.planckOpacity * (averageD[group] + data.thinnedLimiterDelta[group]));
+        }
+        return bcorr;
+    }
+
+    // postStep end: this step's hazard-weighted w^2 per unit time becomes the
+    // next step's history term T^prev (erg^2, divided by time only).
+    void endThinnedStep(double fullDt)
+    {
+        if(!this->thinnedEvents() || owner_.parameters_.postProcess.enabled)
+        {
+            return;
+        }
+        owner_.comptonPreviousWeightSquared_ = owner_.comptonHazardWeightSquared_;
+        for(GroupArray &values : owner_.comptonPreviousWeightSquared_)
+        {
+            for(double &value : values)
+            {
+                value /= fullDt;
+            }
+        }
+    }
+
+    // Plan 3e: the accepted correction endpoint is projected onto fixed energy
+    // and photon number, x_g = max(0, y_g - lambda - kappa h_g) with h = h^end.
+    // Compton-only cells keep the photons counted before settlement; with
+    // absorption the target adds the correction's own photon change.
+    void projectThinnedPhotons(std::size_t cellIndex, const ComptonCellData &data, const GroupArray &rawGroupEnergy,
+                               ComptonCorrectionResult &result) const
+    {
+        GroupArray const &h = owner_.comptonEndH_[cellIndex];
+        double photonTarget = owner_.comptonRawPhotons_[cellIndex];
+        if(data.planckOpacity > 0.0)
+        {
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                photonTarget += (result.endpoint[group] - rawGroupEnergy[group]) * h[group];
+            }
+        }
+        double const energyTarget = result.radiationTotal;
+        if(!(energyTarget > 0.0))
+        {
+            return;
+        }
+        double photonsBefore = 0.0;
+        double hMin = std::numeric_limits<double>::infinity();
+        double hMax = 0.0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            photonsBefore += h[group] * result.endpoint[group];
+            hMin = std::min(hMin, h[group]);
+            hMax = std::max(hMax, h[group]);
+        }
+        // At the accepted energy the grid holds between E min h and E max h
+        // photons (e.g. a cell whose photons all sit in the lowest group cannot
+        // lose energy at fixed photon number).  Clamp to that range, just
+        // inside it, and count the defect.
+        compton_thinned::Diagnostics &clampDiagnostics = owner_.comptonThinnedDiagnostics_;
+        constexpr double clampMargin = 1e-12;
+        double const lowestPhotons = energyTarget * hMin * (1.0 + clampMargin);
+        double const highestPhotons = energyTarget * hMax * (1.0 - clampMargin);
+        if(lowestPhotons < highestPhotons && (photonTarget < lowestPhotons || photonTarget > highestPhotons))
+        {
+            double const clamped = std::clamp(photonTarget, lowestPhotons, highestPhotons);
+            if(std::abs(clamped - photonTarget) > 1e-10 * photonTarget)
+            {
+                ++clampDiagnostics.photonClamps;
+                clampDiagnostics.photonClampDefect += std::abs(clamped - photonTarget);
+            }
+            photonTarget = clamped;
+        }
+        // Relative projection first (never fills an empty group); then the Euclidean one restricted to the groups
+        // that hold energy; the unrestricted Euclidean one (which can fill empty groups) only as a last resort.
+        compton_thinned::Projection<NumGroups> projection =
+            compton_thinned::ProjectEnergyPhotonRelative<NumGroups>(result.endpoint, h, energyTarget, photonTarget);
+        if(!projection.success)
+        {
+            std::array<bool, NumGroups> support{};
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                support[group] = result.endpoint[group] > 0.0;
+            }
+            projection = compton_thinned::ProjectEnergyPhoton<NumGroups>(result.endpoint, h, energyTarget,
+                                                                          photonTarget, &support);
+            if(projection.success)
+            {
+                ++owner_.comptonThinnedDiagnostics_.projectionSupportFallbacks;
+            }
+            else
+            {
+                projection = compton_thinned::ProjectEnergyPhoton<NumGroups>(result.endpoint, h, energyTarget,
+                                                                              photonTarget);
+                ++owner_.comptonThinnedDiagnostics_.projectionFullFallbacks;
+            }
+        }
+        if(!projection.success)
+        {
+            StormError eo("Thinned Compton correction could not meet the photon target");
+            eo.addEntry("Cell index", cellIndex);
+            eo.addEntry("Energy target", energyTarget);
+            eo.addEntry("Photon target", photonTarget);
+            eo.addEntry("Photons before projection", photonsBefore);
+            eo.addEntry("Relative energy error", projection.energyError);
+            eo.addEntry("Relative photon error", projection.photonError);
+            throw eo;
+        }
+        compton_thinned::Diagnostics &diagnostics = owner_.comptonThinnedDiagnostics_;
+        if(cellIndex == 0 && this->lowGroupDiagnosticGroups() > 0)
+        {
+            std::cout << "LGDIAG projection cell " << cellIndex << " photonTarget " << photonTarget
+                      << " photonsBefore " << photonsBefore << " energyTarget " << energyTarget << '\n';
+            for(std::size_t group = 0; group < std::min(this->lowGroupDiagnosticGroups(), NumGroups); ++group)
+            {
+                std::cout << "LGDIAG pg " << group << " before " << result.endpoint[group] << " after "
+                          << projection.endpoint[group] << " h " << h[group] << '\n';
+            }
+        }
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            diagnostics.projectionEnergyRepair += std::abs(projection.endpoint[group] - result.endpoint[group]);
+            result.endpoint[group] = projection.endpoint[group];
+            result.delta[group] = result.endpoint[group] - rawGroupEnergy[group];
+        }
+        diagnostics.projectionPhotonRepair += photonTarget - photonsBefore;
+        double const projectedTotal = this->compensatedSumComptonGroups(result.endpoint);
+        if(!owner_.parameters_.noHydroFeedback)
+        {
+            result.materialEnergyAfter += result.radiationTotal - projectedTotal;
+        }
+        result.radiationTotal = projectedTotal;
+    }
+
+    // Plan 5 and 4: packets of each comoving group are scaled to the accepted
+    // group energy (upward at most comptonReconcileUpscaleCap); a remainder is
+    // spawned at the group's photon energy 1/h = E/N (centre for an empty
+    // group), so energy and actual photons per group meet the targets.  Then
+    // the lab closure books the packets' lab energy and momentum change against
+    // the ledger, the gas settlement and the correction's gas change.
+    void reconcileThinnedParticles(std::vector<MCParticle> &particles)
+    {
+        if constexpr(radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
+        {
+            std::size_t const Ncells = owner_.componentGrid().GetPointNo();
+            std::vector<GroupArray> energy(Ncells, GroupArray{});
+            std::vector<GroupArray> photons(Ncells, GroupArray{});
+            this->accumulateComptonCensus(particles, energy, &photons, nullptr);
+            std::vector<double> labEnergyBefore(Ncells, 0.0);
+            std::vector<PointT> labMomentumBefore(Ncells, PointT{});
+            for(const MCParticle &particle : particles)
+            {
+                if(particle.cellIndex < Ncells)
+                {
+                    labEnergyBefore[particle.cellIndex] += particle.weight;
+                    labMomentumBefore[particle.cellIndex] +=
+                        particle.velocity * (particle.weight * owner_.inverseLightSpeedSquared());
+                }
+            }
+
+            compton_thinned::Diagnostics &diagnostics = owner_.comptonThinnedDiagnostics_;
+            std::vector<std::array<compton_thinned::GroupReconciliation, NumGroups>> plan(Ncells);
+            for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+            {
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    double const target = std::max(0.0, owner_.extensives_[cellIndex].Eg[group]);
+                    plan[cellIndex][group] = compton_thinned::ReconcileGroup(
+                        energy[cellIndex][group], photons[cellIndex][group], target,
+                        owner_.comptonGroupCenters_[group], owner_.parameters_.comptonReconcileUpscaleCap);
+                    if(plan[cellIndex][group].packetScale > 1.0)
+                    {
+                        ++diagnostics.reconcileUpscales;
+                    }
+                }
+            }
+            if(this->lowGroupDiagnosticGroups() > 0 && Ncells > 0)
+            {
+                std::vector<std::size_t> packets(NumGroups, 0);
+                for(const MCParticle &particle : particles)
+                {
+                    std::size_t const group = this->comptonComovingGroup(particle, this->comptonComovingDoppler(particle));
+                    if(particle.cellIndex == 0 && group < NumGroups)
+                    {
+                        ++packets[group];
+                    }
+                }
+                for(std::size_t group = 0; group < std::min(this->lowGroupDiagnosticGroups(), NumGroups); ++group)
+                {
+                    std::cout << "LGDIAG rg " << group << " packets " << packets[group] << " census "
+                              << energy[0][group] << " target " << owner_.extensives_[0].Eg[group] << " scale "
+                              << plan[0][group].packetScale << " spawn " << plan[0][group].spawnEnergy << '\n';
+                }
+            }
+
+            auto iterator = particles.begin();
+            while(iterator != particles.end())
+            {
+                MCParticle &particle = *iterator;
+                if(particle.cellIndex < Ncells)
+                {
+                    std::size_t const group = this->comptonComovingGroup(
+                        particle, this->comptonComovingDoppler(particle));
+                    if(group < NumGroups)
+                    {
+                        particle.weight *= plan[particle.cellIndex][group].packetScale;
+                        owner_.setInitialWeightFromWeight(particle);
+                    }
+                }
+                iterator = particle.weight > 0.0 ? iterator + 1 : particles.erase(iterator);
+            }
+
+            for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+            {
+                GroupArray deficits{};
+                double totalDeficit = 0.0;
+                std::size_t activeGroups = 0;
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    double const target = std::max(0.0, owner_.extensives_[cellIndex].Eg[group]);
+                    double const deficit = plan[cellIndex][group].spawnEnergy;
+                    if(deficit <= 1e-12 * std::max(1.0, target))
+                    {
+                        continue;
+                    }
+                    deficits[group] = deficit;
+                    totalDeficit += deficit;
+                    ++activeGroups;
+                }
+                if(!(totalDeficit > 0.0))
+                {
+                    continue;
+                }
+                std::size_t const budget = std::max(owner_.parameters_.newPhotonsPerCell, activeGroups);
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    if(!(deficits[group] > 0.0))
+                    {
+                        continue;
+                    }
+                    std::size_t const packetCount = std::max<std::size_t>(
+                        1, static_cast<std::size_t>(std::floor(static_cast<double>(budget) *
+                                                               deficits[group] / totalDeficit)));
+                    double const packetWeight = deficits[group] / static_cast<double>(packetCount);
+                    for(std::size_t packetIndex = 0; packetIndex < packetCount; ++packetIndex)
+                    {
+                        MCParticle particle = owner_.generateSingleParticle(cellIndex, owner_.cells_[cellIndex]);
+                        owner_.setPacketFromComovingState(
+                            particle, owner_.cells_[cellIndex], plan[cellIndex][group].spawnPhotonEnergy,
+                            packetWeight);
+                        owner_.setInitialWeightFromWeight(particle);
+                        particles.push_back(particle);
+                        ++diagnostics.reconcileSpawns;
+                    }
+                }
+            }
+
+            // Check energy and actual photons per group, then close lab energy
+            // and momentum: dE_gas = -dE_p - B_E - G_E - dU_corr (plan 4).
+            std::vector<GroupArray> energyAfter(Ncells, GroupArray{});
+            std::vector<GroupArray> photonsAfter(Ncells, GroupArray{});
+            this->accumulateComptonCensus(particles, energyAfter, &photonsAfter, nullptr);
+            std::vector<double> labEnergyAfter(Ncells, 0.0);
+            std::vector<PointT> labMomentumAfter(Ncells, PointT{});
+            for(const MCParticle &particle : particles)
+            {
+                if(particle.cellIndex < Ncells)
+                {
+                    labEnergyAfter[particle.cellIndex] += particle.weight;
+                    labMomentumAfter[particle.cellIndex] +=
+                        particle.velocity * (particle.weight * owner_.inverseLightSpeedSquared());
+                    diagnostics.censusPhotonsFinal += particle.weight / particle.frequency;
+                }
+            }
+            constexpr double reconciliationTolerance = 1e-8;
+            for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
+            {
+                double const cellEnergy = std::max(1e-300, this->compensatedSumComptonGroups(energyAfter[cellIndex]));
+                for(std::size_t group = 0; group < NumGroups; ++group)
+                {
+                    double const target = std::max(0.0, owner_.extensives_[cellIndex].Eg[group]);
+                    double const photonTarget = target *
+                        (energy[cellIndex][group] > 0.0 && photons[cellIndex][group] > 0.0
+                            ? photons[cellIndex][group] / energy[cellIndex][group]
+                            : 1.0 / owner_.comptonGroupCenters_[group]);
+                    double const energyError = std::abs(energyAfter[cellIndex][group] - target) /
+                        std::max(target, cellEnergy);
+                    double const photonError = std::abs(photonsAfter[cellIndex][group] - photonTarget) /
+                        std::max(photonTarget, cellEnergy / owner_.comptonGroupCenters_[group]);
+                    if(energyError > reconciliationTolerance || photonError > reconciliationTolerance)
+                    {
+                        StormError eo("Thinned Compton reconciliation missed the group energy or photon target");
+                        eo.addEntry("Cell index", cellIndex);
+                        eo.addEntry("Group", group);
+                        eo.addEntry("Energy target", target);
+                        eo.addEntry("Energy after", energyAfter[cellIndex][group]);
+                        eo.addEntry("Photon target", photonTarget);
+                        eo.addEntry("Photons after", photonsAfter[cellIndex][group]);
+                        throw eo;
+                    }
+                }
+                if(!owner_.parameters_.comptonLabClosure || owner_.parameters_.noHydroFeedback)
+                {
+                    continue;
+                }
+                auto const [velocity, gamma] = this->comptonTransportFrame(cellIndex);
+                double const ledger = owner_.comptonLedger_[cellIndex];
+                double const gasSettlement = owner_.comptonGasSettlement_[cellIndex];
+                double const closureEnergy = -(labEnergyAfter[cellIndex] - labEnergyBefore[cellIndex]) -
+                    gamma * (ledger + gasSettlement) - owner_.comptonCorrectionGasChange_[cellIndex];
+                PointT closureMomentum = (labMomentumBefore[cellIndex] - labMomentumAfter[cellIndex]) -
+                    velocity * (gamma * (ledger + gasSettlement) * owner_.inverseLightSpeedSquared());
+                if(!owner_.parameters_.withHydro || owner_.parameters_.diffusionPressureGradient)
+                {
+                    closureMomentum = PointT{};
+                }
+                diagnostics.closureEnergy += std::abs(closureEnergy);
+                owner_.applyMaterialExchange(cellIndex, closureEnergy, closureMomentum);
+            }
+        }
+        else
+        {
+            (void) particles;
+        }
+    }
+
     void applyComptonEndOfStepCorrection(
         double fullDt)
     {
@@ -2062,11 +3132,20 @@ public:
                     GroupArray rawGroupEnergy{};
                     GroupArray timeAvgGroupEnergy{};
                     double totalPreStepRadiation = 0.0;
+                    bool const thinned = this->thinnedEvents();
+                    GroupArray averageDensity{};
                     for(std::size_t group = 0; group < NumGroups; ++group)
                     {
                         rawGroupEnergy[group] =
                             owner_.extensives_[cellIndex].Eg[group];
-                        if(cellIndex < owner_.Eg_time_avg_.size())
+                        if(thinned)
+                        {
+                            // Hazard-weighted average (plan 3d): integral D w_c dt / dt.
+                            timeAvgGroupEnergy[group] = std::max(
+                                0.0, owner_.comptonHazardEnergy_[cellIndex][group] / fullDt);
+                            averageDensity[group] = timeAvgGroupEnergy[group] / data.volume;
+                        }
+                        else if(cellIndex < owner_.Eg_time_avg_.size())
                         {
                             timeAvgGroupEnergy[group] = std::max(
                                 0.0,
@@ -2075,6 +3154,8 @@ public:
                         }
                         totalPreStepRadiation += data.oldRadiationEnergy[group];
                     }
+                    GroupArray const averageBcorr = thinned
+                        ? this->thinnedAverageBcorr(data, averageDensity, fullDt) : GroupArray{};
                     double const rawTotal =
                         this->compensatedSumComptonGroups(rawGroupEnergy);
                     double const preStepExtensive =
@@ -2083,7 +3164,7 @@ public:
                         ? rawTotal
                         : owner_.extensives_[cellIndex].internal_energy + rawTotal;
                     ComptonCorrectionResult result =
-                        owner_.solveComptonCorrection(
+                        this->solveComptonCorrection(
                             cellIndex,
                             fullDt,
                             data,
@@ -2091,7 +3172,37 @@ public:
                             timeAvgGroupEnergy,
                             budgetBefore,
                             0.0,
-                            preStepExtensive);
+                            preStepExtensive,
+                            thinned ? &averageBcorr : nullptr);
+                    if(!result.success && thinned && owner_.parameters_.comptonCorrectionBacktracking)
+                    {
+                        // Explicit limiter: damp the complete residual correction
+                        // (matrix and drive together, so its zero row sums and the
+                        // equilibrium cancellation are kept) until it is admissible.
+                        compton_thinned::Diagnostics &backtrackDiagnostics = owner_.comptonThinnedDiagnostics_;
+                        for(double scale = 0.5; scale >= 1.0 / 1024.0 && !result.success; scale *= 0.5)
+                        {
+                            ComptonCorrectionResult const firstFailure = result;
+                            result = this->solveComptonCorrection(
+                                cellIndex, fullDt, data, rawGroupEnergy, timeAvgGroupEnergy, budgetBefore, 0.0,
+                                preStepExtensive, &averageBcorr, scale);
+                            ++backtrackDiagnostics.correctionBacktracks;
+                            if(result.success)
+                            {
+                                backtrackDiagnostics.correctionScaleMin =
+                                    std::min(backtrackDiagnostics.correctionScaleMin, scale);
+                            }
+                            else
+                            {
+                                result.directWorstNegative = firstFailure.directWorstNegative;
+                                result.directNegativeMass = firstFailure.directNegativeMass;
+                            }
+                        }
+                    }
+                    if(result.success && thinned)
+                    {
+                        this->projectThinnedPhotons(cellIndex, data, rawGroupEnergy, result);
+                    }
 
                     if(!result.success)
                     {
@@ -2105,6 +3216,36 @@ public:
                             "Failure",
                             this->comptonCorrectionFailureName(
                                 result.failure));
+                        eo.addEntry("Direct worst negative group", result.directWorstNegative);
+                        eo.addEntry("Direct negative mass", result.directNegativeMass);
+                        eo.addEntry("Direct relative residual", result.directResidual);
+                        eo.addEntry("Direct endpoint total", result.directTotal);
+                        eo.addEntry("Last correction scale", result.correctionScale);
+                        eo.addEntry("Fleck", data.fleck);
+                        eo.addEntry("Gamma", data.Gamma);
+                        eo.addEntry("Upsilon", data.Upsilon);
+                        eo.addEntry("Thinned limiter active", data.limiterActive);
+                        eo.addEntry("Thinned limiter infeasible", data.limiterInfeasible);
+                        double minimumDrive = 0.0;
+                        double maximumDrive = 0.0;
+                        std::size_t worstGroup = 0;
+                        for(std::size_t group = 0; group < NumGroups; ++group)
+                        {
+                            // Relative to the group, but not below 1e-12 of the cell's radiation (empty groups).
+                            double const relative = (thinned ? averageBcorr[group] : data.Bcorr[group]) /
+                                std::max(rawGroupEnergy[group], std::max(1e-12 * rawTotal, 1e-300));
+                            if(relative < minimumDrive)
+                            {
+                                minimumDrive = relative;
+                                worstGroup = group;
+                            }
+                            maximumDrive = std::max(maximumDrive, relative);
+                        }
+                        eo.addEntry("Most negative Bcorr/E_raw", minimumDrive);
+                        eo.addEntry("At group", worstGroup);
+                        eo.addEntry("Largest Bcorr/E_raw", maximumDrive);
+                        eo.addEntry("Raw radiation", rawTotal);
+                        eo.addEntry("Internal energy", owner_.extensives_[cellIndex].internal_energy);
                         throw eo;
                     }
                     results[cellIndex] = result;
@@ -2120,6 +3261,11 @@ public:
                     }
                     radiation_imc_detail::setRadiationEnergyIfPresent(
                         owner_.extensives_[cellIndex], result.radiationTotal);
+                    if(cellIndex < owner_.comptonCorrectionGasChange_.size())
+                    {
+                        owner_.comptonCorrectionGasChange_[cellIndex] =
+                            result.materialEnergyAfter - result.materialEnergyBefore;
+                    }
                     if(!owner_.parameters_.noHydroFeedback)
                     {
                         owner_.extensives_[cellIndex].internal_energy =
@@ -2141,6 +3287,11 @@ public:
             {
                 return;
             }
+            if(this->thinnedEvents())
+            {
+                this->reconcileThinnedParticles(particles);
+                return;
+            }
             if constexpr(!radiation_imc_detail::has_member_group_energy_mutable<ExtensivesT>::value)
             {
                 return;
@@ -2148,6 +3299,7 @@ public:
             else
             {
             const std::size_t Ncells = owner_.componentGrid().GetPointNo();
+            // Group energies are comoving: sum comoving packet weights by comoving group.
             std::vector<GroupArray> raw(Ncells, GroupArray{});
             for(const MCParticle &particle : particles)
             {
@@ -2160,13 +3312,11 @@ public:
                     throw StormError(
                         "Negative particle weight in positive-only Compton reconciliation");
                 }
-                double frequency = particle.frequency;
-                owner_.clampFrequencyToBounds(frequency);
-                std::size_t const group = owner_.opacity_->findGroup(
-                    frequency, owner_.energyBoundaries_);
+                double const dopplerShift = this->comptonComovingDoppler(particle);
+                std::size_t const group = this->comptonComovingGroup(particle, dopplerShift);
                 if(group < NumGroups)
                 {
-                    raw[particle.cellIndex][group] += particle.weight;
+                    raw[particle.cellIndex][group] += particle.weight * dopplerShift;
                 }
             }
 
@@ -2189,10 +3339,8 @@ public:
                 MCParticle &particle = *iterator;
                 if(particle.cellIndex < Ncells)
                 {
-                    double frequency = particle.frequency;
-                    owner_.clampFrequencyToBounds(frequency);
-                    std::size_t const group = owner_.opacity_->findGroup(
-                        frequency, owner_.energyBoundaries_);
+                    std::size_t const group = this->comptonComovingGroup(
+                        particle, this->comptonComovingDoppler(particle));
                     if(group < NumGroups)
                     {
                         particle.weight *= scale[particle.cellIndex][group];
@@ -2318,13 +3466,11 @@ public:
                 {
                     continue;
                 }
-                double frequency = particle.frequency;
-                owner_.clampFrequencyToBounds(frequency);
-                std::size_t const group = owner_.opacity_->findGroup(
-                    frequency, owner_.energyBoundaries_);
+                double const dopplerShift = this->comptonComovingDoppler(particle);
+                std::size_t const group = this->comptonComovingGroup(particle, dopplerShift);
                 if(group < NumGroups)
                 {
-                    representedAfter[particle.cellIndex][group] += particle.weight;
+                    representedAfter[particle.cellIndex][group] += particle.weight * dopplerShift;
                 }
             }
             constexpr double reconciliationTolerance = 1e-8;
@@ -2365,6 +3511,14 @@ public:
                     eo.addEntry("Cell ID",
                                 radiation_imc_detail::cellID(owner_.cells_[cellIndex]));
                     eo.addEntry("Worst group", worstGroup);
+                    if(worstGroup < NumGroups)
+                    {
+                        eo.addEntry("Worst group target", std::max(
+                            0.0, owner_.extensives_[cellIndex].Eg[worstGroup]));
+                        eo.addEntry("Worst group actual",
+                            representedAfter[cellIndex][worstGroup]);
+                        eo.addEntry("Worst group raw census", raw[cellIndex][worstGroup]);
+                    }
                     eo.addEntry("Maximum relative error", maxRelativeError);
                     eo.addEntry("Target total", targetTotal);
                     eo.addEntry("Actual total", actualTotal);

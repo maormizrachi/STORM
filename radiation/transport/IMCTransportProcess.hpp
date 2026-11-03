@@ -592,6 +592,15 @@ public:
             auto [faceIntersect, timeIntersect, nextCellIndex] = owner_.componentIntersectionDetails(particle);
 
             double shiftedFrequency = particle.frequency * dopplerShift;
+            bool const thinnedCompton = owner_.parameters_.withCompton and
+                owner_.parameters_.withMultigroupOpacity and owner_.comptonProcess_->thinnedEvents();
+            if(thinnedCompton)
+            {
+                // Plan 1b: a comoving frequency outside the grid re-enters next to
+                // the near edge, photons kept, before opacity, hazard and tallies.
+                owner_.comptonProcess_->reenterComptonGrid(cellIndex, particle, dopplerShift);
+                shiftedFrequency = particle.frequency * dopplerShift;
+            }
             double absorptionOpacity;
             std::size_t group = std::numeric_limits<std::size_t>::max();
             if(owner_.parameters_.withMultigroupOpacity)
@@ -626,7 +635,8 @@ public:
             double comptonOpacity = 0.0;
             if(owner_.parameters_.withCompton && group < NumGroups)
             {
-                comptonOpacity = owner_.comptonData_[cellIndex].comptonOutRate[group];
+                comptonOpacity = owner_.comptonData_[cellIndex].comptonOutRate[group] +
+                    owner_.comptonData_[cellIndex].comptonInGroupRate[group];
             }
             double eventOpacity = elasticScatteringOpacity + effectiveAbsorptionOpacity + comptonOpacity;
             double scatteringLength = (eventOpacity > 0.0) ? 1.0 / eventOpacity : std::numeric_limits<double>::infinity();
@@ -710,10 +720,35 @@ public:
             owner_.tallyRadiationEnergy(cellIndex, integratedForTally);
             if((owner_.parameters_.withEgTimeAvg or owner_.parameters_.withCompton) and owner_.parameters_.withMultigroupOpacity)
             {
-                std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
-                if(g < NumGroups)
+                if(owner_.parameters_.withCompton)
                 {
-                    owner_.tallyGroupRadiationEnergy(cellIndex, g, integratedForTally);
+                    // Comoving group and energy, as the Compton correction expects.
+                    if(group < NumGroups)
+                    {
+                        owner_.tallyGroupRadiationEnergy(cellIndex, group, integratedForTally * dopplerShift);
+                        if(thinnedCompton)
+                        {
+                            // Hazard-weighted (event rate c q D) integrals of w_c and
+                            // w_c^2 = (w D)^2 for the drive and the noise predictor.
+                            double integratedSquared = particle.weight * particle.weight * dt;
+                            if(std::abs(weightRate * dt) >= 1e-12)
+                            {
+                                integratedSquared = particle.weight * particle.weight *
+                                    (-std::expm1(-2.0 * weightRate * dt)) / (2.0 * weightRate);
+                            }
+                            owner_.comptonProcess_->tallyThinnedHazard(
+                                cellIndex, group, integratedForTally * dopplerShift * dopplerShift,
+                                integratedSquared * dopplerShift * dopplerShift * dopplerShift);
+                        }
+                    }
+                }
+                else
+                {
+                    std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
+                    if(g < NumGroups)
+                    {
+                        owner_.tallyGroupRadiationEnergy(cellIndex, g, integratedForTally);
+                    }
                 }
             }
             double const weightBeforeContinuousDecay = particle.weight;
@@ -841,6 +876,10 @@ public:
                         eo.addEntry("Group", group);
                         throw eo;
                     }
+                    // eventRandom is now in [effectiveAbsorptionOpacity, eventOpacity):
+                    // group-changing events first, then in-group (direction-only) ones.
+                    bool const inGroupCompton = eventRandom - effectiveAbsorptionOpacity >=
+                        owner_.comptonData_[cellIndex].comptonOutRate[group];
                     MCParticle comptonParticle = particle;
                     if(useComovingTransportFrame)
                     {
@@ -848,36 +887,68 @@ public:
                         {
                             radiation_imc_detail::lorentzTransformToComoving<PointT>(
                                 comptonParticle, cell, owner_.lightSpeed());
-                            owner_.clampFrequencyToBounds(comptonParticle.frequency);
+                            if(!thinnedCompton)
+                            {
+                                owner_.clampFrequencyToBounds(comptonParticle.frequency);
+                            }
                         }
                     }
                     PointT const comptonOldVelocity = comptonParticle.velocity;
                     double const comptonOldWeight = comptonParticle.weight;
-                    // The comoving deposit it returns is not tallied: the
-                    // material receives the lab-frame weight change below.
-                    (void) owner_.applyComptonScatterEvent(
+                    // Mean/Exact: the comoving deposit it returns is not tallied,
+                    // the material receives the lab-frame weight change below.
+                    // Thinned: it returns the ledger mismatch x of the event.
+                    double const comptonEventResult = owner_.applyComptonScatterEvent(
                             cellIndex,
                             cell,
                             group,
                             comptonParticle,
                             comptonOldVelocity,
-                            comptonOldWeight);
+                            comptonOldWeight,
+                            inGroupCompton);
                     if(useComovingTransportFrame)
                     {
                         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
                         {
                             radiation_imc_detail::lorentzTransformToLab<PointT>(
                                 comptonParticle, cell, owner_.lightSpeed());
-                            owner_.clampFrequencyToBounds(comptonParticle.frequency);
+                            if(!thinnedCompton)
+                            {
+                                owner_.clampFrequencyToBounds(comptonParticle.frequency);
+                            }
                         }
                     }
                     particle = comptonParticle;
+                    // Thinned (plan 2a): the gas gets the expected exchange, i.e. the
+                    // actual lab change plus the mismatch x booked as a comoving
+                    // isotropic deposit (gamma x, gamma x v/c^2); the ledger keeps x.
+                    double ledgerLabEnergy = 0.0;
+                    PointT ledgerLabMomentum{};
+                    if(thinnedCompton && !inGroupCompton &&
+                       !owner_.parameters_.noHydroFeedback &&
+                       !owner_.parameters_.postProcess.enabled)
+                    {
+                        owner_.comptonLedger_[cellIndex] += comptonEventResult;
+                        double ledgerGamma = 1.0;
+                        PointT ledgerVelocity{};
+                        if(useComovingTransportFrame)
+                        {
+                            if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
+                            {
+                                ledgerVelocity = cell.velocity;
+                                ledgerGamma = 1.0 / std::sqrt(1.0 - ScalarProd(ledgerVelocity, ledgerVelocity) *
+                                    owner_.inverseLightSpeedSquared());
+                            }
+                        }
+                        ledgerLabEnergy = ledgerGamma * comptonEventResult;
+                        ledgerLabMomentum = ledgerVelocity * (ledgerLabEnergy * owner_.inverseLightSpeedSquared());
+                    }
                     if(!owner_.parameters_.noHydroFeedback &&
                        !owner_.parameters_.postProcess.enabled)
                     {
                         owner_.tallyMaterialEnergy(
                             cellIndex,
-                            labParticleBeforeCompton.weight - particle.weight);
+                            labParticleBeforeCompton.weight - particle.weight + ledgerLabEnergy);
                         if constexpr(radiation_imc_detail::has_member_momentum<ExtensivesT>::value)
                         {
                             if(owner_.parameters_.withHydro &&
@@ -888,7 +959,7 @@ public:
                                     (labParticleBeforeCompton.weight *
                                          labParticleBeforeCompton.velocity -
                                      particle.weight * particle.velocity) *
-                                        owner_.inverseLightSpeedSquared());
+                                        owner_.inverseLightSpeedSquared() + ledgerLabMomentum);
                             }
                         }
                     }
@@ -900,7 +971,10 @@ public:
                     if(!isComptonScatter)
                     {
                         particle.frequency *= dopplerShift;
-                        owner_.clampFrequencyToBounds(particle.frequency);
+                        if(!thinnedCompton)
+                        {
+                            owner_.clampFrequencyToBounds(particle.frequency);
+                        }
                     }
                     if(isEffectiveScatter)
                     {
@@ -929,7 +1003,7 @@ public:
                         particle.weight *= D_lab_to_co;
                         radiation_imc_detail::lorentzTransformToLab<PointT>(
                             particle, cell, owner_.lightSpeed());
-                        if(owner_.parameters_.withMultigroupOpacity)
+                        if(owner_.parameters_.withMultigroupOpacity && !thinnedCompton)
                         {
                             owner_.clampFrequencyToBounds(particle.frequency);
                         }
@@ -1158,16 +1232,29 @@ public:
             this->addCensusEnergyToExtensive(particle.cellIndex, particle.weight);
             if(owner_.parameters_.withMultigroupOpacity)
             {
-                std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
-                this->addCensusGroupEnergyToExtensive(particle.cellIndex, g, particle.weight);
+                if(owner_.parameters_.withCompton)
+                {
+                    // The Compton correction works with comoving group energies.
+                    double const dopplerShift = owner_.comptonComovingDoppler(particle);
+                    std::size_t const g = owner_.comptonComovingGroup(particle, dopplerShift);
+                    this->addCensusGroupEnergyToExtensive(particle.cellIndex, g, particle.weight * dopplerShift);
+                }
+                else
+                {
+                    std::size_t g = owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
+                    this->addCensusGroupEnergyToExtensive(particle.cellIndex, g, particle.weight);
+                }
             }
         }
 
         if(owner_.parameters_.withCompton)
         {
+            // Thinned mode: settle the energy ledgers photon-neutrally first (plan 2c).
+            owner_.comptonProcess_->settleThinnedLedgers(particles);
             owner_.applyComptonEndOfStepCorrection(fullDt);
             std::vector<MCParticle> &mutableParticles = const_cast<std::vector<MCParticle> &>(particles);
             owner_.reconcileComptonParticles(mutableParticles);
+            owner_.comptonProcess_->endThinnedStep(fullDt);
             if(not owner_.parameters_.noHydroFeedback)
             {
                 for(std::size_t i = 0; i < Ncells; ++i)

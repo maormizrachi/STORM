@@ -8,6 +8,7 @@
 #include <functional>
 #include <stdexcept>
 #include <utility>
+#include "compton/ComptonThinned.hpp"
 
 namespace STORM {
 
@@ -161,12 +162,38 @@ struct ComptonCellData
     GroupArray modifiedFleck{};
     GroupArray residualSource{};
     GroupArray comptonOutRate{};
+    // Rate of Compton scatterings that leave the packet in its group.  They
+    // change only its direction; their energy change is neglected (except in
+    // the last group, where the residual carries it).
+    GroupArray comptonInGroupRate{};
     GroupArray comptonMu{};
     GroupArray comptonMh{};
     GroupArray implicitEventRate{};
     GroupArray implicitDiagonalCorrection{};
     GroupArray riskScore{};
     std::array<std::size_t, NumGroups> riskTargetPackets{};
+    // Thinned event mode.  thinnedV2[s] = sum_t p_t (r_t - 1)^2 of the source
+    // group; the census moments come from the census preparation (comoving
+    // energy, photons sum w/nu, and sum w^2 per group); the reservoir plan is
+    // fixed before transport.
+    GroupArray thinnedV2{};
+    // Jump probability per sampled out-of-group event (f, or f q / q_MC with
+    // the throttle) and c dt of the step the data were built for.
+    GroupArray thinnedJumpProbability{};
+    double sourceCdt = 0.0;
+    GroupArray censusEnergy{};
+    GroupArray censusPhotons{};
+    GroupArray censusWeightSquared{};
+    GroupArray plannedWeightSquared{};
+    bool censusPrepared = false;
+    bool plannedGas = false;
+    compton_thinned::Stencil plannedStencil{};
+    double predictedSigma = 0.0;
+    // Plan 3c limiter: D' - D of the pre-step contraction (sums to zero), and
+    // whether it acted or was infeasible (then D is left unlimited).
+    GroupArray thinnedLimiterDelta{};
+    bool limiterActive = false;
+    bool limiterInfeasible = false;
 };
 
 template<std::size_t NumGroups>

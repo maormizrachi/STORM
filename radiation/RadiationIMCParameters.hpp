@@ -25,6 +25,41 @@ enum class ComptonOccupationMode
     PlanckFunction
 };
 
+// Energy update of an out-of-group Compton event.  Mean: every event moves the
+// packet to the sampled group and multiplies its weight by the source group's
+// mean energy multiplier.  Exact: the weight takes the target-to-source centre
+// ratio.  Thinned: with probability f the packet jumps, frequency and weight
+// both scaled by the centre ratio (photons kept), otherwise it only changes
+// direction; the gas gets the expected exchange and the zero-mean remainder is
+// settled photon-neutrally at the end of the step.  Thinned (the default)
+// needs a log-uniform group grid and the census preparation
+// (adjustExistingParticles) before every step.
+enum class ComptonEventMode
+{
+    Mean,
+    Exact,
+    Thinned
+};
+
+// Source of the Compton group-to-group tables.  MACE (the default):
+// deterministic number-weighted effective-rate tables (MACE library,
+// deps/MACE), read from a cache file in comptonTableCacheDir (or
+// $STORM_COMPTON_TABLE_DIR, or the working directory) or built with all MPI
+// ranks and cached there; build_compton_table prebuilds them for a grid.
+// CMMC: Monte Carlo sampled tables built at startup.
+enum class ComptonTableSource
+{
+    CMMC,
+    MACE
+};
+
+// MACE kernel solver used to build tables.
+enum class ComptonTableSolver
+{
+    Exact,
+    Approximate
+};
+
 template<std::size_t NumGroups>
 struct RadiationIMCParameters
 {
@@ -99,9 +134,64 @@ struct RadiationIMCParameters
     ComptonInducedMode comptonInducedMode = ComptonInducedMode::AdaptivePlanckFallback;
     bool comptonAllowNZeroFallback = true;
     bool comptonAngleDependent = true;
+    // Linearize the temperature dependence of the Compton matrix in the Fleck
+    // factor.  False treats it explicitly (for stability tests only).
+    bool comptonLinearizeTemperature = true;
+    // Multiply the packet energy in a Compton event by the ratio of the target to
+    // the source group center (true) instead of the mean ratio of the source
+    // group (false).  The exact ratio preserves a Planck spectrum during transport.
+    bool comptonExactEventEnergy = false;
+    ComptonEventMode comptonEventMode = ComptonEventMode::Thinned;
+    // Thinned mode: the gas pays the ledger when its predicted noise is below
+    // this fraction of its internal energy; otherwise a two-group stencil does.
+    double comptonSettlementGasTolerance = 1e-3;
+    // Thinned mode: the planned stencil's low group must hold this many
+    // predicted ledger standard deviations.
+    double comptonSettlementSigmaMargin = 10.0;
+    // In-group energy-only term of the last group (CMMC up minus down scatter).
+    bool comptonTopGroupTerm = false;
+    // Runtime occupation cap max(100, factor * nPlanck(max(Te, Trad))) per group.
+    double comptonOccupationCapFactor = 10.0;
+    // Optional fixed occupation cap (0 = off); a cost option, see the plan.
+    double comptonOccupationMax = 0.0;
+    // Symmetric pair throttle n (<= 0 = off): both directions of a pair scaled by
+    // min(1, (1 + n) / (1 + max(n_i, n_j))); bounds the stimulated event cost and keeps
+    // every fixed point, see compton/ComptonPairThrottle.hpp.  Default 100 (scan of
+    // 2026-11-02, runs/imc_compton_paper/pair_throttle_scan_2026-11-02).
+    double comptonPairThrottleOccupation = 100.0;
+    // Thinned mode: close lab energy and momentum after reconciliation.
+    bool comptonLabClosure = true;
+    // Thinned mode: largest factor by which reconciliation scales packets up.
+    double comptonReconcileUpscaleCap = 10.0;
+    // Thinned mode: largest fraction of a group's old energy the linearized
+    // drive may withdraw in one step, in (0, 1].
+    double comptonLimiterFraction = 0.5;
+    // Thinned mode: optional non-jump throttle Q, events per packet per step
+    // above which non-jump events are thinned (0 = off; a cost option, see
+    // ComptonThinned.hpp ThrottleEvents).
+    double comptonEventThrottle = 0.0;
+    // Thinned mode: when the end-of-step correction fails, retry with the
+    // complete residual correction (matrix and drive, including Bcorr) scaled by
+    // alpha = 1/2, 1/4, ... down to 1/1024; f and transport unchanged.  An
+    // explicit numerical limiter (reported in the Thinned diagnostics); off by default.
+    bool comptonCorrectionBacktracking = false;
     std::size_t comptonMatrixSamples = 200000;
+    ComptonTableSource comptonTableSource = ComptonTableSource::MACE;
+    // MACE tables: cache directory ("" = $STORM_COMPTON_TABLE_DIR, else the working directory), angle bins,
+    // kernel solver, and OpenMP threads per rank while building (0: one per
+    // rank under MPI with more than one rank, else the OpenMP default).
+    std::string comptonTableCacheDir;
+    std::size_t comptonTableAngleBins = 32;
+    ComptonTableSolver comptonTableSolver = ComptonTableSolver::Exact;
+    int comptonTableThreads = 0;
     std::array<double, NumGroups + 1> energyBoundaries{};
     bool energyBoundariesProvided = false;
+
+    // comptonExactEventEnergy (the older switch) selects Exact over the mode.
+    bool comptonThinnedEvents() const
+    {
+        return comptonEventMode == ComptonEventMode::Thinned && !comptonExactEventEnergy;
+    }
 
     template<typename PointT>
     PointT momentumForCoupling(PointT momentum) const
@@ -198,7 +288,30 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters<NumGroup
            << '\n';
         os << "\tCompton n=0 fallback: " << parameters.comptonAllowNZeroFallback << '\n';
         os << "\tCompton angle dependent: " << parameters.comptonAngleDependent << '\n';
-        os << "\tCompton matrix samples: " << parameters.comptonMatrixSamples << '\n';
+        os << "\tCompton temperature linearized: " << parameters.comptonLinearizeTemperature << '\n';
+        os << "\tCompton exact event energy: " << parameters.comptonExactEventEnergy << '\n';
+        os << "\tCompton event mode: "
+           << (parameters.comptonThinnedEvents() ? "thinned"
+               : (parameters.comptonExactEventEnergy || parameters.comptonEventMode == ComptonEventMode::Exact)
+                   ? "exact" : "mean")
+           << '\n';
+        os << "\tCompton top-group term: " << parameters.comptonTopGroupTerm << '\n';
+        os << "\tCompton occupation cap factor: " << parameters.comptonOccupationCapFactor << '\n';
+        os << "\tCompton pair throttle occupation: " << parameters.comptonPairThrottleOccupation << '\n';
+        os << "\tCompton table source: "
+           << (parameters.comptonTableSource == ComptonTableSource::MACE ? "MACE" : "CMMC") << '\n';
+        if(parameters.comptonTableSource == ComptonTableSource::MACE)
+        {
+            os << "\tCompton table angle bins: " << parameters.comptonTableAngleBins << '\n';
+            os << "\tCompton table solver: "
+               << (parameters.comptonTableSolver == ComptonTableSolver::Exact ? "exact" : "approximate") << '\n';
+            os << "\tCompton table cache dir: "
+               << (parameters.comptonTableCacheDir.empty() ? "." : parameters.comptonTableCacheDir) << '\n';
+        }
+        else
+        {
+            os << "\tCompton matrix samples: " << parameters.comptonMatrixSamples << '\n';
+        }
     }
     if(parameters.postProcess.enabled)
     {

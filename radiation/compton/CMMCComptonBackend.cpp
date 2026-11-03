@@ -1,4 +1,5 @@
 #include "radiation/compton/CMMCComptonBackend.hpp"
+#include "radiation/compton/ComptonDetailedBalance.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -13,6 +14,9 @@ struct CMMCComptonBackendCore::Impl
 {
 #ifdef STORM_WITH_COMPTON
     std::size_t groupCount = 0;
+    std::vector<double> centers;
+    std::vector<double> boundaries;
+    bool detailedBalance = true;
     mutable ComptonMatrixMC matrix;
 #endif
 
@@ -23,6 +27,9 @@ struct CMMCComptonBackendCore::Impl
          bool detailedBalance,
          int seed):
         groupCount(centers.size()),
+        centers(centers),
+        boundaries(boundaries),
+        detailedBalance(detailedBalance),
         matrix(std::move(centers),
                std::move(boundaries),
                samples,
@@ -72,6 +79,7 @@ void CMMCComptonBackendCore::SetTables(
     const std::vector<double> &temperatures)
 {
 #ifdef STORM_WITH_COMPTON
+    this->minimumTemperature_ = temperatures.empty() ? 0.0 : temperatures.front();
     this->impl_->matrix.set_tables(temperatures);
 #else
     (void) temperatures;
@@ -109,6 +117,11 @@ CMMCComptonMatrixData CMMCComptonBackendCore::GetTauMatrix(
             ionization);
     result.lastGroupUpScatter = lastGroup.first;
     result.lastGroupDownScatter = lastGroup.second;
+    // CMMC balances the rates; make their temperature derivatives follow the same relation (rates untouched).
+    if(this->impl_->detailedBalance)
+    {
+        EnforceComptonDetailedBalance(this->impl_->centers, this->impl_->boundaries, temperature, true, false, result);
+    }
     return result;
 #else
     (void) temperature;
@@ -118,6 +131,11 @@ CMMCComptonMatrixData CMMCComptonBackendCore::GetTauMatrix(
     throw std::runtime_error(
         "STORM was built without internal Compton support");
 #endif
+}
+
+double CMMCComptonBackendCore::GetMinimumTemperature() const
+{
+    return this->minimumTemperature_;
 }
 
 double CMMCComptonBackendCore::GetMaximumTemperature() const

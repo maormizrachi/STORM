@@ -368,7 +368,8 @@ if(STORM_WITH_COMPTON)
       "${STORM_CMMC_DIR}. Run git submodule update --init --recursive")
   endif()
   target_sources(storm_cmmc PRIVATE
-    "${STORM_CMMC_DIR}/compton_matrix_mc.cpp")
+    "${STORM_CMMC_DIR}/compton_matrix_mc.cpp"
+    radiation/compton/ComptonDetailedBalance.cpp)
   target_include_directories(storm_cmmc PRIVATE "${STORM_CMMC_DIR}")
   target_include_directories(storm INTERFACE
     $<BUILD_INTERFACE:${STORM_CMMC_DIR}>)
@@ -378,14 +379,49 @@ if(STORM_WITH_COMPTON)
     target_link_libraries(storm_cmmc PUBLIC MPI::MPI_CXX)
   endif()
   target_compile_definitions(storm INTERFACE STORM_WITH_COMPTON)
+
+  # MACE deterministic Compton tables (submodule deps/MACE, branch
+  # cpp-library-mpi).  MACE is C++23; only storm_mace's own translation unit
+  # sees it, so STORM keeps its language standard.
+  set(STORM_MACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/MACE")
+  if(NOT EXISTS "${STORM_MACE_DIR}/src/compton_table/compton_table.hpp")
+    message(FATAL_ERROR
+      "Compton support requires the MACE submodule (branch cpp-library-mpi) at "
+      "${STORM_MACE_DIR}. Run git submodule update --init --recursive")
+  endif()
+  set(MACE_BUILD_PYTHON OFF CACHE BOOL "" FORCE)
+  set(MACE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(MACE_ENABLE_MPI ${STORM_WITH_MPI} CACHE BOOL "" FORCE)
+  set(MACE_PLANCK_INTEGRAL_HEADER "${STORM_CMMC_DIR}/planck_integral/planck_integral.hpp"
+      CACHE FILEPATH "" FORCE)
+  add_subdirectory("${STORM_MACE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/mace" EXCLUDE_FROM_ALL)
+  add_library(storm_mace STATIC
+    radiation/compton/MACEComptonBackend.cpp)
+  set_target_properties(storm_mace PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+  target_include_directories(storm_mace PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  # PRIVATE: the C++23 requirement and MACE's include paths stay in storm_mace.
+  if(STORM_WITH_MPI)
+    target_compile_definitions(storm_mace PRIVATE STORM_WITH_MPI)
+    target_link_libraries(storm_mace PRIVATE mace_table_mpi)
+  else()
+    target_link_libraries(storm_mace PRIVATE mace_core)
+  endif()
+  # EnforceComptonDetailedBalance lives in storm_cmmc (CMMC's units and Planck integrals).
+  target_link_libraries(storm_mace PRIVATE storm_cmmc)
 else()
   message(STATUS "STORM Compton support disabled")
 endif()
 get_target_property(_storm_type storm TYPE)
 if(_storm_type STREQUAL "INTERFACE_LIBRARY")
   target_link_libraries(storm INTERFACE storm_cmmc)
+  if(TARGET storm_mace)
+    target_link_libraries(storm INTERFACE storm_mace)
+  endif()
 else()
   target_link_libraries(storm PUBLIC storm_cmmc)
+  if(TARGET storm_mace)
+    target_link_libraries(storm PUBLIC storm_mace)
+  endif()
 endif()
 
 if(STORM_WITH_IBV)

@@ -935,6 +935,10 @@ public:
             {
                 owner_.precomputeComptonData(sourceDt);
             }
+            if(owner_.parameters_.withCompton && owner_.parameters_.withMultigroupOpacity)
+            {
+                owner_.comptonProcess_->beginThinnedStep(Ncells, reuseComptonPrecompute);
+            }
             owner_.comptonDataReusableInPreStep_ = false;
             owner_.deviceExecutor_->prepareStep();
             return sourceDt;

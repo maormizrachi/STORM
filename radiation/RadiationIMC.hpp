@@ -46,6 +46,8 @@
 #include "radiation/RadiationOpacityModel.hpp"
 #include "radiation/Compton.hpp"
 #include "radiation/compton/CMMCComptonBackend.hpp"
+#include "radiation/compton/ComptonTableBackend.hpp"
+#include "radiation/compton/MACEComptonBackend.hpp"
 #include "radiation/Observer.hpp"
 #include "radiation/Polarization.hpp"
 #include "radiation/RandomWalk.hpp"
@@ -135,7 +137,7 @@ class RadiationIMC final : public MonteCarloPhysics<PointT, GridT>,
                                PositionSamplerT,
                                typename radiation_imc_detail::sampler_decomposition<PositionSamplerT>::type,
                                STORM::ComptonCellData<NumGroups>,
-                               CMMCComptonBackend<NumGroups>,
+                               ComptonTableBackend<NumGroups>,
                                RadiationObserver<PointT>,
                                RandomWalk,
                                PGRWCellData,
@@ -189,7 +191,7 @@ public:
         PositionSamplerT,
         PositionDecomposition,
         STORM::ComptonCellData<NumGroups>,
-        CMMCComptonBackend<NumGroups>,
+        ComptonTableBackend<NumGroups>,
         RadiationObserver<PointT>,
         RandomWalk,
         PGRWCellData,
@@ -322,6 +324,11 @@ public:
     const std::vector<ComptonCellData> &getComptonData() const
     {
         return this->comptonData_;
+    }
+    // Per-step counters of the Thinned Compton event mode (rank-local).
+    const compton_thinned::Diagnostics &getComptonThinnedDiagnostics() const
+    {
+        return this->comptonThinnedDiagnostics_;
     }
     const GroupArray &getComptonGroupCenters() const
     {
@@ -688,6 +695,13 @@ public:
         bool usedCapRepair = false;
         bool success = false;
         ComptonCorrectionFailure failure = ComptonCorrectionFailure::None;
+        // Diagnostics of the direct (one-shot) solve, and the damping factor of the
+        // complete residual correction that was accepted (1 = undamped).
+        double directWorstNegative = 0.0;
+        double directNegativeMass = 0.0;
+        double directResidual = 0.0;
+        double directTotal = 0.0;
+        double correctionScale = 1.0;
     };
 
 private:
@@ -766,7 +780,9 @@ private:
         double preStepRadiation) const;
     double frequencyForComptonGroup(std::size_t group) const;
     void setPacketFromComovingState(MCParticle &particle, const CellT &cell, double comovingFrequency, double comovingWeight) const;
-    double applyComptonScatterEvent(std::size_t cellIndex, CellT &cell, std::size_t sourceGroup, MCParticle &particle, const PointT &oldVelocity, double oldWeight);
+    double comptonComovingDoppler(const MCParticle &particle) const;
+    std::size_t comptonComovingGroup(const MCParticle &particle, double dopplerShift) const;
+    double applyComptonScatterEvent(std::size_t cellIndex, CellT &cell, std::size_t sourceGroup, MCParticle &particle, const PointT &oldVelocity, double oldWeight, bool inGroup);
     std::size_t sampleComptonTarget(const ComptonCellData &data, std::size_t sourceGroup, MCParticle &particle);
     void addComptonMaterialExchange(std::size_t cellIndex, double energy);
     void recordObserverCrossing(const MCParticle &particle, const PointT &crossingPoint);

@@ -1539,6 +1539,17 @@ public:
         result.reserve(Ncells * particlesPerCell);
 
         const std::size_t Ngroups = owner_.energyBoundaries_.empty() ? 0 : owner_.energyBoundaries_.size() - 1;
+        // Thinned Compton births sit at the comoving group centres, like thermal
+        // emission and reconciliation, so h = 1/eps exactly (plan section 0).  The
+        // centres come from the opacity: comptonGroupCenters_ is set only by the
+        // first Compton precomputation, after this census is built.
+        bool const centreBirths = owner_.parameters_.withCompton and owner_.parameters_.withMultigroupOpacity and
+            owner_.parameters_.comptonThinnedEvents();
+        GroupArray birthCentres{};
+        if(centreBirths)
+        {
+            birthCentres = owner_.opacity_->getEnergyCenters(owner_.energyBoundaries_);
+        }
 
         for(std::size_t i = 0; i < Ncells; ++i)
         {
@@ -1590,6 +1601,13 @@ public:
                         rnd *= total;
                     }
                     comovingFrequency = STORM::LinearInterpolation(cumulativePlanck, owner_.energyBoundaries_, rnd);
+                    if(centreBirths)
+                    {
+                        auto const upper = std::upper_bound(cumulativePlanck.begin(), cumulativePlanck.end(), rnd);
+                        std::size_t group = static_cast<std::size_t>(std::distance(cumulativePlanck.begin(), upper));
+                        group = std::min(std::max<std::size_t>(group, 1), Ngroups) - 1;
+                        comovingFrequency = birthCentres[group];
+                    }
                 }
                 if(owner_.parameters_.withCompton)
                 {
@@ -1715,6 +1733,9 @@ public:
                         duplicate.weight = splitWeight;
                         duplicate.id = std::numeric_limits<std::size_t>::max();
                         duplicate.steps = 0;
+                        // A copy keeps the parent's RNG key and counter and would
+                        // replay its history; give it a fresh, never reused stream.
+                        owner_.initializeParticleRNG(duplicate);
                         owner_.setInitialWeightFromWeight(duplicate);
                         particles.push_back(duplicate);
                     }
@@ -1738,6 +1759,11 @@ public:
             }
         }
         owner_.splitComptonRiskyParticles(particles, fullDt);
+        if(owner_.parameters_.withCompton and owner_.parameters_.withMultigroupOpacity)
+        {
+            // Thinned mode: census moments and reservoir plan, after splitting.
+            owner_.comptonProcess_->prepareThinnedCensus(particles, fullDt);
+        }
         if(not owner_.parameters_.MMC)
         {
             return;
