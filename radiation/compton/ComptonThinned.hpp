@@ -66,6 +66,21 @@ struct Diagnostics
     double censusPhotonsRaw = 0.0;
     double censusPhotonsFinal = 0.0;
     double closureEnergy = 0.0;
+    // End-of-step correction tiers: cells that entered the adaptive substeps, that were re-solved with the
+    // census-bounded source min(Ebar, E_MC), and that were accepted only by the withdrawal limiter; the largest
+    // fraction of the withdrawals the limiter did not apply, and that cell as the representative example.
+    std::size_t correctionAdaptiveCells = 0;
+    std::size_t correctionCensusDriveCells = 0;
+    std::size_t correctionWithdrawalLimiterCells = 0;
+    double correctionUnappliedMax = 0.0;
+    std::size_t correctionExampleCell = 0;
+    std::size_t correctionExampleGroup = 0;
+    double correctionExampleDemandRatio = 0.0;
+    double correctionExampleCensusRatio = 0.0;
+    // Energy the photon projection hands to the gas (signed sum and sum of magnitudes), as opposed to
+    // projectionEnergyRepair, the L1 size of its spectral change.
+    double projectionGasRepair = 0.0;
+    double projectionGasRepairAbs = 0.0;
 };
 
 // Log-uniform group grid with arithmetic group centres.  A ratio-preserving

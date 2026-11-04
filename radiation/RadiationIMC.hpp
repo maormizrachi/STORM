@@ -702,6 +702,11 @@ public:
         double directResidual = 0.0;
         double directTotal = 0.0;
         double correctionScale = 1.0;
+        // The unprojected direct solution (when the solve was finite), which the withdrawal limiter can use, and
+        // whether the adaptive substeps were entered.
+        bool directSolved = false;
+        GroupArray directDelta{};
+        bool usedAdaptive = false;
     };
 
 private:

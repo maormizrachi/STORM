@@ -174,6 +174,9 @@ struct RadiationIMCParameters
     // complete residual correction (matrix and drive, including Bcorr) scaled by
     // alpha = 1/2, 1/4, ... down to 1/1024; f and transport unchanged.  An
     // explicit numerical limiter (reported in the Thinned diagnostics); off by default.
+    // Reached only when neither the direct solve nor the census-bounded re-solve
+    // gave a finite solution for the withdrawal limiter (an ill-conditioned or
+    // non-finite system); a negative endpoint is handled by that limiter instead.
     bool comptonCorrectionBacktracking = false;
     std::size_t comptonMatrixSamples = 200000;
     ComptonTableSource comptonTableSource = ComptonTableSource::MACE;

@@ -1730,7 +1730,8 @@ public:
         double materialFloor,
         double preStepRadiation,
         const GroupArray *bcorrOverride = nullptr,
-        double correctionScale = 1.0) const
+        double correctionScale = 1.0,
+        bool directOnly = false) const
     {
 
             // Thinned mode passes Bcorr built from the time averages (plan 3b);
@@ -2013,6 +2014,11 @@ public:
             result.correctionScale = correctionScale;
             result.directResidual = directResidual;
             result.directTotal = directTotal;
+            result.directSolved = directCandidateFinite;
+            if(directCandidateFinite)
+            {
+                result.directDelta = directDelta;
+            }
             if(directCandidateFinite)
             {
                 result.directWorstNegative = directProjection.worstNegative;
@@ -2126,6 +2132,11 @@ public:
             {
                 lastFailure = ComptonCorrectionFailure::DirectProjectedResidual;
             }
+            if(directOnly)
+            {
+                return fail(lastFailure);
+            }
+            result.usedAdaptive = true;
 
             constexpr std::size_t maxAcceptedSubsteps = 32;
             // Rejected trial solves are line-search work, not physical substeps.  Keep
@@ -2391,6 +2402,162 @@ public:
             result.success = true;
             result.failure = ComptonCorrectionFailure::None;
             return result;
+    }
+
+    struct ComptonWithdrawalLimit
+    {
+        double unappliedFraction = 0.0;
+        std::size_t worstGroup = NumGroups;
+        double worstDemandRatio = 0.0;
+    };
+
+    // Last tier of the end-of-step correction, after the census-bounded re-solve: in one step the correction may
+    // not remove from a group more energy than the census holds.  Each net withdrawal w_g = max(0, -delta_g) is
+    // capped at E^MC_g and the deposits are scaled by the same total, so every group stays nonnegative and the
+    // radiation total is kept to roundoff.  A delta that overdraws no group is used unchanged.  The endpoint does not
+    // solve the correction equations, so only nonnegativity, the energy closure and the gas floor are checked.
+    typename Owner::ComptonCorrectionResult
+    limitComptonCorrectionWithdrawals(std::size_t cellIndex, const GroupArray &rawGroupEnergy, const GroupArray &delta,
+                                      double budgetBefore, double materialFloor, ComptonWithdrawalLimit &limit) const
+    {
+        ComptonCorrectionResult result;
+        result.materialEnergyBefore = owner_.extensives_[cellIndex].internal_energy;
+        result.budgetBefore = budgetBefore;
+        result.failure = ComptonCorrectionFailure::NonFiniteState;
+        limit = ComptonWithdrawalLimit{};
+        GroupArray withdrawal{};
+        GroupArray deposit{};
+        GroupArray limitedWithdrawal{};
+        GroupArray endpoint{};
+        bool overdraws = false;
+        double worstUnapplied = 0.0;
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(!std::isfinite(delta[group]))
+            {
+                return result;
+            }
+            withdrawal[group] = std::max(0.0, -delta[group]);
+            deposit[group] = std::max(0.0, delta[group]);
+            limitedWithdrawal[group] = std::min(withdrawal[group], rawGroupEnergy[group]);
+            endpoint[group] = rawGroupEnergy[group] + delta[group];
+            if(limitedWithdrawal[group] < withdrawal[group])
+            {
+                // Example group: the largest unapplied withdrawal, reported with its demand/census ratio.
+                double const unapplied = withdrawal[group] - limitedWithdrawal[group];
+                if(!overdraws || unapplied > worstUnapplied)
+                {
+                    worstUnapplied = unapplied;
+                    limit.worstGroup = group;
+                    limit.worstDemandRatio = rawGroupEnergy[group] > 0.0
+                        ? withdrawal[group] / rawGroupEnergy[group] : std::numeric_limits<double>::infinity();
+                }
+                overdraws = true;
+            }
+        }
+        if(overdraws)
+        {
+            double const withdrawn = this->compensatedSumComptonGroups(withdrawal);
+            double const limitedWithdrawn = this->compensatedSumComptonGroups(limitedWithdrawal);
+            double const deposited = this->compensatedSumComptonGroups(deposit);
+            double const depositScale = deposited > 0.0 ? limitedWithdrawn / deposited : 1.0;
+            std::size_t largest = 0;
+            for(std::size_t group = 0; group < NumGroups; ++group)
+            {
+                endpoint[group] = rawGroupEnergy[group] + depositScale * deposit[group] - limitedWithdrawal[group];
+                if(endpoint[group] > endpoint[largest])
+                {
+                    largest = group;
+                }
+            }
+            // Close the radiation total on the largest group, as the conservative projection does.
+            endpoint[largest] += this->compensatedSumComptonGroups(rawGroupEnergy) -
+                this->compensatedSumComptonGroups(endpoint);
+            limit.unappliedFraction = withdrawn > 0.0 ? (withdrawn - limitedWithdrawn) / withdrawn : 0.0;
+        }
+        for(std::size_t group = 0; group < NumGroups; ++group)
+        {
+            if(!std::isfinite(endpoint[group]) || endpoint[group] < 0.0)
+            {
+                return result;
+            }
+            result.endpoint[group] = endpoint[group];
+            result.delta[group] = endpoint[group] - rawGroupEnergy[group];
+        }
+        result.radiationTotal = this->compensatedSumComptonGroups(result.endpoint);
+        result.materialEnergyAfter = owner_.parameters_.noHydroFeedback
+            ? result.materialEnergyBefore
+            : budgetBefore - result.radiationTotal;
+        result.energyClosureResidual = owner_.parameters_.noHydroFeedback
+            ? 0.0
+            : budgetBefore - (result.materialEnergyAfter + result.radiationTotal);
+        double const closureTolerance = 128.0 * std::numeric_limits<double>::epsilon() *
+            std::max(1.0, std::abs(budgetBefore));
+        if(!owner_.parameters_.noHydroFeedback && std::isfinite(result.energyClosureResidual) &&
+           std::abs(result.energyClosureResidual) <= closureTolerance)
+        {
+            result.materialEnergyAfter += result.energyClosureResidual;
+            result.energyClosureResidual = budgetBefore - (result.materialEnergyAfter + result.radiationTotal);
+        }
+        if(!std::isfinite(result.materialEnergyAfter) ||
+           result.materialEnergyAfter < materialFloor - 1e-6 * std::max(1.0, std::abs(budgetBefore)))
+        {
+            result.failure = ComptonCorrectionFailure::InvalidEnergyBudget;
+            return result;
+        }
+        if(!std::isfinite(result.energyClosureResidual) || std::abs(result.energyClosureResidual) > closureTolerance)
+        {
+            result.failure = ComptonCorrectionFailure::EnergyClosureFailure;
+            return result;
+        }
+        result.success = true;
+        result.failure = ComptonCorrectionFailure::None;
+        return result;
+    }
+
+    // Rank 0 prints, once per step and only when the census-bounded re-solve was used somewhere, the number of cells
+    // per correction tier and the cell with the largest unapplied withdrawal fraction as the example.  Every rank
+    // takes part in the reductions.
+    void reportCorrectionTiers() const
+    {
+        compton_thinned::Diagnostics const &diagnostics = owner_.comptonThinnedDiagnostics_;
+        double counts[3] = {static_cast<double>(diagnostics.correctionAdaptiveCells),
+                            static_cast<double>(diagnostics.correctionCensusDriveCells),
+                            static_cast<double>(diagnostics.correctionWithdrawalLimiterCells)};
+        int rank = 0;
+#ifdef STORM_WITH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, counts, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+        if(!(counts[1] > 0.0))
+        {
+            return;
+        }
+        double example[5] = {diagnostics.correctionUnappliedMax, static_cast<double>(diagnostics.correctionExampleCell),
+                             static_cast<double>(diagnostics.correctionExampleGroup),
+                             diagnostics.correctionExampleDemandRatio, diagnostics.correctionExampleCensusRatio};
+#ifdef STORM_WITH_MPI
+        struct
+        {
+            double value;
+            int rank;
+        } local{diagnostics.correctionWithdrawalLimiterCells > 0 ? diagnostics.correctionUnappliedMax : -1.0, rank},
+            owner{};
+        MPI_Allreduce(&local, &owner, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+        MPI_Bcast(example, 5, MPI_DOUBLE, owner.rank, MPI_COMM_WORLD);
+#endif
+        if(rank != 0)
+        {
+            return;
+        }
+        std::cout << "compton correction: adaptive " << counts[0] << " | census-bounded drive " << counts[1]
+                  << " | withdrawal limiter " << counts[2] << " cells\n";
+        if(counts[2] > 0.0)
+        {
+            std::cout << "  limiter: cell " << example[1] << ", unapplied withdrawal fraction " << example[0]
+                      << ", worst group " << example[2] << ", demand/census " << example[3] << ", E_MC/Ebar "
+                      << example[4] << '\n';
+        }
     }
 
     // ----- Thinned event mode (plan v10, ComptonThinned.hpp) -----
@@ -2904,6 +3071,8 @@ public:
         }
         diagnostics.projectionPhotonRepair += photonTarget - photonsBefore;
         double const projectedTotal = this->compensatedSumComptonGroups(result.endpoint);
+        diagnostics.projectionGasRepair += result.radiationTotal - projectedTotal;
+        diagnostics.projectionGasRepairAbs += std::abs(result.radiationTotal - projectedTotal);
         if(!owner_.parameters_.noHydroFeedback)
         {
             result.materialEnergyAfter += result.radiationTotal - projectedTotal;
@@ -3174,6 +3343,83 @@ public:
                             0.0,
                             preStepExtensive,
                             thinned ? &averageBcorr : nullptr);
+                    bool const enteredAdaptive = result.usedAdaptive;
+                    bool censusDriveTried = false;
+                    bool withdrawalLimiterUsed = false;
+                    ComptonWithdrawalLimit withdrawalLimit;
+                    if(!result.success)
+                    {
+                        // The correction is applied to the census, so the energy it removes from a group must be
+                        // present there: re-solve once with the residual and the emission correction evaluated on
+                        // min(Ebar, E_MC), which removes the census deficit of groups that drained during the step.
+                        GroupArray boundedGroupEnergy{};
+                        GroupArray boundedDensity{};
+                        for(std::size_t group = 0; group < NumGroups; ++group)
+                        {
+                            boundedGroupEnergy[group] = std::min(timeAvgGroupEnergy[group], rawGroupEnergy[group]);
+                            boundedDensity[group] = boundedGroupEnergy[group] / data.volume;
+                        }
+                        GroupArray const boundedBcorr = thinned
+                            ? this->thinnedAverageBcorr(data, boundedDensity, fullDt) : GroupArray{};
+                        if(cellIndex == 0 && this->lowGroupDiagnosticGroups() > 0)
+                        {
+                            std::cout << "LGDIAG tier3 census-bounded re-solve, cell " << cellIndex << '\n';
+                        }
+                        censusDriveTried = true;
+                        ComptonCorrectionResult const bounded = this->solveComptonCorrection(
+                            cellIndex, fullDt, data, rawGroupEnergy, boundedGroupEnergy, budgetBefore, 0.0,
+                            preStepExtensive, thinned ? &boundedBcorr : nullptr, 1.0, true);
+                        if(bounded.success)
+                        {
+                            result = bounded;
+                        }
+                        else
+                        {
+                            // Still inadmissible: limit the withdrawals of the best available solution.
+                            GroupArray const *limitDelta = bounded.directSolved ? &bounded.directDelta
+                                : (result.directSolved ? &result.directDelta : nullptr);
+                            if(limitDelta)
+                            {
+                                ComptonCorrectionResult const limited = this->limitComptonCorrectionWithdrawals(
+                                    cellIndex, rawGroupEnergy, *limitDelta, budgetBefore, 0.0, withdrawalLimit);
+                                if(limited.success)
+                                {
+                                    result = limited;
+                                    withdrawalLimiterUsed = true;
+                                }
+                            }
+                        }
+                        if(cellIndex == 0 && this->lowGroupDiagnosticGroups() > 0)
+                        {
+                            std::cout << "LGDIAG tier cell " << cellIndex << " reached "
+                                      << (withdrawalLimiterUsed ? 4 : (result.success ? 3 : 5))
+                                      << " unapplied " << withdrawalLimit.unappliedFraction << " worst_group "
+                                      << withdrawalLimit.worstGroup << " demand/census "
+                                      << withdrawalLimit.worstDemandRatio << '\n';
+                        }
+                    }
+                    if(thinned)
+                    {
+                        compton_thinned::Diagnostics &tierDiagnostics = owner_.comptonThinnedDiagnostics_;
+                        tierDiagnostics.correctionAdaptiveCells += enteredAdaptive ? 1 : 0;
+                        tierDiagnostics.correctionCensusDriveCells += censusDriveTried ? 1 : 0;
+                        if(withdrawalLimiterUsed)
+                        {
+                            ++tierDiagnostics.correctionWithdrawalLimiterCells;
+                            if(withdrawalLimit.unappliedFraction >= tierDiagnostics.correctionUnappliedMax)
+                            {
+                                std::size_t const worst = std::min(withdrawalLimit.worstGroup, NumGroups - 1);
+                                tierDiagnostics.correctionUnappliedMax = withdrawalLimit.unappliedFraction;
+                                tierDiagnostics.correctionExampleCell = cellID;
+                                tierDiagnostics.correctionExampleGroup = withdrawalLimit.worstGroup;
+                                tierDiagnostics.correctionExampleDemandRatio = withdrawalLimit.worstDemandRatio;
+                                tierDiagnostics.correctionExampleCensusRatio = timeAvgGroupEnergy[worst] > 0.0
+                                    ? rawGroupEnergy[worst] / timeAvgGroupEnergy[worst] : 0.0;
+                            }
+                        }
+                    }
+                    // Reached only when the withdrawal limiter could not be applied: no linear solve gave a finite
+                    // solution (an ill-conditioned or non-finite system), or its endpoint failed the closure checks.
                     if(!result.success && thinned && owner_.parameters_.comptonCorrectionBacktracking)
                     {
                         // Explicit limiter: damp the complete residual correction
@@ -3226,6 +3472,21 @@ public:
                         eo.addEntry("Upsilon", data.Upsilon);
                         eo.addEntry("Thinned limiter active", data.limiterActive);
                         eo.addEntry("Thinned limiter infeasible", data.limiterInfeasible);
+                        eo.addEntry("Census-bounded drive tried", censusDriveTried);
+                        eo.addEntry("Withdrawal limiter unapplied fraction", withdrawalLimit.unappliedFraction);
+                        double lowestCensusRatio = std::numeric_limits<double>::infinity();
+                        std::size_t lowestCensusGroup = NumGroups;
+                        for(std::size_t group = 0; group < NumGroups; ++group)
+                        {
+                            if(timeAvgGroupEnergy[group] > 1e-12 * rawTotal &&
+                               rawGroupEnergy[group] / timeAvgGroupEnergy[group] < lowestCensusRatio)
+                            {
+                                lowestCensusRatio = rawGroupEnergy[group] / timeAvgGroupEnergy[group];
+                                lowestCensusGroup = group;
+                            }
+                        }
+                        eo.addEntry("Worst group E_MC/Ebar", lowestCensusRatio);
+                        eo.addEntry("At E_MC/Ebar group", lowestCensusGroup);
                         double minimumDrive = 0.0;
                         double maximumDrive = 0.0;
                         std::size_t worstGroup = 0;
@@ -3249,6 +3510,10 @@ public:
                         throw eo;
                     }
                     results[cellIndex] = result;
+                }
+                if(this->thinnedEvents())
+                {
+                    this->reportCorrectionTiers();
                 }
 
                 for(std::size_t cellIndex = 0; cellIndex < Ncells; ++cellIndex)
