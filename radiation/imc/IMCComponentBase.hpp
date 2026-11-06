@@ -4,7 +4,28 @@
 #include <cstddef>
 #include <memory>
 
+#include "../../StormError.hpp"
+
 namespace STORM::radiation_imc_detail {
+
+// Replaces a packet by an edited copy of itself. Draws taken during the edit
+// must come from the copy: if the packet's counter-based stream has moved past
+// the copy's (same key), the assignment would roll the stream back and the
+// next draws would reuse numbers that already set the packet's state (the face
+// re-emission once did this). A copy on another key (a fresh stream) is fine.
+template<typename Packet>
+void replaceWithEditedCopy(Packet &particle, const Packet &edited)
+{
+    if(edited.rngKey == particle.rngKey && edited.rngCounter < particle.rngCounter)
+    {
+        StormError eo("Replacing a packet by an edited copy would roll its RNG stream back");
+        eo.addEntry("Counter of the packet", particle.rngCounter);
+        eo.addEntry("Counter of the copy", edited.rngCounter);
+        eo.addEntry("Particle", particle);
+        throw eo;
+    }
+    particle = edited;
+}
 
 // Common non-owning handle used by the composed IMC processes.  The owner is
 // deliberately opaque here: concrete processes receive the narrow aliases
@@ -48,6 +69,11 @@ protected:
 
     explicit IMCComponentBase(Owner &owner) : owner_(owner)
     {}
+
+    static void replaceWithEditedCopy(MCParticle &particle, const MCParticle &edited)
+    {
+        radiation_imc_detail::replaceWithEditedCopy<MCParticle>(particle, edited);
+    }
 
     Owner &owner_;
 };

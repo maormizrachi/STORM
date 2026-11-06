@@ -918,7 +918,7 @@ public:
                             }
                         }
                     }
-                    particle = comptonParticle;
+                    Base::replaceWithEditedCopy(particle, comptonParticle);
                     // Thinned (plan 2a): the gas gets the expected exchange, i.e. the
                     // actual lab change plus the mismatch x booked as a comoving
                     // isotropic deposit (gamma x, gamma x v/c^2); the ledger keeps x.

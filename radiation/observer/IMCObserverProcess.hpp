@@ -400,6 +400,8 @@ public:
             throw StormError("Packet reached the external-source face while moving away from the interior");
         }
 
+        std::uint64_t const rngKeyBefore = particle.rngKey;
+        std::uint64_t const rngCounterBefore = particle.rngCounter;
         MCParticle materialParticle = particle;
         if constexpr(radiation_imc_detail::has_member_velocity<CellT>::value)
         {
@@ -412,8 +414,11 @@ public:
                     owner_.lightSpeed());
             }
         }
+        // Draw from materialParticle: it replaces particle below, so draws
+        // taken from particle would be rolled back and reused by the next step
+        // (its scattering depth would equal -ln(mu^2) of this direction).
         materialParticle.velocity = owner_.lightSpeed() *
-            owner_.samplePostProcessExternalSourceDirection(normal, particle);
+            owner_.samplePostProcessExternalSourceDirection(normal, materialParticle);
         if(owner_.parameters_.withMultigroupOpacity)
         {
             materialParticle.frequency = owner_.samplePostProcessExternalSourcePlanckFrequency(owner_.cells_[cellIndex]);
@@ -443,7 +448,19 @@ public:
         // Re-emission keeps the packet's emission weight as the cutoff
         // reference; it does not change within the time step.
         materialParticle.radiationState.clearDDMC();
-        particle = materialParticle;
+        Base::replaceWithEditedCopy(particle, materialParticle);
+        // The direction's two draws must stay consumed by the packet that
+        // continues; otherwise its next step reuses them (scattering depth
+        // -ln(mu^2), event draw phi / 2 pi). Also catches draws taken from a
+        // discarded temporary, which the guard above cannot see.
+        if(particle.rngKey == rngKeyBefore && particle.rngCounter < rngCounterBefore + 2)
+        {
+            StormError eo("Face re-emission did not consume its direction draws from the continuing packet");
+            eo.addEntry("Counter before", rngCounterBefore);
+            eo.addEntry("Counter after", particle.rngCounter);
+            eo.addEntry("Particle", particle);
+            throw eo;
+        }
         functionality.change = ParticleStatus::NO_CELL_MOVE;
         return true;
     }
