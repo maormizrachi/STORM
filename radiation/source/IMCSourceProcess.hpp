@@ -2,6 +2,7 @@
 #define STORM_RADIATION_IMCSOURCE_PROCESS_HPP
 
 #include "../imc/IMCComponentBase.hpp"
+#include "../../particle/PacketProvenance.hpp"
 #include "SourceCore.hpp"
 
 #ifdef STORM_WITH_GPU
@@ -213,6 +214,9 @@ public:
                 polarization::resetUnpolarized<PointT>(particle);
             }
 #endif
+            particle.birthGroup = provenance::kUnknownGroup;
+            particle.provenance0 = 0;
+            particle.provenance1 = 0;
             if(owner_.parameters_.postProcess.enabled && owner_.parameters_.withMultigroupOpacity)
             {
                 // Completed birth (shared emitter: volume, physical spectrum).
@@ -221,6 +225,14 @@ public:
                 std::size_t const kind = GroupSamplingDiagnostics::birthKind(false, false);
                 ++owner_.lastGroupSamplingDiagnostics_.birthCount[kind][birthGroup];
                 owner_.lastGroupSamplingDiagnostics_.birthEnergy[kind][birthGroup] += particle.weight;
+                particle.birthGroup = static_cast<std::uint8_t>(birthGroup);
+                particle.provenance0 = provenance::birthBits(static_cast<unsigned>(kind), false);
+                if(owner_.postProcessProvenanceEnabled())
+                {
+                    auto &d = owner_.lastGroupSamplingDiagnostics_;
+                    ++d.birthWeightHistogram[kind][GroupSamplingDiagnostics::birthWeightBin(particle.weight)];
+                    d.birthWeightMax[kind] = std::max(d.birthWeightMax[kind], particle.weight);
+                }
             }
         }
         std::vector<double> entryFourMomentum(4 * entryCount, 0.0);
@@ -593,6 +605,16 @@ public:
 
         std::size_t weightCappedCells = 0;
         std::size_t weightCapExtraPhotons = 0;
+        // Exploration-fallback cells, for the provenance birth class only.
+        bool const markExploration = owner_.postProcessProvenanceEnabled();
+        if(markExploration)
+        {
+            owner_.postProcessExplorationCell_.assign(Ncells, 0);
+        }
+        else
+        {
+            owner_.postProcessExplorationCell_.clear();
+        }
         if(owner_.postProcessExternalSourceMode_)
         {
             for(std::size_t i = 0; i < Ncells; ++i)
@@ -638,6 +660,10 @@ public:
                                 std::min(wanted, maxPhotonsPerWeightBoundedCell));
                     }
                     nPhotonsVec[i] = exploration;
+                    if(markExploration)
+                    {
+                        owner_.postProcessExplorationCell_[i] = 1;
+                    }
                 }
             }
         }
@@ -1450,6 +1476,9 @@ public:
                     particle.weight = energyPerPhoton;
                 }
                 owner_.setInitialWeightFromWeight(particle);
+                particle.birthGroup = provenance::kUnknownGroup;
+                particle.provenance0 = 0;
+                particle.provenance1 = 0;
                 if(owner_.parameters_.postProcess.enabled && owner_.parameters_.withMultigroupOpacity)
                 {
                     // Completed birth: lab-frame group and birth weight.
@@ -1458,6 +1487,17 @@ public:
                     std::size_t const kind = GroupSamplingDiagnostics::birthKind(faceSpectrum, learnedGroup);
                     ++owner_.lastGroupSamplingDiagnostics_.birthCount[kind][birthGroup];
                     owner_.lastGroupSamplingDiagnostics_.birthEnergy[kind][birthGroup] += particle.weight;
+                    bool const exploration = i < owner_.postProcessExplorationCell_.size() &&
+                        owner_.postProcessExplorationCell_[i] != 0;
+                    particle.birthGroup = static_cast<std::uint8_t>(birthGroup);
+                    particle.provenance0 = provenance::birthBits(static_cast<unsigned>(kind), exploration);
+                    if(owner_.postProcessProvenanceEnabled())
+                    {
+                        std::size_t const birthClass = kind + (exploration ? 4u : 0u);
+                        auto &d = owner_.lastGroupSamplingDiagnostics_;
+                        ++d.birthWeightHistogram[birthClass][GroupSamplingDiagnostics::birthWeightBin(particle.weight)];
+                        d.birthWeightMax[birthClass] = std::max(d.birthWeightMax[birthClass], particle.weight);
+                    }
                 }
                 source::AddPacketFourMomentum(particle.weight, particle.velocity,
                     owner_.inverseLightSpeedSquared(), cellLabEnergy, cellLabMomentum);

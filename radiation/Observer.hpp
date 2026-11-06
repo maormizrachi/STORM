@@ -2,6 +2,7 @@
 #define STORM_RADIATION_OBSERVER_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 
 #include "elementary/PointOps.hpp"
@@ -32,6 +33,10 @@ struct ObserverCrossingRecord
     // The packet reached the band through the DDMC compression cutoff
     // (RadiationTransportState::CompressionConverted).
     bool compressionConverted = false;
+    // Packet provenance (particle/PacketProvenance.hpp), diagnostic only.
+    std::uint8_t birthGroup = 255;
+    std::uint8_t provenance0 = 0;
+    std::uint8_t provenance1 = 0;
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;

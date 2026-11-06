@@ -1182,6 +1182,7 @@ public:
                 {
                     particle.velocity = owner_.sampleRandomVelocity(
                         owner_.cells_[cellIndex], particle);
+                    owner_.notePostProcessStochasticEvent(particle);
                 }
     #ifdef MONTECARLO_POLARIZATION
                 finalizePolarization(particle.velocity);
@@ -1419,6 +1420,7 @@ public:
                     particle.frequency *= shift;
                     particle.weight *= shift;
                     owner_.clampFrequencyToBounds(particle.frequency);
+                    owner_.notePostProcessDDMCRedistribution(particle);
                     // pdV work of the gas on the packet: no source or sink
                     // tallies it, so the energy budget lists it. (Frame
                     // changes at DDMC exits and IMC scatterings also change
@@ -1545,7 +1547,9 @@ public:
             owner_.ddmcCompressionCutoffEnergy_ += particle.weight;
             particle.radiationState.set(RadiationTransportState<PointT>::CompressionConverted);
             particle.frequency = std::nextafter(owner_.energyBoundaries_[data.groupCutoff], std::numeric_limits<double>::max());
+            owner_.notePostProcessDDMCRedistribution(particle);
             particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
+            owner_.notePostProcessStochasticEvent(particle);
             finalizePolarization(particle.velocity);
             convertResidentToLab();
             particle.radiationState.clearDDMC();
@@ -1558,6 +1562,7 @@ public:
             // Conversion inside the cell crosses no face, so it adds nothing to
             // the face-flux moment R = sum_f E_f n_f.
             particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+            owner_.notePostProcessRepresentation(particle);
             particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
             particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);
             // A DDMC resident has no microscopic location/direction.  Keeping a
@@ -1565,6 +1570,7 @@ public:
             // geometry to interpret a stale IMC ray on the next event.
             particle.location = owner_.componentGrid().GetMeshPoint(cellIndex);
             particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
+            owner_.notePostProcessStochasticEvent(particle);
         }
 
         if(censusEvent)
@@ -1608,6 +1614,7 @@ public:
                                 owner_.energyBoundaries_);
                             double const upperBand = owner_.energyBoundaries_[data.groupCutoff];
                             particle.frequency = std::min(particle.frequency, std::nextafter(upperBand, owner_.energyBoundaries_[0]));
+                            owner_.notePostProcessDDMCRedistribution(particle);
                             sampledResidentBand = true;
                             break;
                         }
@@ -1617,10 +1624,12 @@ public:
                 if(!sampledResidentBand)
                 {
                     particle.frequency = owner_.opacity_->GetThermalEnergy(owner_.cells_[cellIndex], owner_.randomUnitOpen(particle), owner_.energyBoundaries_);
+                    owner_.notePostProcessDDMCRedistribution(particle);
                 }
                 owner_.clampFrequencyToBounds(particle.frequency);
             }
             particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
+            owner_.notePostProcessStochasticEvent(particle);
             finalizePolarization(particle.velocity);
             convertResidentToLab();
             particle.radiationState.clearDDMC();
@@ -1700,6 +1709,7 @@ public:
                 {
                     particle.frequency = owner_.samplePostProcessExternalSourcePlanckFrequency(owner_.cells_[cellIndex]);
                     owner_.clampFrequencyToBounds(particle.frequency);
+                    owner_.notePostProcessDDMCRedistribution(particle);
                 }
 
                 bool const leaveDDMCBand = owner_.parameters_.withMultigroupDDMC and
@@ -1737,6 +1747,7 @@ public:
 
                 particle.location = owner_.componentGrid().GetMeshPoint(cellIndex);
                 particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
+                owner_.notePostProcessStochasticEvent(particle);
     #ifdef MONTECARLO_POLARIZATION
                 if(owner_.polarizationEnabled())
                 {
@@ -1746,6 +1757,7 @@ public:
                 }
     #endif
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+                owner_.notePostProcessRepresentation(particle);
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);
                 functionality.change = ParticleStatus::NO_CELL_MOVE;
@@ -1780,7 +1792,9 @@ public:
                 // flux F0.
                 particle.location = leakFaceCenter;
                 particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
+                owner_.notePostProcessStochasticEvent(particle);
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+                owner_.notePostProcessRepresentation(particle);
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);
                 functionality.change = ParticleStatus::CELL_MOVE;
@@ -1850,6 +1864,7 @@ public:
                                 ? std::clamp(remaining / groupMass, 0.0, 1.0)
                                 : owner_.randomUnitOpen(particle);
                             particle.frequency = owner_.opacity_->SampleThermalEnergyInGroup(owner_.cells_[cellIndex], group, localRandom, owner_.energyBoundaries_);
+                            owner_.notePostProcessDDMCRedistribution(particle);
                             break;
                         }
                         remaining -= groupMass;
@@ -1903,12 +1918,14 @@ public:
                 {
                     particle.radiationState.pendingFlux = fluxContribution;
                     particle.radiationState.set(RadiationTransportState<PointT>::PendingFlux);
+                    owner_.notePostProcessRepresentation(particle);
                 }
             }
 
             if(targetDDMC)
             {
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+                owner_.notePostProcessRepresentation(particle);
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
                 particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);
             }
@@ -1965,7 +1982,9 @@ public:
             particle.frequency = owner_.opacity_->GetThermalEnergy(
                 cell, opacityCdfCoordinate, owner_.energyBoundaries_);
             owner_.clampFrequencyToBounds(particle.frequency);
+            owner_.notePostProcessDDMCRedistribution(particle);
             particle.velocity = owner_.sampleRandomVelocity(cell, particle);
+            owner_.notePostProcessStochasticEvent(particle);
             exitDDMCToTransport(false);
             functionality.change = ParticleStatus::NO_CELL_MOVE;
             ++owner_.ddmcUpscatterCount_;
@@ -2267,6 +2286,7 @@ public:
             // diffusion interface.
             constexpr double pi = 3.14159265358979323846;
             double const reflectedMu = std::sqrt(owner_.randomUnitOpen(particle));
+            owner_.notePostProcessStochasticEvent(particle);
             double const sinTheta = std::sqrt(
                 std::max(0.0, 1.0 - reflectedMu * reflectedMu));
             double const phi = 2.0 * pi * owner_.randomUnitOpen(particle);
@@ -2368,6 +2388,7 @@ public:
         }
     #endif
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+        owner_.notePostProcessRepresentation(particle);
         particle.radiationState.set(
             RadiationTransportState<PointT>::DDMCCellResident);
         particle.radiationState.set(
@@ -2387,11 +2408,13 @@ public:
                 particle.radiationState.pendingFlux = contribution;
                 particle.radiationState.set(
                     RadiationTransportState<PointT>::PendingFlux);
+                owner_.notePostProcessRepresentation(particle);
             }
         }
         particle.location = owner_.componentGrid().FaceCM(faceIndex);
         particle.velocity = owner_.sampleRandomVelocity(
             owner_.cells_[sourceCellIndex], particle);
+        owner_.notePostProcessStochasticEvent(particle);
     #ifdef MONTECARLO_POLARIZATION
         if(owner_.polarizationEnabled())
         {
@@ -2565,10 +2588,12 @@ public:
         // Energy entering through the source face counts as -E n_out.
         owner_.addDDMCFluxContribution(cellIndex, -particle.weight * outwardNormal);
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCMode);
+        owner_.notePostProcessRepresentation(particle);
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCCellResident);
         particle.radiationState.set(RadiationTransportState<PointT>::DDMCComovingFrame);
         particle.location = cellCenter;
         particle.velocity = owner_.sampleRandomVelocity(owner_.cells_[cellIndex], particle);
+        owner_.notePostProcessStochasticEvent(particle);
         return true;
     }
 

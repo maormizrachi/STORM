@@ -37,6 +37,8 @@
 #include "boundary/BoundaryCondition.hpp"
 #include "elementary/PointOps.hpp"
 #include "particle/Particle.hpp"
+#include "particle/PacketProvenance.hpp"
+#include "radiation/transport/PostProcessWeightSplit.hpp"
 #include "particle/StepResult.hpp"
 #include "../utils/RandomInCell.hpp"
 #include "physics/MonteCarloPhysics.hpp"
@@ -255,6 +257,22 @@ public:
         }
         std::array<std::array<std::size_t, NumGroups>, kBirthKinds> birthCount{};
         std::array<std::array<double, NumGroups>, kBirthKinds> birthEnergy{};
+        // Completed-birth weight histogram and maximum by birth class
+        // (birthKind + 4 x exploration-fallback cell): bin 0 below 1e30 erg,
+        // bins 1..22 one decade each from 1e30 to 1e52, bin 23 above.
+        static constexpr std::size_t kBirthClasses = 8;
+        static constexpr std::size_t kBirthWeightBins = 24;
+        static std::size_t birthWeightBin(double weight)
+        {
+            if(!(weight >= 1.0e30))
+            {
+                return 0;
+            }
+            double const decade = std::floor(std::log10(weight)) - 30.0;
+            return decade >= 22.0 ? kBirthWeightBins - 1 : 1 + static_cast<std::size_t>(decade);
+        }
+        std::array<std::array<std::size_t, kBirthWeightBins>, kBirthClasses> birthWeightHistogram{};
+        std::array<double, kBirthClasses> birthWeightMax{};
     };
 
     enum class ComptonCorrectionFailure : unsigned char
@@ -559,12 +577,81 @@ public:
         this->postProcessSplitImportance_ = std::move(importance);
         this->postProcessSplitMaxCopies_ = std::max<std::size_t>(1, maxCopies);
         this->postProcessSplitCopyBudget_ = copyBudget;
-        this->postProcessSplitEvents_ = 0;
-        this->postProcessSplitCopies_ = 0;
-        this->postProcessSplitCapped_ = 0;
-        this->postProcessSplitRefused_ = 0;
-        this->postProcessSplitSkippedResidentSteps_ = 0;
-        this->postProcessSplitSkippedNoImportanceSteps_ = 0;
+        this->postProcessSplitCounters_ = postprocess_split::ScalarCounters{};
+        // A plain scalar window: no per-group windows, no provenance (a
+        // reused object cannot carry MG settings into another pass).
+        this->postProcessGroupWindow_ = PostProcessGroupWindow{};
+        this->postProcessGroupSplitCounters_ = PostProcessGroupSplitCounters{};
+    }
+    // Per-group weight window and packet provenance on top of the scalar
+    // window of setPostProcessWeightSplit (call this after it, every
+    // generation). With `active`, a packet in lab-frame group g that starts
+    // an IMC step in local cell c splits when |w| > maxWeight[g] / I_eff(c),
+    // I_eff = max(importance[c], importanceFloor) for the cells that have an
+    // importance entry; the scalar maxWeight is then unused. With
+    // `provenance`, the two shadow candidate windows only set packet
+    // provenance bits (PacketProvenance.hpp); they never split.
+    using PostProcessGroupWindow = postprocess_split::GroupWindow<NumGroups>;
+    using PostProcessGroupSplitCounters = postprocess_split::GroupCounters<NumGroups>;
+    inline void setPostProcessGroupWindow(PostProcessGroupWindow window)
+    {
+        if(!this->parameters_.withMultigroupOpacity)
+        {
+            throw StormError("The per-group weight window and packet provenance need multigroup transport");
+        }
+        this->postProcessGroupWindow_ = postprocess_split::finalize(window, this->postProcessSplitMaxWeight_);
+        this->postProcessProvenancePathChecked_ = false;
+    }
+    inline PostProcessGroupWindow const &getPostProcessGroupWindow(void) const { return this->postProcessGroupWindow_; }
+    inline PostProcessGroupSplitCounters const &getPostProcessGroupSplitCounters(void) const
+    {
+        return this->postProcessGroupSplitCounters_;
+    }
+    inline bool postProcessProvenanceEnabled(void) const { return this->postProcessGroupWindow_.provenance; }
+    // Lab-frame group of a frequency, the observer's convention
+    // ([b_g, b_g+1), clamped to the first and last group).
+    inline std::size_t postProcessLabGroup(double frequency) const
+    {
+        return this->opacity_->findGroup(frequency, this->energyBoundaries_);
+    }
+    // Provenance hooks (no-ops unless provenance is on).
+    inline void notePostProcessStochasticEvent(MCParticle &particle) const
+    {
+        if(this->postProcessGroupWindow_.provenance)
+        {
+            provenance::markStochastic(particle.provenance1);
+        }
+    }
+    inline void notePostProcessGroupChannel(MCParticle &particle, std::size_t groupBefore, std::uint8_t channel) const
+    {
+        if(this->postProcessGroupWindow_.provenance &&
+           this->postProcessLabGroup(particle.frequency) != groupBefore)
+        {
+            particle.provenance1 = static_cast<std::uint8_t>(particle.provenance1 | channel);
+        }
+    }
+    // Representation history: call where a packet becomes a DDMC resident
+    // or takes a pending DDMC flux (before the state can be cleared).
+    inline void notePostProcessRepresentation(MCParticle &particle) const
+    {
+        if(this->postProcessGroupWindow_.provenance)
+        {
+            if(particle.radiationState.isDDMC())
+            {
+                particle.provenance0 = static_cast<std::uint8_t>(particle.provenance0 | provenance::kEverDDMC);
+            }
+            if(particle.radiationState.hasPendingFlux())
+            {
+                particle.provenance0 = static_cast<std::uint8_t>(particle.provenance0 | provenance::kEverPendingFlux);
+            }
+        }
+    }
+    inline void notePostProcessDDMCRedistribution(MCParticle &particle) const
+    {
+        if(this->postProcessGroupWindow_.provenance)
+        {
+            particle.provenance1 = static_cast<std::uint8_t>(particle.provenance1 | provenance::kChannelDDMC);
+        }
     }
     // Post-process face sources: temperature of the Planck spectrum given to a
     // packet emitted at, or re-emitted by, a source face, keyed by the ID of
@@ -617,16 +704,16 @@ public:
         }
         particle.compressionClock = std::min(particle.compressionClock + rate * dt, 1.0e300);
     }
-    inline std::size_t getPostProcessSplitEvents(void) const { return this->postProcessSplitEvents_; }
-    inline std::size_t getPostProcessSplitCopies(void) const { return this->postProcessSplitCopies_; }
-    inline std::size_t getPostProcessSplitCapped(void) const { return this->postProcessSplitCapped_; }
-    inline std::size_t getPostProcessSplitRefused(void) const { return this->postProcessSplitRefused_; }
+    inline std::size_t getPostProcessSplitEvents(void) const { return this->postProcessSplitCounters_.events; }
+    inline std::size_t getPostProcessSplitCopies(void) const { return this->postProcessSplitCounters_.copies; }
+    inline std::size_t getPostProcessSplitCapped(void) const { return this->postProcessSplitCounters_.capped; }
+    inline std::size_t getPostProcessSplitRefused(void) const { return this->postProcessSplitCounters_.refused; }
     // Steps since setPostProcessWeightSplit that a packet heavier than the
     // smallest window (maxWeight, importance 1) took without a split
     // opportunity: as a DDMC resident or with a pending DDMC flux, or in a
     // cell with no importance (step counts, not packets).
-    inline std::size_t getPostProcessSplitSkippedResidentSteps(void) const { return this->postProcessSplitSkippedResidentSteps_; }
-    inline std::size_t getPostProcessSplitSkippedNoImportanceSteps(void) const { return this->postProcessSplitSkippedNoImportanceSteps_; }
+    inline std::size_t getPostProcessSplitSkippedResidentSteps(void) const { return this->postProcessSplitCounters_.skippedResident; }
+    inline std::size_t getPostProcessSplitSkippedNoImportanceSteps(void) const { return this->postProcessSplitCounters_.skippedNoImportance; }
     inline bool hasPostProcessVolumeEmission(void) const
     {
         return this->postProcessVolumeEmission_;
@@ -897,13 +984,14 @@ private:
     double postProcessSplitMaxWeight_ = 0.0;
     std::vector<double> postProcessSplitImportance_;
     std::size_t postProcessSplitMaxCopies_ = 1;
-    std::size_t postProcessSplitEvents_ = 0;
-    std::size_t postProcessSplitCopies_ = 0;
-    std::size_t postProcessSplitCapped_ = 0;
+    postprocess_split::ScalarCounters postProcessSplitCounters_{};
     std::size_t postProcessSplitCopyBudget_ = 0;
-    std::size_t postProcessSplitRefused_ = 0;
-    std::size_t postProcessSplitSkippedResidentSteps_ = 0;
-    std::size_t postProcessSplitSkippedNoImportanceSteps_ = 0;
+    PostProcessGroupWindow postProcessGroupWindow_{};
+    PostProcessGroupSplitCounters postProcessGroupSplitCounters_{};
+    bool postProcessProvenancePathChecked_ = false;
+    // Local cells whose packets this generation are the exploration fallback
+    // (birth provenance only).
+    std::vector<std::uint8_t> postProcessExplorationCell_;
     std::unordered_map<std::size_t, double> postProcessExternalSourceSpectrumTemperature_;
     std::vector<std::uint8_t> postProcessVolumeEmissionMask_;
     std::vector<double> postProcessVolumeEmissionScale_;

@@ -66,6 +66,11 @@ struct DeviceParticleCold
     std::uint8_t polarizationInitialized = 0;
 #endif
     std::uint8_t onTrack = 0;
+    // Post-process packet provenance (particle/PacketProvenance.hpp); fills
+    // the tail padding, so the wire size is unchanged.
+    std::uint8_t birthGroup = 255;
+    std::uint8_t provenance0 = 0;
+    std::uint8_t provenance1 = 0;
 };
 
 // Whole-struct assignment lowers to a 32-byte memcpy covering pendingFlux and
@@ -96,6 +101,9 @@ void AssignCold(DeviceParticleCold &destination, const DeviceParticleCold &sourc
     destination.polarizationInitialized = source.polarizationInitialized;
 #endif
     destination.onTrack = source.onTrack;
+    destination.birthGroup = source.birthGroup;
+    destination.provenance0 = source.provenance0;
+    destination.provenance1 = source.provenance1;
 }
 
 namespace detail
@@ -120,6 +128,9 @@ struct DeviceParticleColdLayout
     std::uint8_t polarizationInitialized;
 #endif
     std::uint8_t onTrack;
+    std::uint8_t birthGroup;
+    std::uint8_t provenance0;
+    std::uint8_t provenance1;
 };
 } // namespace detail
 
@@ -161,6 +172,9 @@ void PackParticle(const ParticleTransportData<PointT> &source, DeviceParticle &p
     cold.polarizationInitialized = source.polarizationInitialized;
 #endif
     cold.onTrack = source.on_track;
+    cold.birthGroup = source.birthGroup;
+    cold.provenance0 = source.provenance0;
+    cold.provenance1 = source.provenance1;
 }
 
 template<typename PointT>
@@ -192,6 +206,9 @@ void UnpackParticle(const DeviceParticle &particle, const DeviceParticleCold &co
 #endif
     destination.steps = particle.steps;
     destination.on_track = cold.onTrack;
+    destination.birthGroup = cold.birthGroup;
+    destination.provenance0 = cold.provenance0;
+    destination.provenance1 = cold.provenance1;
 }
 
 template<typename PointT>

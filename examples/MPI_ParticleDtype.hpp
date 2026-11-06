@@ -25,7 +25,7 @@ private:
     {
         ParticleT dummy{};
 
-        constexpr int base_count = 19;
+        constexpr int base_count = 22;
 #ifdef MONTECARLO_POLARIZATION
         constexpr int polarization_count = 5;
 #else
@@ -88,6 +88,9 @@ private:
 #endif
         add_field(dummy.steps, MPI_UINT64_T);
         add_field(dummy.on_track, MPI_UINT8_T);
+        add_field(dummy.birthGroup, MPI_UINT8_T);
+        add_field(dummy.provenance0, MPI_UINT8_T);
+        add_field(dummy.provenance1, MPI_UINT8_T);
         add_field(dummy.sent, MPI_UINT8_T);
 
 #ifdef STORM_DEBUG

@@ -2,6 +2,7 @@
 #define STORM_RADIATION_IMCOBSERVER_PROCESS_HPP
 
 #include "../imc/IMCComponentBase.hpp"
+#include "../../particle/PacketProvenance.hpp"
 #ifdef STORM_WITH_MPI
 #include <mpi_utils/mpi_collectives.hpp>
 #endif
@@ -400,6 +401,8 @@ public:
             throw StormError("Packet reached the external-source face while moving away from the interior");
         }
 
+        std::size_t const provenanceGroupBefore = owner_.postProcessProvenanceEnabled()
+            ? owner_.postProcessLabGroup(particle.frequency) : 0;
         std::uint64_t const rngKeyBefore = particle.rngKey;
         std::uint64_t const rngCounterBefore = particle.rngCounter;
         MCParticle materialParticle = particle;
@@ -461,6 +464,11 @@ public:
             eo.addEntry("Particle", particle);
             throw eo;
         }
+        if(owner_.postProcessProvenanceEnabled())
+        {
+            owner_.notePostProcessStochasticEvent(particle);
+            owner_.notePostProcessGroupChannel(particle, provenanceGroupBefore, provenance::kChannelFace);
+        }
         functionality.change = ParticleStatus::NO_CELL_MOVE;
         return true;
     }
@@ -482,6 +490,9 @@ public:
         record.splitFactor = static_cast<double>(particle.splitFactor);
         record.compressionConverted = particle.radiationState.has(
             RadiationTransportState<PointT>::CompressionConverted);
+        record.birthGroup = particle.birthGroup;
+        record.provenance0 = particle.provenance0;
+        record.provenance1 = particle.provenance1;
     #ifdef MONTECARLO_POLARIZATION
         if(owner_.polarizationEnabled())
         {

@@ -2,6 +2,8 @@
 #define STORM_RADIATION_IMCTRANSPORT_PROCESS_HPP
 
 #include "../imc/IMCComponentBase.hpp"
+#include "../../particle/PacketProvenance.hpp"
+#include "PostProcessWeightSplit.hpp"
 
 namespace STORM::radiation_imc_detail {
 
@@ -327,11 +329,8 @@ public:
         #endif
     }
 
-    // Post-process weight window (RadiationIMC::setPostProcessWeightSplit):
-    // a packet that starts a step in cell c heavier than
-    // maxWeight / importance(c) is split into equal copies. The copies take
-    // the packet's state before the step (a valid position in its own local
-    // cell) and fresh RNG streams, so each then takes its own step.
+    // Post-process weight window (postprocess_split::apply, installed by
+    // RadiationIMC::setPostProcessWeightSplit and setPostProcessGroupWindow).
     void applyPostProcessWeightSplit(
         MCParticle &particle,
         std::vector<MCParticle> &particlesToAdd)
@@ -340,81 +339,28 @@ public:
         {
             return;
         }
-        // A DDMC resident is a cell-wide state, and a pending DDMC flux would
-        // be credited once per copy; such packets split on a later IMC step.
-        // Steps a packet heavier than the smallest window takes without a
-        // split opportunity are counted (diagnostics only).
-        bool const overSmallestWindow = std::abs(particle.weight) > owner_.postProcessSplitMaxWeight_;
-        if(particle.radiationState.isDDMC() || particle.radiationState.hasPendingFlux())
+        if(owner_.postProcessGroupWindow_.provenance && !owner_.postProcessProvenancePathChecked_)
         {
-            if(overSmallestWindow)
+            // The provenance hooks sit on the host event code; the shared
+            // kernels would skip them and misclassify every packet.
+            if(owner_.SharedFullIMCKernelEligible() || owner_.GreyKernelEligible() ||
+               owner_.SharedDDMCKernelEligible() || owner_.SharedDDMCEventKernelEligible())
             {
-                ++owner_.postProcessSplitSkippedResidentSteps_;
+                throw StormError("Packet provenance needs the host transport path; a shared transport kernel is active");
             }
-            return;
+            owner_.postProcessProvenancePathChecked_ = true;
         }
-        std::size_t const cell = particle.cellIndex;
-        if(cell >= owner_.postProcessSplitImportance_.size())
-        {
-            if(overSmallestWindow)
-            {
-                ++owner_.postProcessSplitSkippedNoImportanceSteps_;
-            }
-            return;
-        }
-        double const importance = std::min(1.0, owner_.postProcessSplitImportance_[cell]);
-        if(!(importance > 0.0))
-        {
-            if(overSmallestWindow)
-            {
-                ++owner_.postProcessSplitSkippedNoImportanceSteps_;
-            }
-            return;
-        }
-        double const window = owner_.postProcessSplitMaxWeight_ / importance;
-        double const weight = std::abs(particle.weight);
-        if(!(weight > window) || !std::isfinite(weight))
-        {
-            return;
-        }
-        double const wanted = std::ceil(weight / window);
-        std::size_t copies = owner_.postProcessSplitMaxCopies_;
-        if(wanted < static_cast<double>(copies))
-        {
-            copies = static_cast<std::size_t>(wanted);
-        }
-        else
-        {
-            ++owner_.postProcessSplitCapped_;
-        }
-        if(copies < 2)
-        {
-            return;
-        }
-        std::size_t const room = owner_.postProcessSplitCopyBudget_ > owner_.postProcessSplitCopies_
-            ? owner_.postProcessSplitCopyBudget_ - owner_.postProcessSplitCopies_ : 0;
-        if(copies - 1 > room)
-        {
-            ++owner_.postProcessSplitRefused_;
-            if(room == 0)
-            {
-                return;
-            }
-            copies = room + 1;
-        }
-        double const scale = 1.0 / static_cast<double>(copies);
-        particle.weight *= scale;
-        particle.initialWeight *= scale;
-        particle.splitFactor *= static_cast<float>(copies);
-        for(std::size_t copy = 1; copy < copies; ++copy)
-        {
-            MCParticle extra = particle;
-            extra.id = std::numeric_limits<std::size_t>::max();
-            owner_.initializeParticleRNG(extra);
-            particlesToAdd.push_back(std::move(extra));
-        }
-        ++owner_.postProcessSplitEvents_;
-        owner_.postProcessSplitCopies_ += copies - 1;
+        postprocess_split::Inputs<NumGroups> inputs;
+        inputs.scalarWindow = owner_.postProcessSplitMaxWeight_;
+        inputs.importance = &owner_.postProcessSplitImportance_;
+        inputs.maxCopies = owner_.postProcessSplitMaxCopies_;
+        inputs.copyBudget = owner_.postProcessSplitCopyBudget_;
+        inputs.groupWindow = &owner_.postProcessGroupWindow_;
+        postprocess_split::apply<NumGroups>(
+            particle, particlesToAdd, inputs,
+            owner_.postProcessSplitCounters_, owner_.postProcessGroupSplitCounters_,
+            [this](double frequency) { return owner_.postProcessLabGroup(frequency); },
+            [this](MCParticle &extra) { owner_.initializeParticleRNG(extra); });
     }
 
     typename Owner::Functionality stepImpl(MCParticle &particle, std::vector<MCParticle> &particlesToAdd)
@@ -453,6 +399,7 @@ public:
                 if(owner_.tryRandomWalkStep(particle, functionality))
                 {
                     ++owner_.rwStepCount_;
+                    owner_.notePostProcessStochasticEvent(particle);
                     // Random-walk time counts on the compression clock too.
                     if(owner_.parameters_.withDDMC && cellIndex < owner_.ddmcCellData_.size())
                     {
@@ -482,6 +429,7 @@ public:
                         {
                             if(owner_.tryDDMCStep(particle, functionality))
                             {
+                                owner_.notePostProcessStochasticEvent(particle);
                                 return functionality;
                             }
                         }
@@ -527,6 +475,7 @@ public:
                         {
                             ++owner_.ddmcUpscatterCount_;
                         }
+                        owner_.notePostProcessStochasticEvent(particle);
                         return result.step;
                     }
                 }
@@ -560,6 +509,7 @@ public:
                     {
                         if(owner_.tryDDMCStep(particle, functionality))
                         {
+                            owner_.notePostProcessStochasticEvent(particle);
                             return functionality;
                         }
                     }
@@ -574,6 +524,7 @@ public:
                 }
                 else if(owner_.tryDDMCStep(particle, functionality))
                 {
+                    owner_.notePostProcessStochasticEvent(particle);
                     return functionality;
                 }
             }
@@ -825,6 +776,8 @@ public:
             {
                 PointT oldVelocity = particle.velocity;
                 double const weightBeforeScatter = particle.weight;
+                std::size_t const provenanceGroupBefore = owner_.postProcessProvenanceEnabled()
+                    ? owner_.postProcessLabGroup(particle.frequency) : 0;
                 double D_lab_to_co = dopplerShift;
                 double eventRandom = owner_.randomUnitOpen(particle) * eventOpacity;
                 bool isEffectiveScatter = false;
@@ -1076,6 +1029,15 @@ public:
                     polarization::clampLinearPolarization(particle.stokesQ, particle.stokesU);
                 }
         #endif
+                if(owner_.postProcessProvenanceEnabled())
+                {
+                    owner_.notePostProcessStochasticEvent(particle);
+                    if(!isComptonScatter)
+                    {
+                        owner_.notePostProcessGroupChannel(particle, provenanceGroupBefore,
+                            isEffectiveScatter ? provenance::kChannelThermal : provenance::kChannelElastic);
+                    }
+                }
                 functionality.change = ParticleStatus::NO_CELL_MOVE;
             }
             else if(min.first == OBSERVER)

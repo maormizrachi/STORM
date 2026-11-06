@@ -92,6 +92,12 @@ struct ParticleTransportData
 #endif
     particle_step_t steps = 0;
     std::uint8_t on_track = 0;
+    // Post-process packet provenance (particle/PacketProvenance.hpp): birth
+    // group and two history bytes, diagnostic only. They sit in the padding
+    // before splitFactor and do not change sizeof.
+    std::uint8_t birthGroup = 255;
+    std::uint8_t provenance0 = 0;
+    std::uint8_t provenance1 = 0;
     // Product of the weight-window splits this packet descends from (1 when
     // never split). Observers multiply weight^2 by it for the adaptive
     // statistics, so the allocation sees the variance of the unsplit packet.
@@ -279,6 +285,9 @@ size_t Particle<T>::dump(Serializer *serializer) const
 #endif
     bytes += serializer->insert(this->steps);
     bytes += serializer->insert(this->on_track);
+    bytes += serializer->insert(this->birthGroup);
+    bytes += serializer->insert(this->provenance0);
+    bytes += serializer->insert(this->provenance1);
     bytes += serializer->insert(this->splitFactor);
     bytes += serializer->insert(this->compressionClock);
     bytes += serializer->insert(this->sent);
@@ -342,6 +351,9 @@ size_t Particle<T>::load(const Serializer *serializer, size_t byteOffset)
 #endif
     bytes += serializer->extract(this->steps, byteOffset + bytes);
     bytes += serializer->extract(this->on_track, byteOffset + bytes);
+    bytes += serializer->extract(this->birthGroup, byteOffset + bytes);
+    bytes += serializer->extract(this->provenance0, byteOffset + bytes);
+    bytes += serializer->extract(this->provenance1, byteOffset + bytes);
     bytes += serializer->extract(this->splitFactor, byteOffset + bytes);
     bytes += serializer->extract(this->compressionClock, byteOffset + bytes);
     bytes += serializer->extract(this->sent, byteOffset + bytes);
