@@ -213,6 +213,15 @@ public:
                 polarization::resetUnpolarized<PointT>(particle);
             }
 #endif
+            if(owner_.parameters_.postProcess.enabled && owner_.parameters_.withMultigroupOpacity)
+            {
+                // Completed birth (shared emitter: volume, physical spectrum).
+                std::size_t const birthGroup =
+                    owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
+                std::size_t const kind = GroupSamplingDiagnostics::birthKind(false, false);
+                ++owner_.lastGroupSamplingDiagnostics_.birthCount[kind][birthGroup];
+                owner_.lastGroupSamplingDiagnostics_.birthEnergy[kind][birthGroup] += particle.weight;
+            }
         }
         std::vector<double> entryFourMomentum(4 * entryCount, 0.0);
         for(std::size_t entry = 0; entry < entryCount; ++entry)
@@ -271,6 +280,9 @@ public:
     std::vector<typename Owner::MCParticle>
     generateParticles(double fullDt, bool materializeHost)
     {
+        // Every emission path below (Compton, shared emitter, per-packet loop)
+        // fills this generation's diagnostics.
+        owner_.lastGroupSamplingDiagnostics_ = GroupSamplingDiagnostics{};
 
         if(owner_.parameters_.withCompton)
         {
@@ -292,7 +304,6 @@ public:
         }
         std::vector<MCParticle> newParticles;
         const std::size_t Ncells = owner_.componentGrid().GetPointNo();
-        owner_.lastGroupSamplingDiagnostics_ = GroupSamplingDiagnostics{};
 
         std::vector<std::size_t> externalSourceOffsets(Ncells + 1, 0);
         std::vector<std::size_t> externalSourceIndices;
@@ -1185,6 +1196,8 @@ public:
 
                 double weightCorrection = 1.0;
                 bool usedGroupFrequencySampling = false;
+                // The group came from a learned pdf (birth diagnostics only).
+                bool learnedGroup = false;
 
                 if(volumePacket && owner_.postProcessGroupFleck_ &&
                    owner_.parameters_.withMultigroupOpacity &&
@@ -1234,6 +1247,7 @@ public:
                                 selectedGroup = lastSampled;
                             }
                             weightCorrection = volumePhysicalPdf[selectedGroup] / volumeSamplingPdf[selectedGroup];
+                            learnedGroup = true;
                             auto &diagnostics = owner_.lastGroupSamplingDiagnostics_;
                             diagnostics.weightCorrectionMin = diagnostics.weightCorrectionCount == 0
                                 ? weightCorrection : std::min(diagnostics.weightCorrectionMin, weightCorrection);
@@ -1296,6 +1310,7 @@ public:
                     weightCorrection = faceGroupCorrection;
                     if(groupPdfValid)
                     {
+                        learnedGroup = true;
                         auto &diagnostics = owner_.lastGroupSamplingDiagnostics_;
                         diagnostics.weightCorrectionMin = diagnostics.weightCorrectionCount == 0
                             ? weightCorrection : std::min(diagnostics.weightCorrectionMin, weightCorrection);
@@ -1375,6 +1390,7 @@ public:
                                     cell, selectedGroup, rndFreq,
                                     owner_.energyBoundaries_);
                             usedGroupFrequencySampling = true;
+                            learnedGroup = true;
                         }
                         else
                         {
@@ -1434,6 +1450,15 @@ public:
                     particle.weight = energyPerPhoton;
                 }
                 owner_.setInitialWeightFromWeight(particle);
+                if(owner_.parameters_.postProcess.enabled && owner_.parameters_.withMultigroupOpacity)
+                {
+                    // Completed birth: lab-frame group and birth weight.
+                    std::size_t const birthGroup =
+                        owner_.opacity_->findGroup(particle.frequency, owner_.energyBoundaries_);
+                    std::size_t const kind = GroupSamplingDiagnostics::birthKind(faceSpectrum, learnedGroup);
+                    ++owner_.lastGroupSamplingDiagnostics_.birthCount[kind][birthGroup];
+                    owner_.lastGroupSamplingDiagnostics_.birthEnergy[kind][birthGroup] += particle.weight;
+                }
                 source::AddPacketFourMomentum(particle.weight, particle.velocity,
                     owner_.inverseLightSpeedSquared(), cellLabEnergy, cellLabMomentum);
                 newParticles.push_back(particle);

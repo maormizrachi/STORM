@@ -342,18 +342,33 @@ public:
         }
         // A DDMC resident is a cell-wide state, and a pending DDMC flux would
         // be credited once per copy; such packets split on a later IMC step.
+        // Steps a packet heavier than the smallest window takes without a
+        // split opportunity are counted (diagnostics only).
+        bool const overSmallestWindow = std::abs(particle.weight) > owner_.postProcessSplitMaxWeight_;
         if(particle.radiationState.isDDMC() || particle.radiationState.hasPendingFlux())
         {
+            if(overSmallestWindow)
+            {
+                ++owner_.postProcessSplitSkippedResidentSteps_;
+            }
             return;
         }
         std::size_t const cell = particle.cellIndex;
         if(cell >= owner_.postProcessSplitImportance_.size())
         {
+            if(overSmallestWindow)
+            {
+                ++owner_.postProcessSplitSkippedNoImportanceSteps_;
+            }
             return;
         }
         double const importance = std::min(1.0, owner_.postProcessSplitImportance_[cell]);
         if(!(importance > 0.0))
         {
+            if(overSmallestWindow)
+            {
+                ++owner_.postProcessSplitSkippedNoImportanceSteps_;
+            }
             return;
         }
         double const window = owner_.postProcessSplitMaxWeight_ / importance;

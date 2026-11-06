@@ -244,6 +244,17 @@ public:
         double cappedEnergy = 0.0;
         double cappedEnergyFraction = 0.0;
         bool estimatorPotentiallyBiased = false;
+        // Every completed post-process source birth of the generation, by
+        // lab-frame birth group, for the four kinds indexed by birthKind():
+        // volume or face packet, group drawn from the physical or from a
+        // learned pdf. Energy is the birth weight.
+        static constexpr std::size_t kBirthKinds = 4;
+        static constexpr std::size_t birthKind(bool face, bool learned)
+        {
+            return (face ? 2u : 0u) + (learned ? 1u : 0u);
+        }
+        std::array<std::array<std::size_t, NumGroups>, kBirthKinds> birthCount{};
+        std::array<std::array<double, NumGroups>, kBirthKinds> birthEnergy{};
     };
 
     enum class ComptonCorrectionFailure : unsigned char
@@ -552,6 +563,8 @@ public:
         this->postProcessSplitCopies_ = 0;
         this->postProcessSplitCapped_ = 0;
         this->postProcessSplitRefused_ = 0;
+        this->postProcessSplitSkippedResidentSteps_ = 0;
+        this->postProcessSplitSkippedNoImportanceSteps_ = 0;
     }
     // Post-process face sources: temperature of the Planck spectrum given to a
     // packet emitted at, or re-emitted by, a source face, keyed by the ID of
@@ -608,6 +621,12 @@ public:
     inline std::size_t getPostProcessSplitCopies(void) const { return this->postProcessSplitCopies_; }
     inline std::size_t getPostProcessSplitCapped(void) const { return this->postProcessSplitCapped_; }
     inline std::size_t getPostProcessSplitRefused(void) const { return this->postProcessSplitRefused_; }
+    // Steps since setPostProcessWeightSplit that a packet heavier than the
+    // smallest window (maxWeight, importance 1) took without a split
+    // opportunity: as a DDMC resident or with a pending DDMC flux, or in a
+    // cell with no importance (step counts, not packets).
+    inline std::size_t getPostProcessSplitSkippedResidentSteps(void) const { return this->postProcessSplitSkippedResidentSteps_; }
+    inline std::size_t getPostProcessSplitSkippedNoImportanceSteps(void) const { return this->postProcessSplitSkippedNoImportanceSteps_; }
     inline bool hasPostProcessVolumeEmission(void) const
     {
         return this->postProcessVolumeEmission_;
@@ -883,6 +902,8 @@ private:
     std::size_t postProcessSplitCapped_ = 0;
     std::size_t postProcessSplitCopyBudget_ = 0;
     std::size_t postProcessSplitRefused_ = 0;
+    std::size_t postProcessSplitSkippedResidentSteps_ = 0;
+    std::size_t postProcessSplitSkippedNoImportanceSteps_ = 0;
     std::unordered_map<std::size_t, double> postProcessExternalSourceSpectrumTemperature_;
     std::vector<std::uint8_t> postProcessVolumeEmissionMask_;
     std::vector<double> postProcessVolumeEmissionScale_;
