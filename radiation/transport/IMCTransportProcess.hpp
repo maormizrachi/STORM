@@ -429,7 +429,6 @@ public:
                         {
                             if(owner_.tryDDMCStep(particle, functionality))
                             {
-                                owner_.notePostProcessStochasticEvent(particle);
                                 return functionality;
                             }
                         }
@@ -475,7 +474,6 @@ public:
                         {
                             ++owner_.ddmcUpscatterCount_;
                         }
-                        owner_.notePostProcessStochasticEvent(particle);
                         return result.step;
                     }
                 }
@@ -509,7 +507,6 @@ public:
                     {
                         if(owner_.tryDDMCStep(particle, functionality))
                         {
-                            owner_.notePostProcessStochasticEvent(particle);
                             return functionality;
                         }
                     }

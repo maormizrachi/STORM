@@ -602,7 +602,6 @@ public:
         this->postProcessGroupWindow_ = postprocess_split::finalize(window, this->postProcessSplitMaxWeight_);
         this->postProcessProvenancePathChecked_ = false;
     }
-    inline PostProcessGroupWindow const &getPostProcessGroupWindow(void) const { return this->postProcessGroupWindow_; }
     inline PostProcessGroupSplitCounters const &getPostProcessGroupSplitCounters(void) const
     {
         return this->postProcessGroupSplitCounters_;
