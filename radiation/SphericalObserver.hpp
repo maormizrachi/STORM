@@ -138,6 +138,7 @@ public:
                 result.hit = true;
                 result.time = t;
                 result.point = point;
+                result.normal = normalize(point - center_);
             }
         }
         return result;

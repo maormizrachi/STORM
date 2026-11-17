@@ -15,6 +15,11 @@ struct ObserverCrossing
     bool hit = false;
     double time = std::numeric_limits<double>::infinity();
     PointT point{};
+    // Outward unit normal of the observer surface at point. Transport uses it
+    // to push the packet clear of the surface after recording the crossing;
+    // an observer that leaves it zero gets the largest (most conservative)
+    // push.
+    PointT normal{};
 };
 
 template<typename PointT>

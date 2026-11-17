@@ -3,6 +3,7 @@
 
 #include "../imc/IMCComponentBase.hpp"
 #include "../../particle/PacketProvenance.hpp"
+#include "../../manager/MonteCarloConfig.hpp"
 #include "PostProcessWeightSplit.hpp"
 
 namespace STORM::radiation_imc_detail {
@@ -746,7 +747,51 @@ public:
                 return functionality;
             }
 
-            if(min.first == INTERSECTION)
+            // An observer crossing is recorded and the packet is pushed past
+            // the observer surface along its direction. A straight path crosses
+            // the surface outward only once, so the push must keep the packet
+            // outside until its direction changes: the only moves that do not
+            // change the direction are the nudges toward the next cell's
+            // generator at a face crossing or rank transfer (MONTECARLO_EPSILON
+            // times the distance to that generator), and a nudge that pulled the
+            // packet back inside would record the same crossing twice. The push
+            // therefore gains, along the surface normal, twice the nudge at the
+            // face ahead (whose next cell is known), and at least twice that of
+            // a neighbour up to twice this cell's size (about 4 times the
+            // distance to this cell's generator) for faces further on; never
+            // less than the old 1e-10 R.
+            //
+            // When the cell face ahead is closer than the push, the push carries
+            // the packet into the next cell; it then crosses that face here,
+            // like any face crossing, instead of keeping this cell's index while
+            // lying outside it (a packet tracked against the wrong cell's faces
+            // can later leave the domain unnoticed).
+            bool observerPushCrossesFace = false;
+            if(min.first == OBSERVER)
+            {
+                owner_.recordObserverCrossing(particle, observerCrossing.point);
+                PointT const direction = normalize(particle.velocity);
+                double const nudgeDistance = std::max(
+                    4.0 * fastabs(owner_.componentGrid().GetMeshPoint(cellIndex) - observerCrossing.point),
+                    fastabs(owner_.componentGrid().GetMeshPoint(nextCellIndex) - observerCrossing.point));
+                double const outwardCosine = std::max(
+                    0.01, ScalarProd(direction, observerCrossing.normal));
+                double const pushLength = std::max(
+                    std::max(1.0e-12, 1.0e-10 * std::max(1.0, fastabs(observerCrossing.point))),
+                    2.0 * MONTECARLO_EPSILON * nudgeDistance / outwardCosine);
+                particle.location = observerCrossing.point + direction * pushLength;
+                double const faceGap = std::isfinite(timeIntersect)
+                    ? (timeIntersect - dt) * fastabs(particle.velocity)
+                    : std::numeric_limits<double>::infinity();
+                observerPushCrossesFace = not (pushLength < faceGap);
+                if(not observerPushCrossesFace)
+                {
+                    functionality.change = ParticleStatus::NO_CELL_MOVE;
+                    return functionality;
+                }
+            }
+
+            if(min.first == INTERSECTION or observerPushCrossesFace)
             {
                 if(owner_.handlePostProcessExternalSourceBoundary(particle, cellIndex, faceIntersect, functionality))
                 {
@@ -1035,14 +1080,6 @@ public:
                             isEffectiveScatter ? provenance::kChannelThermal : provenance::kChannelElastic);
                     }
                 }
-                functionality.change = ParticleStatus::NO_CELL_MOVE;
-            }
-            else if(min.first == OBSERVER)
-            {
-                owner_.recordObserverCrossing(particle, observerCrossing.point);
-                // Leave the packet outside the observer surface so the same positive
-                // outward root cannot be selected again on the next step.
-                particle.location = observerCrossing.point + normalize(particle.velocity) * std::max(1.0e-12, 1.0e-10 * std::max(1.0, fastabs(observerCrossing.point)));
                 functionality.change = ParticleStatus::NO_CELL_MOVE;
             }
             else if(min.first == TIMELEFT)
