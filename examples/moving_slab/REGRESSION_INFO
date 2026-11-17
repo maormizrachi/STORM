@@ -6,6 +6,6 @@ SLURM_NODES=16
 SLURM_MEM_PER_CPU="20G"
 SLURM_EXCLUSIVE=YES
 SBATCH_ARGS='--distribution=cyclic'
-RUN_COMMAND='mpirun --map-by node "${STORM_BIN}"'
+RUN_COMMAND_MPI='bash "{project_root}/regression_tests/run_mpi_from_cmake.sh" "{build_dir}" ${SLURM_NTASKS} "{binary}"'
 CHECK_FUNCTION="check_moving_slab_case"
 TIMEOUT=5400

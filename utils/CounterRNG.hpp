@@ -12,6 +12,19 @@
 
 namespace STORM {
 
+namespace counter_rng_detail {
+
+// Maps 64 random bits to the open unit interval: 52 bits so the half-bin
+// offset stays exactly representable (with 53 bits the highest bin rounds to
+// 1.0 in double precision). Zero bits give 2^-53, all ones 1 - 2^-53.
+STORM_RNG_INLINE constexpr double counterBitsToUnitOpen(std::uint64_t bits)
+{
+    const std::uint64_t mantissa = bits >> 12U;
+    return (static_cast<double>(mantissa) + 0.5) * 0x1.0p-52;
+}
+
+} // namespace counter_rng_detail
+
 class CounterRNG
 {
 public:
@@ -42,10 +55,7 @@ public:
 
     STORM_RNG_INLINE static double unitOpen(std::uint64_t key, std::uint64_t counter)
     {
-        // Use 52 bits so the half-bin offset remains exactly representable.
-        // With 53 bits, the highest bin rounds to 1.0 in double precision.
-        const std::uint64_t mantissa = next(key, counter) >> 12U;
-        return (static_cast<double>(mantissa) + 0.5) * 0x1.0p-52;
+        return counter_rng_detail::counterBitsToUnitOpen(next(key, counter));
     }
 };
 
