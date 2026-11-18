@@ -359,6 +359,12 @@ if(BUILD_TESTING)
   target_link_libraries(storm_counter_rng_test PRIVATE storm)
   add_test(NAME storm_counter_rng_test COMMAND storm_counter_rng_test)
 
+  if(STORM_MONTECARLO_POLARIZATION)
+    add_executable(storm_polarized_thomson_kernel_test tests/polarized_thomson_kernel_test.cpp)
+    target_link_libraries(storm_polarized_thomson_kernel_test PRIVATE storm)
+    add_test(NAME storm_polarized_thomson_kernel_test COMMAND storm_polarized_thomson_kernel_test)
+  endif()
+
   add_executable(storm_ddmc_interface_test tests/ddmc_interface_test.cpp)
   target_link_libraries(storm_ddmc_interface_test PRIVATE storm)
   add_test(NAME storm_ddmc_interface_test COMMAND storm_ddmc_interface_test)
