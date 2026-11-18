@@ -827,7 +827,6 @@ public:
                 bool comptonTransformedToLab = false;
         #ifdef MONTECARLO_POLARIZATION
                 MCParticle polarizationMaterialParticle = particle;
-                PointT polarizationOldVelocity = particle.velocity;
                 if(owner_.polarizationEnabled())
                 {
                     polarization::initializeIfNeeded<PointT>(polarizationMaterialParticle);
@@ -838,11 +837,10 @@ public:
                             radiation_imc_detail::lorentzTransformToComoving<PointT>(
                                 polarizationMaterialParticle, cell,
                                 owner_.lightSpeed());
-                            polarizationOldVelocity = polarizationMaterialParticle.velocity;
                             polarizationMaterialParticle.polarizationBasis =
                                 polarization::projectBasisToDirection(
                                     polarizationMaterialParticle.polarizationBasis,
-                                    polarizationOldVelocity);
+                                    polarizationMaterialParticle.velocity);
                         }
                     }
                 }
@@ -856,10 +854,10 @@ public:
                         {
                             return owner_.randomUnitOpen(particle);
                         };
-                        PointT const newVelocity = polarization::samplePolarizedThomsonDirection(
-                            polarizationMaterialParticle, polarizationOldVelocity, u01);
-                        polarization::applyThomsonScatter<PointT>(
-                            polarizationMaterialParticle, polarizationOldVelocity, newVelocity);
+                        // Scatters in the frame set above (lab, or the
+                        // cell's comoving frame).
+                        polarization::scatterPolarizedThomson<PointT>(
+                            polarizationMaterialParticle, u01);
                         particle.velocity = polarizationMaterialParticle.velocity;
                         particle.stokesQ = polarizationMaterialParticle.stokesQ;
                         particle.stokesU = polarizationMaterialParticle.stokesU;

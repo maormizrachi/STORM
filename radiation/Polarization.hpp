@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <limits>
 #include <random>
-#include <utility>
 
 #include <units/units.hpp>
 #include "../elementary/PointOps.hpp"
@@ -44,7 +43,14 @@ PointT projectBasisToDirection(const PointT &basis, const PointT &direction)
 {
     PointT const k = safeNormalize(direction, PointT(0.0, 0.0, 1.0));
     PointT const projected = basis - k * fallback::ScalarProd(basis, k);
-    return safeNormalize(projected, choosePerpendicularBasis(k));
+    // safeNormalize with the fallback built only when it is needed: this runs
+    // several times per scattering and the fallback almost never is.
+    double const n = fallback::abs(projected);
+    if(n > kEpsilon && std::isfinite(n))
+    {
+        return projected / n;
+    }
+    return choosePerpendicularBasis(k);
 }
 
 inline void clampLinearPolarization(double &q, double &u)
@@ -176,15 +182,6 @@ void applyThomsonScatter(ParticleT &p,
     clampLinearPolarization(p.stokesQ, p.stokesU);
 }
 
-template<typename PointT>
-void buildBasisAroundDirection(const PointT &k, PointT &e1, PointT &e2)
-{
-    PointT const kk = safeNormalize(k, PointT(0.0, 0.0, 1.0));
-    e1 = choosePerpendicularBasis(kk);
-    e2 = safeNormalize(fallback::CrossProduct(kk, e1),
-                       PointT(0.0, 1.0, 0.0));
-}
-
 template<typename Uniform01>
 double sampleThomsonMu(Uniform01 &&u01)
 {
@@ -199,69 +196,140 @@ double sampleThomsonMu(Uniform01 &&u01)
     return 2.0 * u01() - 1.0;
 }
 
-template<typename PointT, typename Uniform01>
-PointT sampleSyntheticThomsonDirection(const PointT &oldVelocity, Uniform01 &&u01)
-{
-    PointT const k = safeNormalize(oldVelocity, PointT(0.0, 0.0, 1.0));
-    double const speed = std::max(fallback::abs(oldVelocity), kEpsilon);
-    PointT e1, e2;
-    buildBasisAroundDirection(k, e1, e2);
-    double const mu = sampleThomsonMu(u01);
-    double const phi = 2.0 * kPi * u01();
-    double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
-    PointT const dir = k * mu + e1 * (sinTheta * std::cos(phi)) +
-                       e2 * (sinTheta * std::sin(phi));
-    return safeNormalize(dir, k) * speed;
-}
-
-template<typename PointT, typename ParticleT>
-std::pair<double, double> projectToBasis(const ParticleT &p,
-                                         const PointT &direction,
-                                         const PointT &basis)
-{
-    if(!p.polarizationInitialized)
-    {
-        return {0.0, 0.0};
-    }
-    PointT const k = safeNormalize(direction, PointT(0.0, 0.0, 1.0));
-    PointT const eOld = projectBasisToDirection(p.polarizationBasis, k);
-    PointT const eNew = projectBasisToDirection(basis, k);
-    double const c = std::clamp(fallback::ScalarProd(eOld, eNew), -1.0, 1.0);
-    double const s = fallback::ScalarProd(k, fallback::CrossProduct(eOld, eNew));
-    double const cos2 = c * c - s * s;
-    double const sin2 = 2.0 * c * s;
-    double q = p.stokesQ * cos2 + p.stokesU * sin2;
-    double u = -p.stokesQ * sin2 + p.stokesU * cos2;
-    clampLinearPolarization(q, u);
-    return {q, u};
-}
-
+// One polarized Thomson scattering of p in place: samples the new direction
+// from the phase function for the packet's current Stokes state, applies the
+// Thomson Mueller matrix, and leaves the basis on the new scattering-plane
+// normal.
+//
+// Sampling is by rejection: the direction is drawn from the unpolarized
+// (1 + mu^2) phase function with the azimuth uniform in the frame (e1, e2)
+// around the incoming direction k, and accepted with probability
+// 0.5 [1 + (1 - mu^2) / (1 + mu^2) q_n], q_n being the packet's Q in the
+// frame of the scattering-plane normal n.  That gives the polarized phase
+// function (1 + mu^2) + (1 - mu^2) q_n; the acceptance is 1/2 on average.
+//
+// Everything that depends only on k is built once per scattering, not per
+// candidate, and the plane normal and the Stokes rotation of a candidate
+// follow algebraically from its azimuth: with kOut = mu k + s (cos phi e1 +
+// sin phi e2), k x kOut = s (cos phi e2 - sin phi e1), so the unit normal is
+// n = cos phi e2 - sin phi e1 and the rotation from the packet basis e to n is
+// read off e.n and (k x e).n.  The random numbers are drawn in the same order
+// and number as by the separate sample-then-scatter it replaces (mu, phi, then
+// the acceptance draw), so the result matches that to rounding.
 template<typename PointT, typename ParticleT, typename Uniform01>
-PointT samplePolarizedThomsonDirection(const ParticleT &p,
-                                       const PointT &oldVelocity,
-                                       Uniform01 &&u01)
+void scatterPolarizedThomson(ParticleT &p, Uniform01 &&u01)
 {
-    PointT const kIn = safeNormalize(oldVelocity, PointT(0.0, 0.0, 1.0));
-    for(int tries = 0; tries < 10000; ++tries)
+    initializeIfNeeded<PointT>(p);
+    // Unit vectors are normalized with one reciprocal each; vectors that are
+    // unit by construction (e2, f, the plane normal) are not renormalized.
+    auto unitOr = [](const PointT &v, const PointT &fallbackVector)
     {
-        PointT const candidate = sampleSyntheticThomsonDirection(oldVelocity, u01);
-        PointT const kOut = safeNormalize(candidate, kIn);
-        PointT planeNormal = fallback::CrossProduct(kIn, kOut);
-        if(fallback::abs(planeNormal) <= 1.0e-10)
-        {
-            return candidate;
-        }
-        planeNormal = safeNormalize(planeNormal, PointT(0.0, 0.0, 1.0));
-        auto const qu = projectToBasis(p, oldVelocity, planeNormal);
-        double const mu = std::clamp(fallback::ScalarProd(kIn, kOut), -1.0, 1.0);
-        double const mu2 = mu * mu;
-        double const ratio = 1.0 + (1.0 - mu2) / (1.0 + mu2) * qu.first;
-        if(u01() <= std::clamp(0.5 * ratio, 0.0, 1.0))
-        {
-            return candidate;
-        }
+        double const n = fallback::abs(v);
+        return n > kEpsilon && std::isfinite(n) ? v * (1.0 / n) : fallbackVector;
+    };
+    double const speed = std::max(fallback::abs(p.velocity), kEpsilon);
+    PointT const k = unitOr(p.velocity, PointT(0.0, 0.0, 1.0));
+    // The azimuth frame of the sampling (as choosePerpendicularBasis).
+    PointT const helper = std::abs(k.z) < 0.9 ? PointT(0.0, 0.0, 1.0) : PointT(0.0, 1.0, 0.0);
+    PointT const e1 = unitOr(helper - k * fallback::ScalarProd(helper, k), PointT(1.0, 0.0, 0.0));
+    PointT const e2 = fallback::CrossProduct(k, e1);
+    // The packet's polarization basis on the plane of the sky.
+    PointT const basis = p.polarizationBasis;
+    PointT e = basis - k * fallback::ScalarProd(basis, k);
+    {
+        double const n = fallback::abs(e);
+        e = n > kEpsilon && std::isfinite(n) ? e * (1.0 / n) : choosePerpendicularBasis(k);
     }
-    return sampleSyntheticThomsonDirection(oldVelocity, u01);
+    PointT const f = fallback::CrossProduct(k, e);
+    double q = p.stokesQ;
+    double u = p.stokesU;
+    // A non-finite component makes the whole state unpolarized (the rotation
+    // spreads it to both components before they are clamped).
+    if(!std::isfinite(q) || !std::isfinite(u))
+    {
+        q = 0.0;
+        u = 0.0;
+    }
+    clampLinearPolarization(q, u);
+
+    double mu = 0.0;
+    double sinTheta = 0.0;
+    double cosPhi = 1.0;
+    double sinPhi = 0.0;
+    double qn = 0.0;
+    double un = 0.0;
+    bool degenerate = false;
+    auto drawCandidate = [&]()
+    {
+        mu = sampleThomsonMu(u01);
+        double const phi = 2.0 * kPi * u01();
+        sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+        cosPhi = std::cos(phi);
+        sinPhi = std::sin(phi);
+        degenerate = sinTheta <= 1.0e-10;
+        if(degenerate)
+        {
+            return;
+        }
+        PointT const n = e2 * cosPhi - e1 * sinPhi;
+        double const c = std::clamp(fallback::ScalarProd(e, n), -1.0, 1.0);
+        double const s = fallback::ScalarProd(f, n);
+        double const cos2 = c * c - s * s;
+        double const sin2 = 2.0 * c * s;
+        qn = q * cos2 + u * sin2;
+        un = -q * sin2 + u * cos2;
+        clampLinearPolarization(qn, un);
+    };
+
+    // Accept with probability 0.5 [1 + (1 - mu^2) / (1 + mu^2) q_n], written
+    // without the division; |q_n| <= 1 keeps it in [0, 1].
+    bool accepted = false;
+    for(int tries = 0; tries < 10000 && !accepted; ++tries)
+    {
+        drawCandidate();
+        if(degenerate)
+        {
+            accepted = true;
+            break;
+        }
+        double const mu2 = mu * mu;
+        accepted = 2.0 * u01() * (1.0 + mu2) <= (1.0 + mu2) + (1.0 - mu2) * qn;
+    }
+    if(!accepted)
+    {
+        drawCandidate();
+    }
+
+    PointT const kOut = unitOr(k * mu + e1 * (sinTheta * cosPhi) + e2 * (sinTheta * sinPhi), k);
+    p.velocity = kOut * speed;
+    p.polarizationInitialized = true;
+    if(degenerate)
+    {
+        // Forward or backward: no scattering plane, the Stokes state carries over.
+        p.polarizationBasis = e;
+        p.stokesQ = q;
+        p.stokesU = u;
+        return;
+    }
+    double const mu2 = mu * mu;
+    double const Iprime = (1.0 + mu2) + (1.0 - mu2) * qn;
+    double const Qprime = (1.0 - mu2) + (1.0 + mu2) * qn;
+    double const Uprime = 2.0 * mu * un;
+    if(std::abs(Iprime) <= kEpsilon || !std::isfinite(Iprime))
+    {
+        p.stokesQ = 0.0;
+        p.stokesU = 0.0;
+    }
+    else
+    {
+        double const inverseI = 1.0 / Iprime;
+        p.stokesQ = Qprime * inverseI;
+        p.stokesU = Uprime * inverseI;
+    }
+    // The scattering-plane normal: unit and perpendicular to kOut by
+    // construction.
+    p.polarizationBasis = e2 * cosPhi - e1 * sinPhi;
+    clampLinearPolarization(p.stokesQ, p.stokesU);
 }
 
 template<typename PointT, typename Uniform01>
@@ -327,14 +395,13 @@ void applyManualSyntheticScatterings(ParticleT &p, int nManual,
         p.polarizationBasis = projectBasisToDirection(p.polarizationBasis, finalVelocity);
         return;
     }
-    PointT current = p.velocity;
-    for(int i = 0; i < nManual; ++i)
+    for(int i = 0; i < nManual - 1; ++i)
     {
-        PointT const next = i == nManual - 1
-            ? finalVelocity : samplePolarizedThomsonDirection(p, current, u01);
-        applyThomsonScatter<PointT>(p, current, next);
-        current = next;
+        scatterPolarizedThomson<PointT>(p, u01);
     }
+    // The last scattering is forced onto the exit direction.
+    PointT const current = p.velocity;
+    applyThomsonScatter<PointT>(p, current, finalVelocity);
 }
 
 template<typename PointT, typename ParticleT, typename RandomEngine, typename UniformDist>
